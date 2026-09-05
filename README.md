@@ -80,6 +80,32 @@ Every durable event carries the same envelope, discriminated on `type`:
 A *run* is one harness session. Loops and handoffs are kinds of run, not
 separate concepts.
 
+**On narration.** This protocol carries what an agent said and did — assistant
+text, tool inputs, tool outputs. Every such field is excerpted at capture and
+carries an explicit truncation flag; nothing is silently elided. The bound is
+the lesser of two limits that were adopted together, and the other one is not
+expressible here: **consumers are expected to keep narration away from anything
+that decides** — a classification, a gate, a verdict. This repository defines
+the transport and cannot enforce that; a consumer that renders narration and
+also acts on it has broken a constraint this format assumes.
+
+## Open before the first extraction
+
+Three questions the scaffold deliberately does not answer, each of which is
+expensive to change once a fixture exists:
+
+1. **Where the version starts.** Chreode's `EVENT_SCHEMA_VERSION` is already
+   `1`, with persisted events behind it. Starting this protocol at `0` would
+   force a renumbering of a live wire; starting at `1` adopts chreode's
+   numbering as the shared one.
+2. **Whether `stage` is open or closed.** Chreode's `StageName` is a closed
+   union of its own pipeline stages. If this protocol closes it, ostrom-hub's
+   loops have no stage to name; if it stays an open string, chreode's enum
+   becomes a consumer-side refinement.
+3. **Which envelope fields are required.** Chreode assigns `seq` and `ts`
+   server-side; a producer emitting into a different substrate may not have
+   either at capture.
+
 ## Layout
 
 ```

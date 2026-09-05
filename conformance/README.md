@@ -1,7 +1,7 @@
 # Conformance corpus
 
-Canonical event fixtures. **Both SDKs must round-trip every fixture in this
-directory byte-identically**, and both CIs run the corpus.
+Canonical event fixtures. **Both SDKs must agree on the compact canonical
+serialisation of every fixture in this directory**, and both CIs run the corpus.
 
 This is the mechanism behind principle 1. Two hand-written implementations in
 different languages are only one definition if something mechanical proves they
@@ -11,6 +11,10 @@ from the other.
 ## Rules
 
 - One fixture is one JSON document holding one complete envelope.
+- **This corpus is empty until the vocabulary is extracted.** A fixture must
+  accompany the first real event, not precede it: a fixture written before the
+  vocabulary is settled is a guess, and the immutability rule below would then
+  preserve the guess forever.
 - Fixtures are grouped by schema version: `v0/`, `v1/`, …
 - A fixture is **immutable once published**. Correcting a fixture changes what
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
@@ -21,7 +25,17 @@ from the other.
 
 ## Round-trip
 
-Parse the fixture into the SDK's own type, serialise it back, and compare bytes
-against the file. That catches field renames, optionality drift, number and
-timestamp formatting, and key ordering — the failures that otherwise surface at
-the wire, in production, on the far side.
+Parse the fixture into the SDK's own type, serialise it back **compactly**, and
+compare against the other SDK's compact serialisation of the same fixture. That
+catches field renames, optionality drift, and number and timestamp formatting —
+the failures that otherwise surface at the wire, in production, on the far side.
+
+It deliberately does **not** compare bytes against the file as stored. The
+fixtures are pretty-printed for review; production serialises compactly, into
+JSONL and SSE frames. Asserting byte-identity against the stored form would
+oblige both SDKs to carry a pretty-printer that exists only to satisfy this
+corpus, and would make the real assertion *"both pretty-print alike"*.
+
+The one property this drops is key ordering, which is not a wire property —
+JSON objects are unordered by specification, and no consumer may depend on the
+order it receives.
