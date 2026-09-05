@@ -35,7 +35,13 @@ no opinion about what a consumer may do with it beyond that.
 <!-- Source: ostrom-hub#131, 2026-09-05, which amended that repository's
      principle 4 from prohibition to bounded record. This repository defines
      the transport; the constraint that narration never reaches anything that
-     decides is a consumer's to enforce, and ostrom-hub principle 3 does.
+     decides is a consumer's to enforce, and is expected of every consumer.
+     Deliberately not phrased as "consumer X already enforces it": the first
+     draft asserted that of ostrom-hub's principle 3, which at the time
+     constrained only where judgment logic may live and said nothing about
+     what that logic is fed. A citation to a specific consumer's rules is
+     false the moment that consumer edits them, and this repository would not
+     find out.
      Preconditions: assumes bounding happens at capture, where the producer
      knows what it truncated. Invalid if a payload appears whose meaning is
      destroyed by excerpting, which is a signal to model it differently. -->
