@@ -50,8 +50,11 @@ system onto the other, and the generated side ends up unidiomatic in a library
 whose whole value is being pleasant to depend on.
 
 **Chosen: both hand-written, with a conformance corpus that proves they agree.**
-`conformance/` holds canonical event fixtures that both SDKs must round-trip
-byte-identically, exercised in both CIs. Two idiomatic implementations, one
+`conformance/` holds canonical event fixtures that both SDKs must agree on the
+compact canonical serialisation of, exercised in both CIs. Not byte-identity
+against the file as stored — the fixtures are pretty-printed for review, while
+production serialises compactly; see `conformance/README.md` for why that
+distinction is the whole assertion. Two idiomatic implementations, one
 mechanical proof of agreement.
 
 The corpus is load-bearing and must exist from the first event, not be added
@@ -109,7 +112,7 @@ expensive to change once a fixture exists:
 ## Layout
 
 ```
-conformance/   canonical fixtures both SDKs must round-trip byte-identically
+conformance/   canonical fixtures both SDKs must serialise identically
 packages/      TypeScript SDK
 crates/        Rust SDK
 ```
