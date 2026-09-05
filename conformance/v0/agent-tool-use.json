@@ -1,0 +1,13 @@
+{
+  "v": 0,
+  "type": "agent.tool_use",
+  "runId": "run_placeholder000000000000000000",
+  "seq": 1,
+  "ts": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "stage": "build",
+    "name": "placeholder_tool",
+    "inputExcerpt": "placeholder input",
+    "truncated": false
+  }
+}
