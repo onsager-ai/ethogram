@@ -14,10 +14,10 @@ from the other.
   envelope. A fixture set may also retain the `EventDraft` from which an event
   was stamped, allowing an SDK to prove that stamping reproduces the event
   modulo the sink-owned `seq` and `ts` values.
-- **This corpus is empty until the vocabulary is extracted.** A fixture must
-  accompany the first real event, not precede it: a fixture written before the
-  vocabulary is settled is a guess, and the immutability rule below would then
-  preserve the guess forever.
+- **This corpus contains captures, not invented examples.** A fixture must
+  accompany the first real capture of an event variant, not precede it: a
+  fixture written from an unobserved scenario is a guess, and the immutability
+  rule below would then preserve the guess forever.
 - Fixtures are grouped by schema version: `v1/`, `v2/`, and so on. Version 1 is
   the first protocol version; `v0/` never exists.
 - A fixture is **immutable once published**. Correcting a fixture changes what
@@ -110,5 +110,5 @@ lose precision on either fits the safe-integer range or is carried as a
 string; a payload that needs otherwise carries that value as a string
 instead of a number that happens to look integral.
 
-`v1/` exists empty in this change because the harness is part of the envelope
-contract, while the first immutable fixture must wait for the first real event.
+`v1/` remains empty until the first real capture because the first immutable
+fixture must record observed producer output rather than an invented example.

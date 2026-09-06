@@ -4,12 +4,47 @@ import { describe, test } from "node:test";
 import {
   EVENT_SCHEMA_VERSION,
   InMemorySink,
+  RUN_KINDS,
+  RUN_OUTCOMES,
+  foldRun,
   parseEvent,
   serialiseEvent,
   stamp,
   type Event,
   type EventDraft,
+  type EventPayloadMap,
 } from "./index.js";
+
+const RUN_STARTED_WIRE =
+  '{"v":1,"type":"run.started","runId":"run-child","seq":1,"ts":"2026-09-06T10:45:01.000Z","payload":{"actor":"builder","ceilings":{"costUsd":2.5,"tokens":4000,"wallMs":60000},"harness":"codex","kind":"subagent","model":"gpt-5","parentRunId":"run-parent","parentToolUseId":"tool-7","repository":"onsager-ai/ethogram","schedule":"builder@2026-09-06T10:45Z","workOrder":"order-5"},"capturedAt":"2026-09-06T10:45:00.000Z"}';
+
+const RUN_FINISHED_WIRE =
+  '{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}';
+
+// Cross-SDK byte identity for an event with an unknown payload field (issue
+// #12). This exact literal is also hand-built in the Rust suite
+// (`lib.rs`'s `unknown_payload_field_matches_the_typescript_pinned_bytes`)
+// and asserted there against the same string.
+const UNKNOWN_PAYLOAD_FIELD_WIRE =
+  '{"v":1,"type":"run.started","runId":"run-cross","seq":1,"ts":"2026-09-07T00:00:00.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1},"zzzTail":"after-kind"}}';
+
+const PERMITTED_RUN_KINDS = [
+  "loop",
+  "handoff",
+  "subagent",
+  "session",
+  "judgment",
+] as const;
+
+const PERMITTED_RUN_OUTCOMES = [
+  "completed",
+  "failed",
+  "no-op",
+  "timed-out",
+  "interrupted",
+  "permission-denied",
+  "canceled",
+] as const;
 
 const completeEvent = (): Event => ({
   v: 1,
@@ -34,6 +69,16 @@ function assertFuturePayloadCorrelation(draft: EventDraft<FuturePayloads>): void
   if (event.type === "test.happened") {
     const ok: boolean = event.payload.ok;
     assert.equal(typeof ok, "boolean");
+  }
+}
+
+function assertRunPayloadCorrelation(event: Event<EventPayloadMap>): void {
+  if (event.type === "run.started") {
+    const actor: string = event.payload.actor;
+    assert.equal(typeof actor, "string");
+  } else {
+    const durationMs: number = event.payload.durationMs;
+    assert.equal(typeof durationMs, "number");
   }
 }
 
@@ -139,6 +184,171 @@ describe("Event parsing", () => {
       /is an integral number whose magnitude exceeds the safe integer bound/,
     );
   });
+
+  test("keeps unknown event types open", () => {
+    assert.deepEqual(parseEvent(completeEvent()), completeEvent());
+  });
+});
+
+describe("run lifecycle payload parsing", () => {
+  test("accepts every permitted run kind", () => {
+    assert.deepEqual(RUN_KINDS, PERMITTED_RUN_KINDS);
+    for (const kind of PERMITTED_RUN_KINDS) {
+      assert.doesNotThrow(() =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: { kind, actor: "builder", harness: "codex" },
+        }),
+      );
+    }
+  });
+
+  test("rejects an unknown run kind", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "pipeline",
+            actor: "builder",
+            harness: "codex",
+          },
+        }),
+      /kind has unknown value: pipeline/,
+    );
+  });
+
+  test("accepts every permitted run outcome", () => {
+    assert.deepEqual(RUN_OUTCOMES, PERMITTED_RUN_OUTCOMES);
+    for (const outcome of PERMITTED_RUN_OUTCOMES) {
+      assert.doesNotThrow(() =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome, durationMs: 1250 },
+        }),
+      );
+    }
+  });
+
+  test("rejects an unknown run outcome", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome: "succeeded", durationMs: 1250 },
+        }),
+      /outcome has unknown value: succeeded/,
+    );
+  });
+
+  test("rejects each missing required run.started field", () => {
+    for (const field of ["kind", "actor", "harness"]) {
+      const payload: Record<string, unknown> = {
+        kind: "subagent",
+        actor: "builder",
+        harness: "codex",
+      };
+      delete payload[field];
+      assert.throws(
+        () =>
+          parseEvent({
+            ...completeEvent(),
+            type: "run.started",
+            payload,
+          }),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects each missing required run.finished field", () => {
+    for (const field of ["outcome", "durationMs"]) {
+      const payload: Record<string, unknown> = {
+        outcome: "completed",
+        durationMs: 1250,
+      };
+      delete payload[field];
+      assert.throws(
+        () =>
+          parseEvent({
+            ...completeEvent(),
+            type: "run.finished",
+            payload,
+          }),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects a non-integer ceilings token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "loop",
+            actor: "builder",
+            harness: "codex",
+            ceilings: { tokens: 10.5 },
+          },
+        }),
+      /ceilings\.tokens must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a non-integer usage token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: {
+            outcome: "completed",
+            durationMs: 1250,
+            usage: { inputTokens: 10.5 },
+          },
+        }),
+      /usage\.inputTokens must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative ceilings wall-clock ceiling", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "loop",
+            actor: "builder",
+            harness: "codex",
+            ceilings: { wallMs: -1 },
+          },
+        }),
+      /ceilings\.wallMs must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative usage token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: {
+            outcome: "completed",
+            durationMs: 1250,
+            usage: { outputTokens: -1 },
+          },
+        }),
+      /usage\.outputTokens must be a non-negative safe integer/,
+    );
+  });
 });
 
 describe("stamp", () => {
@@ -146,6 +356,17 @@ describe("stamp", () => {
     assertFuturePayloadCorrelation({
       type: "test.happened",
       payload: { ok: true },
+    });
+  });
+
+  test("retains the protocol payload-map correlation", () => {
+    assertRunPayloadCorrelation({
+      v: 1,
+      type: "run.started",
+      runId: "run-child",
+      seq: 1,
+      ts: "2026-09-06T10:45:01.000Z",
+      payload: { kind: "subagent", actor: "builder", harness: "codex" },
     });
   });
 
@@ -294,6 +515,214 @@ describe("serialiseEvent payload key sorting", () => {
       `{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":${expectedPayload}}`,
     );
   });
+
+  test("pins byte-identical run lifecycle events with Rust", () => {
+    const started: Event<EventPayloadMap> = {
+      v: 1,
+      type: "run.started",
+      runId: "run-child",
+      seq: 1,
+      ts: "2026-09-06T10:45:01.000Z",
+      payload: {
+        kind: "subagent",
+        actor: "builder",
+        harness: "codex",
+        model: "gpt-5",
+        parentRunId: "run-parent",
+        parentToolUseId: "tool-7",
+        schedule: "builder@2026-09-06T10:45Z",
+        repository: "onsager-ai/ethogram",
+        workOrder: "order-5",
+        ceilings: { costUsd: 2.5, tokens: 4000, wallMs: 60000 },
+      },
+      capturedAt: "2026-09-06T10:45:00.000Z",
+    };
+    const finished: Event<EventPayloadMap> = {
+      v: 1,
+      type: "run.finished",
+      runId: "run-child",
+      seq: 2,
+      ts: "2026-09-06T10:45:02.000Z",
+      payload: {
+        outcome: "completed",
+        reason: "placeholder complete",
+        truncated: false,
+        costUsd: 1.25,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 40,
+          cacheReadTokens: 20,
+          cacheCreationTokens: 30,
+          unit: "weighted-tokens",
+        },
+        durationMs: 1250,
+        estimated: true,
+      },
+    };
+
+    assert.equal(serialiseEvent(started), RUN_STARTED_WIRE);
+    assert.equal(serialiseEvent(finished), RUN_FINISHED_WIRE);
+  });
+
+  test("sorts all amended run usage fields", () => {
+    const parsed = parseEvent(JSON.parse(RUN_FINISHED_WIRE) as unknown);
+    assert.equal(serialiseEvent(parsed), RUN_FINISHED_WIRE);
+    assert.match(
+      RUN_FINISHED_WIRE,
+      /"usage":\{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"\}/,
+    );
+  });
+
+  test("omits absent optional run payload fields instead of writing null", () => {
+    const started: Event<EventPayloadMap> = {
+      v: 1,
+      type: "run.started",
+      runId: "run-root",
+      seq: 1,
+      ts: "2026-09-06T00:00:00.000Z",
+      payload: { kind: "session", actor: "user", harness: "codex" },
+    };
+    const finished: Event<EventPayloadMap> = {
+      v: 1,
+      type: "run.finished",
+      runId: "run-root",
+      seq: 2,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: { outcome: "no-op", durationMs: 1000 },
+    };
+
+    assert.equal(
+      serialiseEvent(started),
+      '{"v":1,"type":"run.started","runId":"run-root","seq":1,"ts":"2026-09-06T00:00:00.000Z","payload":{"actor":"user","harness":"codex","kind":"session"}}',
+    );
+    assert.equal(
+      serialiseEvent(finished),
+      '{"v":1,"type":"run.finished","runId":"run-root","seq":2,"ts":"2026-09-06T00:00:01.000Z","payload":{"durationMs":1000,"outcome":"no-op"}}',
+    );
+  });
+});
+
+describe("payload tolerance (issue #12)", () => {
+  // Payloads are tolerant at read and retaining on forward: an unknown
+  // payload field is never rejected and never dropped, so a forwarder that
+  // parses a newer producer's event does not lose data silently at exactly
+  // the boundary this protocol exists to cross. What stays strict is the
+  // envelope, the closed unions (`kind`, `outcome`), and required fields of
+  // a known type — all covered elsewhere in this file.
+
+  test("an unknown payload field round-trips across the sort boundary", () => {
+    // "0alpha" sorts before the known key "actor"; "zzzTail" sorts after
+    // the known key "kind". Both unknown fields must survive parsing and
+    // reappear in the canonical sorted position.
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        "0alpha": "before-actor",
+        actor: "builder",
+        harness: "codex",
+        kind: "loop",
+        zzzTail: "after-kind",
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","zzzTail":"after-kind"}}',
+    );
+  });
+
+  test("an unknown payload field holding a nested object and an array is preserved and sorted", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        kind: "loop",
+        actor: "builder",
+        harness: "codex",
+        nested: { zebra: 1, apple: 2 },
+        list: [{ zebra: 1, apple: 2 }, 3, "text"],
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1}}}',
+    );
+  });
+
+  test("unknown payload numbers round-trip byte-identically", () => {
+    // The hazard named in the follow-up brief is specific to Rust's
+    // `#[serde(flatten)]` buffering layer, which does not exist on this
+    // side, but the expectation is the same: a large integer just inside
+    // the safe bound, a small integer, an integral-valued float, and a
+    // non-integral value must each keep their own canonical representation
+    // (issue #9) after passing through as an unrecognised field.
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        kind: "loop",
+        actor: "builder",
+        harness: "codex",
+        bigInt: 9007199254740991,
+        smallInt: 1,
+        integralFloat: 2.0,
+        fraction: 0.000001,
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","bigInt":9007199254740991,"fraction":0.000001,"harness":"codex","integralFloat":2,"kind":"loop","smallInt":1}}',
+    );
+  });
+
+  test("a payload without unknown fields serialises exactly as before", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: { kind: "loop", actor: "builder", harness: "codex" },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop"}}',
+    );
+  });
+
+  test("pins byte-identical bytes for an unknown payload field with Rust", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-cross",
+      seq: 1,
+      ts: "2026-09-07T00:00:00.000Z",
+      payload: {
+        "0alpha": "before-actor",
+        actor: "builder",
+        harness: "codex",
+        kind: "loop",
+        list: [{ zebra: 1, apple: 2 }, 3, "text"],
+        nested: { zebra: 1, apple: 2 },
+        zzzTail: "after-kind",
+      },
+    };
+
+    assert.equal(serialiseEvent(parseEvent(raw)), UNKNOWN_PAYLOAD_FIELD_WIRE);
+  });
 });
 
 describe("InMemorySink", () => {
@@ -330,5 +759,52 @@ describe("InMemorySink", () => {
       /must be 2; received 3/,
     );
     assert.equal(sink.events("run-1").length, 1);
+  });
+});
+
+describe("foldRun", () => {
+  test("folds lifecycle events into one run and preserves its parent", () => {
+    const events: Event[] = [
+      {
+        v: 1,
+        type: "run.started",
+        runId: "run-child",
+        seq: 1,
+        ts: "2026-09-06T10:45:01.000Z",
+        payload: {
+          kind: "subagent",
+          actor: "builder",
+          harness: "codex",
+          parentRunId: "run-parent",
+        },
+      },
+      {
+        v: 1,
+        type: "agent.tool_use",
+        runId: "run-child",
+        seq: 2,
+        ts: "2026-09-06T10:45:01.500Z",
+        payload: { name: "placeholder" },
+      },
+      {
+        v: 1,
+        type: "run.finished",
+        runId: "run-child",
+        seq: 3,
+        ts: "2026-09-06T10:45:02.000Z",
+        payload: { outcome: "completed", durationMs: 1000 },
+      },
+    ];
+
+    assert.deepEqual(foldRun(events), {
+      runId: "run-child",
+      kind: "subagent",
+      actor: "builder",
+      harness: "codex",
+      parentRunId: "run-parent",
+      outcome: "completed",
+      durationMs: 1000,
+      open: false,
+    });
   });
 });

@@ -13,9 +13,10 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Envelope implemented.** The version 1 envelope exists in both SDKs and the
-conformance harness holds their wire behaviour together. The vocabulary is not
-yet extracted, so the corpus remains empty until the first real event lands.
+**Run lifecycle implemented.** The version 1 envelope and its `run.started` and
+`run.finished` vocabulary exist in both SDKs. The conformance corpus remains
+empty until the first real capture lands, because an invented fixture would
+become an immutable guess.
 
 ## Why it is a separate repository
 
@@ -96,6 +97,33 @@ per run; concurrent sinks would require `seq` to gain a partition.
 
 A *run* is one harness session. Loops and handoffs are kinds of run, not
 separate concepts.
+
+## Run lifecycle
+
+| type | required payload | optional payload | meaning |
+|---|---|---|---|
+| `run.started` | `kind`, `actor`, `harness` | `model`, `parentRunId`, `parentToolUseId`, `schedule`, `repository`, `workOrder`, `ceilings` | Opens one run and records the harness identity and any declared parent or bounds. |
+| `run.finished` | `outcome`, `durationMs` | `reason`, `truncated`, `costUsd`, `usage`, `estimated` | Closes one run; failures use `outcome: "failed"` and `reason` so every run has one terminal event shape. |
+
+`kind` is one of `loop`, `handoff`, `subagent`, `session`, or `judgment`.
+`outcome` is one of `completed`, `failed`, `no-op`, `timed-out`, `interrupted`,
+`permission-denied`, or `canceled`. These sets are closed because adding a value
+changes what every reader must understand.
+
+`ceilings` may carry `costUsd`, `tokens`, and `wallMs`. `usage` may carry
+`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, and
+`unit`; an absent `unit` means tokens, while a present value prevents consumers
+from summing unlike harness units.
+
+**Payloads are tolerant at read and retaining on forward (issue #12).** An
+unknown payload field is never rejected and never dropped: a sink that
+forwards an event it does not fully understand must be byte-preserving, or the
+stream loses data silently at exactly the boundary this protocol exists to
+cross. What stays strict is the envelope (an unknown envelope field is still
+rejected), the closed unions above (`kind` and `outcome`), and the required
+payload fields in the table — a `run.finished` without `durationMs` is
+malformed no matter what else it carries. Unknown event `type`s remain open,
+as they always were.
 
 **On narration.** This protocol carries what an agent said and did — assistant
 text, tool inputs, tool outputs. Every such field is excerpted at capture and

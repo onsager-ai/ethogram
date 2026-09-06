@@ -35,7 +35,7 @@ test "$rust_count" = "$fixture_count"
 diff --recursive --unified "$typescript_output" "$rust_output"
 
 if [[ "$fixture_count" == "0" ]]; then
-  echo "Conformance: compared 0 fixtures across TypeScript and Rust; v1 is intentionally empty until #5."
+  echo "Conformance: compared 0 fixtures across TypeScript and Rust; v1 is intentionally empty until the first real capture."
 else
   echo "Conformance: compared $fixture_count fixtures across TypeScript and Rust."
 fi

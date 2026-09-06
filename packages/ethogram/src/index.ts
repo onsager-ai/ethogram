@@ -1,12 +1,73 @@
 export const EVENT_SCHEMA_VERSION = 1 as const;
 
+export const RUN_KINDS = [
+  "loop",
+  "handoff",
+  "subagent",
+  "session",
+  "judgment",
+] as const;
+
+export type RunKind = (typeof RUN_KINDS)[number];
+
+export const RUN_OUTCOMES = [
+  "completed",
+  "failed",
+  "no-op",
+  "timed-out",
+  "interrupted",
+  "permission-denied",
+  "canceled",
+] as const;
+
+export type RunOutcome = (typeof RUN_OUTCOMES)[number];
+
+export interface RunCeilings {
+  costUsd?: number;
+  tokens?: number;
+  wallMs?: number;
+}
+
+export interface RunStartedPayload {
+  kind: RunKind;
+  actor: string;
+  harness: string;
+  model?: string;
+  parentRunId?: string;
+  parentToolUseId?: string;
+  schedule?: string;
+  repository?: string;
+  workOrder?: string;
+  ceilings?: RunCeilings;
+}
+
+export interface RunUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  unit?: string;
+}
+
+export interface RunFinishedPayload {
+  outcome: RunOutcome;
+  reason?: string;
+  truncated?: boolean;
+  costUsd?: number;
+  usage?: RunUsage;
+  durationMs: number;
+  estimated?: boolean;
+}
+
 /**
- * The open payload map is deliberately empty for the envelope-only release.
- * Later vocabulary specs can add keyed payloads to this interface; the mapped
- * types below then become correlated discriminated unions without changing the
- * public EventDraft or Event shapes.
+ * The protocol payload map. Supplying it to `EventDraft` or `Event` produces a
+ * correlated discriminated union; their unparameterised forms deliberately
+ * remain open for callers that only need the envelope or handle future types.
  */
-export interface EventPayloadMap {}
+export interface EventPayloadMap {
+  "run.started": RunStartedPayload;
+  "run.finished": RunFinishedPayload;
+}
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
 
@@ -20,7 +81,7 @@ type DraftFor<Payloads extends object> = {
   [Type in EventType<Payloads>]: DraftMember<Type, Payloads[Type]>;
 }[EventType<Payloads>];
 
-export type EventDraft<Payloads extends object = EventPayloadMap> =
+export type EventDraft<Payloads extends object = object> =
   [EventType<Payloads>] extends [never]
     ? DraftMember<string, unknown>
     : DraftFor<Payloads>;
@@ -39,7 +100,7 @@ type EventFor<Payloads extends object> = {
   [Type in EventType<Payloads>]: EventMember<Type, Payloads[Type]>;
 }[EventType<Payloads>];
 
-export type Event<Payloads extends object = EventPayloadMap> =
+export type Event<Payloads extends object = object> =
   [EventType<Payloads>] extends [never]
     ? EventMember<string, unknown>
     : EventFor<Payloads>;
@@ -87,6 +148,309 @@ const EVENT_FIELDS = new Set<string>([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
+const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
+
+const RUN_STARTED_FIELDS = new Set<string>([
+  "kind",
+  "actor",
+  "harness",
+  "model",
+  "parentRunId",
+  "parentToolUseId",
+  "schedule",
+  "repository",
+  "workOrder",
+  "ceilings",
+]);
+
+const RUN_CEILING_FIELDS = new Set<string>([
+  "costUsd",
+  "tokens",
+  "wallMs",
+]);
+
+const RUN_FINISHED_FIELDS = new Set<string>([
+  "outcome",
+  "reason",
+  "truncated",
+  "costUsd",
+  "usage",
+  "durationMs",
+  "estimated",
+]);
+
+const RUN_USAGE_FIELDS = new Set<string>([
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheCreationTokens",
+  "unit",
+]);
+
+/**
+ * Returns the entries of `value` whose keys are not in `fields`, to be
+ * carried forward as an opaque extension rather than rejected or dropped
+ * (issue #12): a sink that forwards an event it does not fully understand
+ * must be byte-preserving, or the stream loses data silently at exactly the
+ * boundary this protocol exists to cross. Only the **envelope** and the
+ * closed unions (`kind`, `outcome`) stay strict; an unknown payload field is
+ * tolerated at read and retained on forward.
+ */
+function extractUnknownFields(
+  value: Record<string, unknown>,
+  fields: ReadonlySet<string>,
+): Record<string, unknown> {
+  const unknown: Record<string, unknown> = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (!fields.has(key)) {
+      unknown[key] = fieldValue;
+    }
+  }
+  return unknown;
+}
+
+function requiredString(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): string {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string") {
+    throw new TypeError(`${name}.${field} must be a string`);
+  }
+  return fieldValue;
+}
+
+function requiredNumber(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
+    throw new TypeError(`${name}.${field} must be a finite number`);
+  }
+  return fieldValue;
+}
+
+function optionalString(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): string | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string") {
+    throw new TypeError(`${name}.${field} must be a string when present`);
+  }
+  return fieldValue;
+}
+
+function optionalNumber(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
+    throw new TypeError(`${name}.${field} must be a finite number when present`);
+  }
+  return fieldValue;
+}
+
+/**
+ * Parses an optional count field that must be a whole, non-negative number
+ * — the six `ceilings`/`usage` token- and time-count fields, all of which
+ * are counts and can never be fractional or negative. `Number.isSafeInteger`
+ * rejects a non-integer (`10.5`) and a value outside the ±2^53−1 magnitude
+ * this protocol's numbers are bounded to (issue #9) in one check; the sign
+ * check on top of that rejects a negative count. Unlike `optionalNumber`,
+ * this never coerces: an out-of-range value is an error, not a rounded or
+ * clamped one.
+ */
+function optionalSafeInteger(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (
+    typeof fieldValue !== "number" ||
+    !Number.isSafeInteger(fieldValue) ||
+    fieldValue < 0
+  ) {
+    throw new TypeError(
+      `${name}.${field} must be a non-negative safe integer when present`,
+    );
+  }
+  return fieldValue;
+}
+
+function optionalBoolean(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): boolean | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "boolean") {
+    throw new TypeError(`${name}.${field} must be a boolean when present`);
+  }
+  return fieldValue;
+}
+
+function parseRunCeilings(value: unknown): RunCeilings {
+  const name = "RunStartedPayload.ceilings";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const costUsd = optionalNumber(value, "costUsd", name);
+  const tokens = optionalSafeInteger(value, "tokens", name);
+  const wallMs = optionalSafeInteger(value, "wallMs", name);
+  return {
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(tokens === undefined ? {} : { tokens }),
+    ...(wallMs === undefined ? {} : { wallMs }),
+    ...extractUnknownFields(value, RUN_CEILING_FIELDS),
+  };
+}
+
+function parseRunUsage(value: unknown): RunUsage {
+  const name = "RunFinishedPayload.usage";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const inputTokens = optionalSafeInteger(value, "inputTokens", name);
+  const outputTokens = optionalSafeInteger(value, "outputTokens", name);
+  const cacheReadTokens = optionalSafeInteger(value, "cacheReadTokens", name);
+  const cacheCreationTokens = optionalSafeInteger(
+    value,
+    "cacheCreationTokens",
+    name,
+  );
+  const unit = optionalString(value, "unit", name);
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheCreationTokens === undefined ? {} : { cacheCreationTokens }),
+    ...(unit === undefined ? {} : { unit }),
+    ...extractUnknownFields(value, RUN_USAGE_FIELDS),
+  };
+}
+
+/**
+ * Parse and validate a `run.started` payload. Unknown fields are tolerated
+ * and retained (issue #12): required fields and the closed `kind` union stay
+ * strict, but a field this SDK does not recognise survives parsing and is
+ * re-emitted on serialisation rather than being rejected or silently
+ * dropped by the object literal below.
+ */
+export function parseRunStartedPayload(value: unknown): RunStartedPayload {
+  const name = "RunStartedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const kind = requiredString(value, "kind", name);
+  if (!RUN_KIND_VALUES.has(kind)) {
+    throw new TypeError(`${name}.kind has unknown value: ${kind}`);
+  }
+  const actor = requiredString(value, "actor", name);
+  const harness = requiredString(value, "harness", name);
+  const model = optionalString(value, "model", name);
+  const parentRunId = optionalString(value, "parentRunId", name);
+  const parentToolUseId = optionalString(value, "parentToolUseId", name);
+  const schedule = optionalString(value, "schedule", name);
+  const repository = optionalString(value, "repository", name);
+  const workOrder = optionalString(value, "workOrder", name);
+  const ceilings = Object.hasOwn(value, "ceilings")
+    ? parseRunCeilings(value.ceilings)
+    : undefined;
+
+  return {
+    kind: kind as RunKind,
+    actor,
+    harness,
+    ...(model === undefined ? {} : { model }),
+    ...(parentRunId === undefined ? {} : { parentRunId }),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...(schedule === undefined ? {} : { schedule }),
+    ...(repository === undefined ? {} : { repository }),
+    ...(workOrder === undefined ? {} : { workOrder }),
+    ...(ceilings === undefined ? {} : { ceilings }),
+    ...extractUnknownFields(value, RUN_STARTED_FIELDS),
+  };
+}
+
+/**
+ * Parse and validate a `run.finished` payload. Unknown fields are tolerated
+ * and retained (issue #12): required fields and the closed `outcome` union
+ * stay strict, but a field this SDK does not recognise survives parsing and
+ * is re-emitted on serialisation rather than being rejected or silently
+ * dropped by the object literal below.
+ */
+export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
+  const name = "RunFinishedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const outcome = requiredString(value, "outcome", name);
+  if (!RUN_OUTCOME_VALUES.has(outcome)) {
+    throw new TypeError(`${name}.outcome has unknown value: ${outcome}`);
+  }
+  const reason = optionalString(value, "reason", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const costUsd = optionalNumber(value, "costUsd", name);
+  const usage = Object.hasOwn(value, "usage")
+    ? parseRunUsage(value.usage)
+    : undefined;
+  const durationMs = requiredNumber(value, "durationMs", name);
+  const estimated = optionalBoolean(value, "estimated", name);
+
+  return {
+    outcome: outcome as RunOutcome,
+    ...(reason === undefined ? {} : { reason }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(usage === undefined ? {} : { usage }),
+    durationMs,
+    ...(estimated === undefined ? {} : { estimated }),
+    ...extractUnknownFields(value, RUN_FINISHED_FIELDS),
+  };
+}
+
+function parseKnownPayload(eventType: string, payload: unknown): unknown {
+  switch (eventType) {
+    case "run.started":
+      return parseRunStartedPayload(payload);
+    case "run.finished":
+      return parseRunFinishedPayload(payload);
+    default:
+      return payload;
+  }
 }
 
 /**
@@ -156,7 +520,20 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
   return value;
 }
 
-/** Parse a decoded JSON value as an Event, rejecting envelope drift. */
+/**
+ * Parse a decoded JSON value as an Event, rejecting envelope drift and invalid
+ * payloads for event types this SDK knows. Unknown event types deliberately
+ * retain the open payload behaviour: both SDKs validate the two `run.*`
+ * vocabulary members here without turning the envelope parser into a closed
+ * event-type registry.
+ *
+ * A payload's *unknown fields* are a separate axis from its *unknown type*
+ * and are tolerated rather than rejected (issue #12): `parseRunStartedPayload`
+ * and `parseRunFinishedPayload` no longer reject a field they do not
+ * recognise, and they carry it forward into the returned payload object
+ * rather than silently dropping it, so `serialiseEvent` re-emits it. Only the
+ * envelope stays closed to unknown fields, via the check just below.
+ */
 export function parseEvent(value: unknown): Event {
   if (!isRecord(value)) {
     throw new TypeError("Event must be a JSON object");
@@ -198,6 +575,7 @@ export function parseEvent(value: unknown): Event {
     throw new TypeError("Event.payload must be a JSON value");
   }
   validatePayloadNumbers(value.payload, "payload");
+  const payload = parseKnownPayload(value.type, value.payload);
   if (
     Object.hasOwn(value, "capturedAt") &&
     typeof value.capturedAt !== "string"
@@ -211,7 +589,7 @@ export function parseEvent(value: unknown): Event {
     runId: value.runId,
     seq: value.seq as number,
     ts: value.ts,
-    payload: value.payload,
+    payload,
     ...(typeof value.capturedAt === "string"
       ? { capturedAt: value.capturedAt }
       : {}),
@@ -293,4 +671,66 @@ export class InMemorySink {
     }
     return events;
   }
+}
+
+export interface FoldedRun {
+  runId: string;
+  kind: RunKind;
+  actor: string;
+  harness: string;
+  parentRunId?: string;
+  outcome?: RunOutcome;
+  durationMs?: number;
+  open: boolean;
+}
+
+/**
+ * Reference implementation of the lifecycle fold for one run, not a
+ * consumer-facing run model. Unrelated events between the two lifecycle
+ * markers are ignored; malformed lifecycle payloads and mismatched run ids
+ * are rejected so the example cannot manufacture a coherent run from an
+ * incoherent sequence.
+ */
+export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
+  let run: FoldedRun | undefined;
+
+  for (const event of events) {
+    if (event.type === "run.started") {
+      if (run !== undefined) {
+        throw new Error("Run fold received more than one run.started event");
+      }
+      const payload = parseRunStartedPayload(event.payload);
+      run = {
+        runId: event.runId,
+        kind: payload.kind,
+        actor: payload.actor,
+        harness: payload.harness,
+        ...(payload.parentRunId === undefined
+          ? {}
+          : { parentRunId: payload.parentRunId }),
+        open: true,
+      };
+      continue;
+    }
+
+    if (event.type === "run.finished") {
+      if (run === undefined) {
+        throw new Error("Run fold received run.finished before run.started");
+      }
+      if (event.runId !== run.runId) {
+        throw new Error(
+          `Run fold expected run id ${run.runId}; received ${event.runId}`,
+        );
+      }
+      const payload = parseRunFinishedPayload(event.payload);
+      run = {
+        ...run,
+        outcome: payload.outcome,
+        durationMs: payload.durationMs,
+        open: false,
+      };
+    }
+  }
+
+  return run;
 }
