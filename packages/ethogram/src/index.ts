@@ -220,18 +220,29 @@ export function parseEvent(value: unknown): Event {
 
 /**
  * Serialise an Event in its canonical compact form: no presentation
- * whitespace, envelope keys in the order this SDK always constructs an Event
- * (`v`, `type`, `runId`, `seq`, `ts`, `payload`, `capturedAt`), and payload
- * object keys sorted recursively by UTF-8 byte order (array order is left
- * alone, but objects nested inside an array are themselves sorted). Both SDKs
- * commit to emitting exactly these bytes for the same event, so the
- * conformance harness diffs producer output directly rather than normalising
- * it first.
+ * whitespace, envelope keys in declared order (`v`, `type`, `runId`, `seq`,
+ * `ts`, `payload`, `capturedAt`), and payload object keys sorted recursively
+ * by UTF-8 byte order (array order is left alone, but objects nested inside an
+ * array are themselves sorted). Both SDKs commit to emitting exactly these
+ * bytes for the same event, so the conformance harness diffs producer output
+ * directly rather than normalising it first.
+ *
+ * The envelope is rebuilt field by field rather than spread from `event`,
+ * because a spread would preserve whatever key order the caller happened to
+ * construct — and an Event that reached this function from anywhere but
+ * `parseEvent` or `stamp` carries no guarantee about that. Rust emits its
+ * struct's declaration order unconditionally; this is how TypeScript matches
+ * it unconditionally too.
  */
 export function serialiseEvent(event: Event): string {
   return JSON.stringify({
-    ...event,
+    v: event.v,
+    type: event.type,
+    runId: event.runId,
+    seq: event.seq,
+    ts: event.ts,
     payload: sortObjectKeysByUtf8Bytes(event.payload),
+    ...(event.capturedAt === undefined ? {} : { capturedAt: event.capturedAt }),
   });
 }
 

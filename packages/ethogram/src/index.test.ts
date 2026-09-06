@@ -205,6 +205,40 @@ test("the compact serialiser emits no presentation whitespace", () => {
   );
 });
 
+test("envelope key order does not depend on how the caller built the event", () => {
+  // Rust emits its struct's declaration order unconditionally. An Event that
+  // reached serialiseEvent from anywhere but parseEvent or stamp carries no
+  // guarantee about key order, so spreading it would let the caller's
+  // construction order leak onto the wire and diverge from Rust.
+  const scrambled = {
+    payload: { ok: true },
+    ts: "2026-09-06T00:00:01.000Z",
+    v: 1,
+    runId: "run-1",
+    type: "test.happened",
+    seq: 1,
+  } as unknown as Event;
+
+  assert.equal(serialiseEvent(scrambled), serialiseEvent(completeEvent()));
+});
+
+test("capturedAt keeps its declared position when present", () => {
+  const scrambled = {
+    capturedAt: "2026-09-06T00:00:00.000Z",
+    payload: { ok: true },
+    v: 1,
+    ts: "2026-09-06T00:00:01.000Z",
+    runId: "run-1",
+    type: "test.happened",
+    seq: 1,
+  } as unknown as Event;
+
+  assert.equal(
+    serialiseEvent(scrambled),
+    '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"ok":true},"capturedAt":"2026-09-06T00:00:00.000Z"}',
+  );
+});
+
 describe("serialiseEvent payload key sorting", () => {
   test("sorts scrambled payload keys by UTF-8 bytes", () => {
     const event: Event = {
