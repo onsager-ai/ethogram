@@ -283,6 +283,72 @@ describe("run lifecycle payload parsing", () => {
       );
     }
   });
+
+  test("rejects a non-integer ceilings token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "loop",
+            actor: "builder",
+            harness: "codex",
+            ceilings: { tokens: 10.5 },
+          },
+        }),
+      /ceilings\.tokens must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a non-integer usage token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: {
+            outcome: "completed",
+            durationMs: 1250,
+            usage: { inputTokens: 10.5 },
+          },
+        }),
+      /usage\.inputTokens must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative ceilings wall-clock ceiling", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "loop",
+            actor: "builder",
+            harness: "codex",
+            ceilings: { wallMs: -1 },
+          },
+        }),
+      /ceilings\.wallMs must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative usage token count", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: {
+            outcome: "completed",
+            durationMs: 1250,
+            usage: { outputTokens: -1 },
+          },
+        }),
+      /usage\.outputTokens must be a non-negative safe integer/,
+    );
+  });
 });
 
 describe("stamp", () => {

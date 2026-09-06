@@ -76,16 +76,16 @@ pub struct RunCeilings {
     pub cost_usd: Option<f64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub tokens: Option<f64>,
+    pub tokens: Option<u64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub wall_ms: Option<f64>,
+    pub wall_ms: Option<u64>,
     #[serde(flatten)]
     pub extra: PayloadExtension,
 }
@@ -147,28 +147,28 @@ pub struct RunStartedPayload {
 pub struct RunUsage {
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub input_tokens: Option<f64>,
+    pub input_tokens: Option<u64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub output_tokens: Option<f64>,
+    pub output_tokens: Option<u64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub cache_read_tokens: Option<f64>,
+    pub cache_read_tokens: Option<u64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional",
+        deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
-    pub cache_creation_tokens: Option<f64>,
+    pub cache_creation_tokens: Option<u64>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -629,6 +629,42 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+/// Deserializes a `u64` and rejects a magnitude beyond
+/// `MAX_SAFE_INTEGER_MAGNITUDE`, reusing the same bound and the same
+/// `number_exceeds_safe_integer_magnitude` check `validate_payload_numbers`
+/// uses (issue #9). `u64` deserialization already rejects a negative or
+/// non-integral value by construction, so this adds only the missing upper
+/// bound.
+///
+/// This exists because `parse_event` parses into `Event<Value>` and then
+/// runs `validate_payload_numbers` over the whole payload — but a caller who
+/// deserialises straight into a typed payload struct, for example
+/// `serde_json::from_str::<Event<RunFinishedPayload>>(...)`, never goes
+/// through `parse_event` and so never runs that check. `RunCeilings.tokens`,
+/// `RunCeilings.wall_ms`, and `RunUsage`'s four token-count fields are the
+/// known integral fields on that typed path, so each one is bounded here
+/// individually via `deserialize_optional_safe_u64` below.
+fn deserialize_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if number_exceeds_safe_integer_magnitude(&serde_json::Number::from(value)) {
+        Err(de::Error::custom(format_args!(
+            "must be a safe integer no larger than {MAX_SAFE_INTEGER_MAGNITUDE}"
+        )))
+    } else {
+        Ok(value)
+    }
+}
+
+fn deserialize_optional_safe_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_safe_u64(deserializer).map(Some)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SequenceError {
     pub run_id: String,
@@ -868,8 +904,8 @@ mod tests {
                 work_order: Some("order-5".to_owned()),
                 ceilings: Some(RunCeilings {
                     cost_usd: Some(2.5),
-                    tokens: Some(4000.0),
-                    wall_ms: Some(60000.0),
+                    tokens: Some(4000),
+                    wall_ms: Some(60000),
                     extra: PayloadExtension::new(),
                 }),
                 extra: PayloadExtension::new(),
@@ -888,10 +924,10 @@ mod tests {
                 truncated: Some(false),
                 cost_usd: Some(1.25),
                 usage: Some(RunUsage {
-                    input_tokens: Some(10.0),
-                    output_tokens: Some(40.0),
-                    cache_read_tokens: Some(20.0),
-                    cache_creation_tokens: Some(30.0),
+                    input_tokens: Some(10),
+                    output_tokens: Some(40),
+                    cache_read_tokens: Some(20),
+                    cache_creation_tokens: Some(30),
                     unit: Some("weighted-tokens".to_owned()),
                     extra: PayloadExtension::new(),
                 }),
@@ -1524,5 +1560,87 @@ mod tests {
         };
 
         assert_eq!(serialise_event(&event).unwrap(), UNKNOWN_PAYLOAD_FIELD_WIRE);
+    }
+
+    // -- Whole-number usage/ceilings counts (review follow-up) ----------
+
+    #[test]
+    fn rejects_a_non_integer_usage_token_count() {
+        // `u64` deserialization rejects a non-integral value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(serde_json::from_str::<RunUsage>(r#"{"inputTokens":10.5}"#).is_err());
+    }
+
+    #[test]
+    fn rejects_a_non_integer_ceilings_count() {
+        assert!(serde_json::from_str::<RunCeilings>(r#"{"tokens":10.5}"#).is_err());
+    }
+
+    #[test]
+    fn rejects_a_negative_usage_token_count() {
+        // `u64` deserialization rejects a negative value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(serde_json::from_str::<RunUsage>(r#"{"outputTokens":-5}"#).is_err());
+    }
+
+    #[test]
+    fn rejects_a_negative_ceilings_count() {
+        assert!(serde_json::from_str::<RunCeilings>(r#"{"wallMs":-5}"#).is_err());
+    }
+
+    /// The typed-struct-path bound check the follow-up brief calls for:
+    /// `parse_event` runs `validate_payload_numbers` over the whole payload,
+    /// but a caller who deserialises straight into `Event<RunFinishedPayload>`
+    /// (bypassing `parse_event` entirely) relies instead on the
+    /// `deserialize_optional_safe_u64` each of these six fields now carries.
+    #[test]
+    fn typed_run_finished_payload_deserialization_rejects_a_usage_count_beyond_the_safe_bound() {
+        let input = format!(
+            r#"{{"v":1,"type":"run.finished","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"outcome":"completed","durationMs":1250,"usage":{{"inputTokens":{}}}}}}}"#,
+            MAX_SAFE_INTEGER_MAGNITUDE + 1
+        );
+
+        let error = serde_json::from_str::<Event<RunFinishedPayload>>(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("safe integer"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn typed_run_finished_payload_deserialization_accepts_a_usage_count_at_the_safe_bound() {
+        let input = format!(
+            r#"{{"v":1,"type":"run.finished","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"outcome":"completed","durationMs":1250,"usage":{{"inputTokens":{}}}}}}}"#,
+            MAX_SAFE_INTEGER_MAGNITUDE
+        );
+
+        assert!(serde_json::from_str::<Event<RunFinishedPayload>>(&input).is_ok());
+    }
+
+    /// Same bound, exercised on `RunStartedPayload.ceilings` rather than
+    /// `RunFinishedPayload.usage`, so all six fields are covered on the typed
+    /// path rather than just the one the brief names explicitly.
+    #[test]
+    fn typed_run_started_payload_deserialization_rejects_a_ceilings_count_beyond_the_safe_bound() {
+        let input = format!(
+            r#"{{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"kind":"loop","actor":"builder","harness":"codex","ceilings":{{"tokens":{}}}}}}}"#,
+            MAX_SAFE_INTEGER_MAGNITUDE + 1
+        );
+
+        let error = serde_json::from_str::<Event<RunStartedPayload>>(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("safe integer"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn typed_run_started_payload_deserialization_accepts_a_ceilings_count_at_the_safe_bound() {
+        let input = format!(
+            r#"{{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"kind":"loop","actor":"builder","harness":"codex","ceilings":{{"tokens":{}}}}}}}"#,
+            MAX_SAFE_INTEGER_MAGNITUDE
+        );
+
+        assert!(serde_json::from_str::<Event<RunStartedPayload>>(&input).is_ok());
     }
 }

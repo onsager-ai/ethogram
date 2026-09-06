@@ -272,6 +272,37 @@ function optionalNumber(
   return fieldValue;
 }
 
+/**
+ * Parses an optional count field that must be a whole, non-negative number
+ * — the six `ceilings`/`usage` token- and time-count fields, all of which
+ * are counts and can never be fractional or negative. `Number.isSafeInteger`
+ * rejects a non-integer (`10.5`) and a value outside the ±2^53−1 magnitude
+ * this protocol's numbers are bounded to (issue #9) in one check; the sign
+ * check on top of that rejects a negative count. Unlike `optionalNumber`,
+ * this never coerces: an out-of-range value is an error, not a rounded or
+ * clamped one.
+ */
+function optionalSafeInteger(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (
+    typeof fieldValue !== "number" ||
+    !Number.isSafeInteger(fieldValue) ||
+    fieldValue < 0
+  ) {
+    throw new TypeError(
+      `${name}.${field} must be a non-negative safe integer when present`,
+    );
+  }
+  return fieldValue;
+}
+
 function optionalBoolean(
   value: Record<string, unknown>,
   field: string,
@@ -294,8 +325,8 @@ function parseRunCeilings(value: unknown): RunCeilings {
   }
 
   const costUsd = optionalNumber(value, "costUsd", name);
-  const tokens = optionalNumber(value, "tokens", name);
-  const wallMs = optionalNumber(value, "wallMs", name);
+  const tokens = optionalSafeInteger(value, "tokens", name);
+  const wallMs = optionalSafeInteger(value, "wallMs", name);
   return {
     ...(costUsd === undefined ? {} : { costUsd }),
     ...(tokens === undefined ? {} : { tokens }),
@@ -310,10 +341,10 @@ function parseRunUsage(value: unknown): RunUsage {
     throw new TypeError(`${name} must be an object`);
   }
 
-  const inputTokens = optionalNumber(value, "inputTokens", name);
-  const outputTokens = optionalNumber(value, "outputTokens", name);
-  const cacheReadTokens = optionalNumber(value, "cacheReadTokens", name);
-  const cacheCreationTokens = optionalNumber(
+  const inputTokens = optionalSafeInteger(value, "inputTokens", name);
+  const outputTokens = optionalSafeInteger(value, "outputTokens", name);
+  const cacheReadTokens = optionalSafeInteger(value, "cacheReadTokens", name);
+  const cacheCreationTokens = optionalSafeInteger(
     value,
     "cacheCreationTokens",
     name,
