@@ -59,6 +59,86 @@ describe("Event parsing", () => {
       /capturedAt must be a string/,
     );
   });
+
+  test("accepts an integral payload number at the safe bound", () => {
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        payload: { value: Number.MAX_SAFE_INTEGER },
+      }),
+    );
+  });
+
+  test("rejects a top-level integral payload number beyond the safe bound", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          payload: Number.MAX_SAFE_INTEGER + 1,
+        }),
+      /^TypeError: payload is an integral number whose magnitude exceeds the safe integer bound/,
+    );
+  });
+
+  test("rejects an out-of-range integral number at a nested path", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          payload: { nested: { big: 1e21 } },
+        }),
+      /^TypeError: payload\.nested\.big is an integral number/,
+    );
+  });
+
+  test("rejects an out-of-range integral number inside an array of objects", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          payload: { items: [{ ok: true }, { total: 1e21 }] },
+        }),
+      /^TypeError: payload\.items\[1\]\.total is an integral number/,
+    );
+  });
+
+  test("does not bound non-integral payload numbers", () => {
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        payload: { value: 0.1 },
+      }),
+    );
+  });
+
+  test("rejects 1e21, matching the ruling example in the review", () => {
+    // 1e21 is integral-valued (its fractional part is exactly zero) and its
+    // magnitude exceeds the bound, so it is rejected. JSON.parse has already
+    // collapsed any too-large literal before parseEvent sees it, so only
+    // magnitude can be tested here — that is sufficient, because the bound
+    // is on magnitude.
+    assert.throws(
+      () => parseEvent({ ...completeEvent(), payload: { value: 1e21 } }),
+      /is an integral number whose magnitude exceeds the safe integer bound/,
+    );
+  });
+
+  test("rejects extremely large integral floats regardless of magnitude", () => {
+    // Number.MAX_VALUE (1.7976931348623157e308) is, like every JS number at
+    // or beyond 2^52 in magnitude, integral by construction — IEEE 754
+    // leaves no mantissa bits for a fractional part at that scale, so
+    // Number.isInteger(Number.MAX_VALUE) is true. It is therefore not exempt
+    // from the bound; exempting it would itself be the kind of special case
+    // the ruling in issue #9 rules out for 1e21.
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          payload: { value: Number.MAX_VALUE },
+        }),
+      /is an integral number whose magnitude exceeds the safe integer bound/,
+    );
+  });
 });
 
 describe("stamp", () => {
@@ -123,6 +203,63 @@ test("the compact serialiser emits no presentation whitespace", () => {
     serialiseEvent(completeEvent()),
     '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"ok":true}}',
   );
+});
+
+describe("serialiseEvent payload key sorting", () => {
+  test("sorts scrambled payload keys by UTF-8 bytes", () => {
+    const event: Event = {
+      ...completeEvent(),
+      payload: { zebra: 1, mango: 2, apple: 3 },
+    };
+
+    assert.equal(
+      serialiseEvent(event),
+      '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"apple":3,"mango":2,"zebra":1}}',
+    );
+  });
+
+  test("sorts nested objects and objects inside arrays, leaving array order alone", () => {
+    const event: Event = {
+      ...completeEvent(),
+      payload: {
+        nested: { zebra: 1, apple: 2 },
+        list: [
+          { zebra: 1, apple: 2 },
+          { mango: 3 },
+        ],
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(event),
+      '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"list":[{"apple":2,"zebra":1},{"mango":3}],"nested":{"apple":2,"zebra":1}}}',
+    );
+  });
+
+  test("sorts by UTF-8 bytes, not by default UTF-16 string comparison", () => {
+    // U+FFFF (a Basic Multilingual Plane character) encodes to UTF-8 bytes
+    // EF BF BF, while U+10000 (the first astral-plane character, a surrogate
+    // pair in UTF-16) encodes to F0 90 80 80. Because 0xEF < 0xF0, UTF-8 byte
+    // order places U+FFFF first. Default JS string comparison (`<`), which
+    // compares UTF-16 code units, disagrees: U+10000's leading surrogate is
+    // 0xD800, which is less than U+FFFF's single code unit 0xFFFF, so naive
+    // `<` would place U+10000 first instead — the exact divergence from
+    // Rust's byte-wise `String` ordering this sort exists to avoid.
+    const bmpKey = String.fromCodePoint(0xffff);
+    const astralKey = String.fromCodePoint(0x10000);
+    assert.ok(astralKey < bmpKey, "sanity check: UTF-16 order disagrees with UTF-8 byte order");
+
+    const event: Event = {
+      ...completeEvent(),
+      payload: { [astralKey]: 1, [bmpKey]: 2 },
+    };
+
+    const expectedPayload = `{${JSON.stringify(bmpKey)}:2,${JSON.stringify(astralKey)}:1}`;
+    assert.equal(
+      serialiseEvent(event),
+      `{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":${expectedPayload}}`,
+    );
+  });
 });
 
 describe("InMemorySink", () => {

@@ -89,6 +89,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The largest magnitude at which an integral number round-trips exactly
+ * between this SDK and the Rust SDK (2^53 − 1). Shared by `Event.seq`
+ * validation and payload-number validation (issue #9): both reject an
+ * out-of-range integral value at parse time rather than rounding it.
+ */
+const MAX_SAFE_INTEGER_MAGNITUDE = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Recursively validates that every integral-valued number in `value` is
+ * within the safe-integer magnitude bound, naming the offending path (for
+ * example `payload.nested.count` or `payload.items[2].total`) when the check
+ * fails. Non-integral numbers are never bounded, no matter how large their
+ * magnitude. Mirrors the `Event.seq` check above and reuses the same bound
+ * (issue #9): a value that needs more precision must be carried as a string
+ * instead of a number.
+ *
+ * `JSON.parse` has already collapsed any literal too large to represent
+ * exactly before this function ever sees it, so only magnitude can be
+ * tested here; that is sufficient, because the bound is on magnitude.
+ */
+function validatePayloadNumbers(value: unknown, path: string): void {
+  if (typeof value === "number") {
+    if (Number.isInteger(value) && Math.abs(value) > MAX_SAFE_INTEGER_MAGNITUDE) {
+      throw new TypeError(
+        `${path} is an integral number whose magnitude exceeds the safe integer bound of ${MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string`,
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      validatePayloadNumbers(item, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (isRecord(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      validatePayloadNumbers(child, `${path}.${key}`);
+    }
+  }
+}
+
+/**
+ * Recursively sorts an object's own keys by UTF-8 byte order, leaving array
+ * order untouched (though objects nested inside an array are themselves
+ * sorted). Sorts by UTF-8 bytes via `Buffer.compare`, deliberately not by
+ * default JavaScript string comparison: `<` on strings compares UTF-16 code
+ * units, which diverges from Rust's byte-wise `String` ordering for
+ * characters outside the Basic Multilingual Plane.
+ */
+function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortObjectKeysByUtf8Bytes);
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) =>
+          Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+        )
+        .map(([key, child]) => [key, sortObjectKeysByUtf8Bytes(child)]),
+    );
+  }
+  return value;
+}
+
 /** Parse a decoded JSON value as an Event, rejecting envelope drift. */
 export function parseEvent(value: unknown): Event {
   if (!isRecord(value)) {
@@ -130,6 +197,7 @@ export function parseEvent(value: unknown): Event {
   if (value.payload === undefined) {
     throw new TypeError("Event.payload must be a JSON value");
   }
+  validatePayloadNumbers(value.payload, "payload");
   if (
     Object.hasOwn(value, "capturedAt") &&
     typeof value.capturedAt !== "string"
@@ -151,14 +219,20 @@ export function parseEvent(value: unknown): Event {
 }
 
 /**
- * Serialise an Event as compact JSON, with no presentation whitespace.
- *
- * Key ordering is intentionally not part of this contract: JSON objects are
- * unordered. The conformance harness compares recursively key-sorted forms
- * after exercising this function instead of comparing incidental object order.
+ * Serialise an Event in its canonical compact form: no presentation
+ * whitespace, envelope keys in the order this SDK always constructs an Event
+ * (`v`, `type`, `runId`, `seq`, `ts`, `payload`, `capturedAt`), and payload
+ * object keys sorted recursively by UTF-8 byte order (array order is left
+ * alone, but objects nested inside an array are themselves sorted). Both SDKs
+ * commit to emitting exactly these bytes for the same event, so the
+ * conformance harness diffs producer output directly rather than normalising
+ * it first.
  */
 export function serialiseEvent(event: Event): string {
-  return JSON.stringify(event);
+  return JSON.stringify({
+    ...event,
+    payload: sortObjectKeysByUtf8Bytes(event.payload),
+  });
 }
 
 export type Clock = () => string;

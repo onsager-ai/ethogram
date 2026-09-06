@@ -4,28 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ethogram::{EVENT_SCHEMA_VERSION, parse_event, serialise_event};
-use serde_json::{Map, Value, json};
-
-fn recursively_sort_object_keys(value: Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(
-            values
-                .into_iter()
-                .map(recursively_sort_object_keys)
-                .collect(),
-        ),
-        Value::Object(values) => {
-            let mut entries: Vec<_> = values.into_iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-            let sorted = entries
-                .into_iter()
-                .map(|(key, child)| (key, recursively_sort_object_keys(child)))
-                .collect::<Map<_, _>>();
-            Value::Object(sorted)
-        }
-        primitive => primitive,
-    }
-}
+use serde_json::json;
 
 fn fixture_paths(corpus_directory: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut fixtures = fs::read_dir(corpus_directory)?
@@ -49,12 +28,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let source = fs::read_to_string(fixture)?;
         let event = parse_event(&source)?;
         let compact = serialise_event(&event)?;
-        let canonical = recursively_sort_object_keys(serde_json::from_str(&compact)?);
         let output_name = fixture.file_name().ok_or("fixture path has no file name")?;
-        fs::write(
-            output_directory.join(output_name),
-            serde_json::to_string(&canonical)?,
-        )?;
+        fs::write(output_directory.join(output_name), compact)?;
     }
 
     fs::write(
