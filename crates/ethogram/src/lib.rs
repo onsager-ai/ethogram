@@ -7,6 +7,39 @@ use serde_json::Value;
 
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
+/// Maximum number of Unicode scalar values carried by an `agent.text`.
+pub const MAX_TEXT_SCALARS: usize = 16_384;
+
+/// Maximum number of Unicode scalar values carried by a tool excerpt.
+pub const MAX_EXCERPT_SCALARS: usize = 4_096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Excerpt {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Keeps at most `max` Unicode scalar values from `text`, cutting on a code
+/// point boundary. This deliberately does not attempt grapheme-cluster
+/// segmentation.
+///
+/// Unlike the TypeScript SDK's `excerpt()`, this never needs to replace a
+/// lone surrogate with `U+FFFD` (issue #6): a Rust `&str` is guaranteed
+/// well-formed UTF-8 and so cannot hold an unpaired surrogate code unit in
+/// the first place — there is nothing here for that rule to act on. The
+/// asymmetry exists because a lone surrogate is representable in a
+/// JavaScript string (which is UTF-16 and does not enforce well-formedness)
+/// and not in Rust's `String`; leaving it intact on the TypeScript side would
+/// let a producer build an `agent.text` or excerpt that one SDK can hold and
+/// the other cannot even parse.
+#[must_use]
+pub fn excerpt(text: &str, max: usize) -> Excerpt {
+    Excerpt {
+        text: text.chars().take(max).collect(),
+        truncated: text.chars().count() > max,
+    }
+}
+
 /// The largest magnitude at which an integral number round-trips exactly
 /// between this SDK and the TypeScript SDK (2^53 − 1, `Number.MAX_SAFE_INTEGER`
 /// in JavaScript). Shared by `Event.seq` validation and payload-number
@@ -207,13 +240,216 @@ pub struct RunFinishedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
-    pub duration_ms: f64,
+    #[serde(deserialize_with = "deserialize_safe_u64")]
+    pub duration_ms: u64,
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub estimated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStartedPayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pid: Option<u64>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTextPayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    pub text: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolUsePayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    pub tool: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub input_excerpt: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_use_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolResultPayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    pub tool: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_error: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub result_excerpt: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_use_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCompletedPayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turns: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cost_usd: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub usage: Option<RunUsage>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub duration_ms: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub estimated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWarningPayload {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stage: Option<String>,
+    pub message: String,
     #[serde(flatten)]
     pub extra: PayloadExtension,
 }
@@ -274,18 +510,17 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
 
 /// Parses the open event envelope and validates payloads for event types this
 /// SDK knows. Unknown event types deliberately retain the open `Value` payload:
-/// both SDKs validate the two `run.*` vocabulary members here without turning
-/// the envelope parser into a closed event-type registry.
+/// both SDKs validate their recognised `run.*` and `agent.*` vocabulary members
+/// here without turning the envelope parser into a closed event-type registry.
 ///
 /// A payload's *unknown fields* are a separate axis from its *unknown type*
-/// and are tolerated rather than rejected (issue #12): `RunStartedPayload`
-/// and `RunFinishedPayload` no longer carry `deny_unknown_fields`, so a field
-/// this SDK does not recognise does not fail validation here, and their
-/// `#[serde(flatten)]` extension field means a caller who deserialises
-/// directly into one of those typed structs (bypassing this function's
-/// `Value` payload) still gets it back on re-serialisation rather than
-/// silently losing it. Only the envelope stays closed to unknown fields, via
-/// the `deny_unknown_fields` still present on `Event` and `EventDraft` below.
+/// and are tolerated rather than rejected (issue #12): recognised payloads do
+/// not carry `deny_unknown_fields`, so an unfamiliar field does not fail
+/// validation here, and each payload's `#[serde(flatten)]` extension field
+/// means a caller who deserialises directly into a typed struct (bypassing this
+/// function's `Value` payload) still gets it back on re-serialisation rather
+/// than silently losing it. Only the envelope stays closed to unknown fields,
+/// via the `deny_unknown_fields` still present on `Event` and `EventDraft`.
 pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     let event: Event = serde_json::from_str(input)?;
     validate_payload_numbers(&event.payload, "payload").map_err(de::Error::custom)?;
@@ -297,6 +532,18 @@ fn validate_known_payload(event_type: &str, payload: &Value) -> serde_json::Resu
     match event_type {
         "run.started" => serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop),
         "run.finished" => serde_json::from_value::<RunFinishedPayload>(payload.clone()).map(drop),
+        "agent.started" => serde_json::from_value::<AgentStartedPayload>(payload.clone()).map(drop),
+        "agent.text" => serde_json::from_value::<AgentTextPayload>(payload.clone()).map(drop),
+        "agent.tool_use" => {
+            serde_json::from_value::<AgentToolUsePayload>(payload.clone()).map(drop)
+        }
+        "agent.tool_result" => {
+            serde_json::from_value::<AgentToolResultPayload>(payload.clone()).map(drop)
+        }
+        "agent.completed" => {
+            serde_json::from_value::<AgentCompletedPayload>(payload.clone()).map(drop)
+        }
+        "agent.warning" => serde_json::from_value::<AgentWarningPayload>(payload.clone()).map(drop),
         _ => Ok(()),
     }
 }
@@ -641,9 +888,14 @@ where
 /// deserialises straight into a typed payload struct, for example
 /// `serde_json::from_str::<Event<RunFinishedPayload>>(...)`, never goes
 /// through `parse_event` and so never runs that check. `RunCeilings.tokens`,
-/// `RunCeilings.wall_ms`, and `RunUsage`'s four token-count fields are the
-/// known integral fields on that typed path, so each one is bounded here
-/// individually via `deserialize_optional_safe_u64` below.
+/// `RunCeilings.wall_ms`, `RunUsage`'s four token-count fields, and agent
+/// `pid` and `turns` are the known *optional* integral fields on that typed
+/// path and are bounded here individually via `deserialize_optional_safe_u64`
+/// below. `RunFinishedPayload.duration_ms` and `AgentCompletedPayload.duration_ms`
+/// are both durations in milliseconds, per the ruling that every count of
+/// milliseconds is a `u64`; the former is required rather than optional, so
+/// it applies this function directly instead of going through the optional
+/// wrapper.
 fn deserialize_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -756,6 +1008,16 @@ mod tests {
     const RUN_STARTED_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-child","seq":1,"ts":"2026-09-06T10:45:01.000Z","payload":{"actor":"builder","ceilings":{"costUsd":2.5,"tokens":4000,"wallMs":60000},"harness":"codex","kind":"subagent","model":"gpt-5","parentRunId":"run-parent","parentToolUseId":"tool-7","repository":"onsager-ai/ethogram","schedule":"builder@2026-09-06T10:45Z","workOrder":"order-5"},"capturedAt":"2026-09-06T10:45:00.000Z"}"#;
 
     const RUN_FINISHED_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
+
+    // Cross-SDK byte identity for all six agent payloads. These exact
+    // literals are pasted into the TypeScript suite and asserted there
+    // against events built from TypeScript's correlated payload union.
+    const AGENT_STARTED_WIRE: &str = r#"{"v":1,"type":"agent.started","runId":"run-agent","seq":1,"ts":"2026-09-07T01:00:01.000Z","payload":{"model":"gpt-5","pid":4242,"sessionId":"session-local-7","stage":"open-ended-stage"}}"#;
+    const AGENT_TEXT_WIRE: &str = r#"{"v":1,"type":"agent.text","runId":"run-agent","seq":2,"ts":"2026-09-07T01:00:02.000Z","payload":{"parentToolUseId":"parent-tool-1","stage":"narrate","text":"A😀漢","truncated":false}}"#;
+    const AGENT_TOOL_USE_WIRE: &str = r#"{"v":1,"type":"agent.tool_use","runId":"run-agent","seq":3,"ts":"2026-09-07T01:00:03.000Z","payload":{"inputExcerpt":"{\"path\":\"README.md\"}","parentToolUseId":"parent-tool-1","stage":"act","tool":"read_file","toolUseId":"tool-7","truncated":false}}"#;
+    const AGENT_TOOL_RESULT_WIRE: &str = r#"{"v":1,"type":"agent.tool_result","runId":"run-agent","seq":4,"ts":"2026-09-07T01:00:04.000Z","payload":{"isError":false,"parentToolUseId":"parent-tool-1","resultExcerpt":"placeholder result","stage":"act","tool":"read_file","toolUseId":"tool-7","truncated":false}}"#;
+    const AGENT_COMPLETED_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":5,"ts":"2026-09-07T01:00:05.000Z","payload":{"costUsd":1.25,"durationMs":2500,"estimated":true,"model":"gpt-5","stage":"finish","turns":3,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
+    const AGENT_WARNING_WIRE: &str = r#"{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}"#;
 
     fn complete_event() -> Event {
         Event {
@@ -882,6 +1144,252 @@ mod tests {
     }
 
     #[test]
+    fn accepts_an_open_stage_string_on_every_agent_event() {
+        let cases = [
+            (
+                "agent.started",
+                json!({ "stage": "consumer-specific/stage" }),
+            ),
+            (
+                "agent.text",
+                json!({ "stage": "consumer-specific/stage", "text": "text" }),
+            ),
+            (
+                "agent.tool_use",
+                json!({ "stage": "consumer-specific/stage", "tool": "read" }),
+            ),
+            (
+                "agent.tool_result",
+                json!({ "stage": "consumer-specific/stage", "tool": "read" }),
+            ),
+            (
+                "agent.completed",
+                json!({ "stage": "consumer-specific/stage" }),
+            ),
+            (
+                "agent.warning",
+                json!({ "stage": "consumer-specific/stage", "message": "warning" }),
+            ),
+        ];
+
+        for (event_type, payload) in cases {
+            assert!(parse_event(&lifecycle_event_input(event_type, payload)).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_agent_payload_field() {
+        for (event_type, field) in [
+            ("agent.text", "text"),
+            ("agent.tool_use", "tool"),
+            ("agent.tool_result", "tool"),
+            ("agent.warning", "message"),
+        ] {
+            let error = parse_event(&lifecycle_event_input(event_type, json!({}))).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {event_type}.{field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_string_required_agent_payload_fields() {
+        for (event_type, field) in [
+            ("agent.text", "text"),
+            ("agent.tool_use", "tool"),
+            ("agent.tool_result", "tool"),
+            ("agent.warning", "message"),
+        ] {
+            let error =
+                parse_event(&lifecycle_event_input(event_type, json!({ (field): 7 }))).unwrap_err();
+            assert!(
+                error.to_string().contains("expected a string"),
+                "error for {event_type}.{field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_agent_counts_reject_invalid_values_and_accept_the_safe_bound() {
+        for invalid in ["-1", "1.5", "9007199254740992"] {
+            let started = format!(r#"{{"pid":{invalid}}}"#);
+            assert!(serde_json::from_str::<AgentStartedPayload>(&started).is_err());
+
+            for field in ["turns", "durationMs"] {
+                let completed = format!(r#"{{"{field}":{invalid}}}"#);
+                assert!(serde_json::from_str::<AgentCompletedPayload>(&completed).is_err());
+            }
+        }
+
+        let safe = MAX_SAFE_INTEGER_MAGNITUDE;
+        assert!(
+            serde_json::from_str::<AgentStartedPayload>(&format!(r#"{{"pid":{safe}}}"#)).is_ok()
+        );
+        assert!(
+            serde_json::from_str::<AgentCompletedPayload>(&format!(
+                r#"{{"turns":{safe},"durationMs":{safe}}}"#
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn every_agent_payload_retains_unknown_fields() {
+        let started: AgentStartedPayload = serde_json::from_value(json!({
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+        let text: AgentTextPayload = serde_json::from_value(json!({
+            "text": "text",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+        let tool_use: AgentToolUsePayload = serde_json::from_value(json!({
+            "tool": "read",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+        let tool_result: AgentToolResultPayload = serde_json::from_value(json!({
+            "tool": "read",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+        let completed: AgentCompletedPayload = serde_json::from_value(json!({
+            "future": { "value": 1 },
+            "usage": { "inputTokens": 2, "futureUsage": "retained" }
+        }))
+        .unwrap();
+        let warning: AgentWarningPayload = serde_json::from_value(json!({
+            "message": "warning",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+
+        for extra in [
+            &started.extra,
+            &text.extra,
+            &tool_use.extra,
+            &tool_result.extra,
+            &completed.extra,
+            &warning.extra,
+        ] {
+            assert_eq!(extra.get("future"), Some(&json!({ "value": 1 })));
+        }
+        for re_emitted in [
+            serde_json::to_value(&started).unwrap(),
+            serde_json::to_value(&text).unwrap(),
+            serde_json::to_value(&tool_use).unwrap(),
+            serde_json::to_value(&tool_result).unwrap(),
+            serde_json::to_value(&completed).unwrap(),
+            serde_json::to_value(&warning).unwrap(),
+        ] {
+            assert_eq!(re_emitted["future"], json!({ "value": 1 }));
+        }
+        assert_eq!(
+            completed.usage.as_ref().unwrap().extra.get("futureUsage"),
+            Some(&json!("retained"))
+        );
+    }
+
+    #[test]
+    fn excerpt_handles_ascii_below_at_and_one_scalar_over_the_bound() {
+        assert_eq!(
+            excerpt("abc", 4),
+            Excerpt {
+                text: "abc".to_owned(),
+                truncated: false
+            }
+        );
+        assert_eq!(
+            excerpt("abcd", 4),
+            Excerpt {
+                text: "abcd".to_owned(),
+                truncated: false
+            }
+        );
+        assert_eq!(
+            excerpt("abcde", 4),
+            Excerpt {
+                text: "abcd".to_owned(),
+                truncated: true
+            }
+        );
+    }
+
+    #[test]
+    fn excerpt_counts_astral_plane_characters_as_single_scalars() {
+        assert_eq!(MAX_TEXT_SCALARS, 16_384);
+        assert_eq!(MAX_EXCERPT_SCALARS, 4_096);
+        let input = "😀".repeat(MAX_EXCERPT_SCALARS + 1);
+        let result = excerpt(&input, MAX_EXCERPT_SCALARS);
+
+        assert_eq!(
+            result,
+            Excerpt {
+                text: "😀".repeat(MAX_EXCERPT_SCALARS),
+                truncated: true
+            }
+        );
+        assert_eq!(result.text.chars().count(), MAX_EXCERPT_SCALARS);
+        assert_eq!(result.text.len(), MAX_EXCERPT_SCALARS * 4);
+    }
+
+    #[test]
+    fn excerpt_counts_three_byte_utf8_characters_as_scalars_not_bytes() {
+        let input = "漢".repeat(MAX_EXCERPT_SCALARS + 1);
+        let result = excerpt(&input, MAX_EXCERPT_SCALARS);
+
+        assert_eq!(
+            result,
+            Excerpt {
+                text: "漢".repeat(MAX_EXCERPT_SCALARS),
+                truncated: true
+            }
+        );
+        assert_eq!(result.text.chars().count(), MAX_EXCERPT_SCALARS);
+        assert_eq!(result.text.len(), MAX_EXCERPT_SCALARS * 3);
+    }
+
+    #[test]
+    fn excerpt_matches_the_typescript_mixed_scalar_expectation() {
+        assert_eq!(
+            excerpt("A😀漢B", 3),
+            Excerpt {
+                text: "A😀漢".to_owned(),
+                truncated: true
+            }
+        );
+    }
+
+    #[test]
+    fn over_bound_astral_agent_text_round_trips_through_rust() {
+        let bounded = excerpt(&"😀".repeat(MAX_TEXT_SCALARS + 1), MAX_TEXT_SCALARS);
+        let event = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.text".to_owned(),
+            run_id: "run-excerpt".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T02:00:00.000Z".to_owned(),
+            payload: AgentTextPayload {
+                stage: None,
+                text: bounded.text,
+                truncated: Some(bounded.truncated),
+                parent_tool_use_id: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        let wire = serialise_event(&event).unwrap();
+        let parsed = parse_event(&wire).unwrap();
+        let parsed_payload: AgentTextPayload = serde_json::from_value(parsed.payload).unwrap();
+        assert_eq!(parsed_payload.text.chars().count(), MAX_TEXT_SCALARS);
+        assert_eq!(parsed_payload.text, "😀".repeat(MAX_TEXT_SCALARS));
+        assert_eq!(parsed_payload.truncated, Some(true));
+    }
+
+    #[test]
     fn run_lifecycle_events_match_the_typescript_pinned_bytes() {
         // Both payload structs deliberately declare fields in protocol-table
         // order rather than alphabetically. These assertions therefore also
@@ -931,7 +1439,7 @@ mod tests {
                     unit: Some("weighted-tokens".to_owned()),
                     extra: PayloadExtension::new(),
                 }),
-                duration_ms: 1250.0,
+                duration_ms: 1250,
                 estimated: Some(true),
                 extra: PayloadExtension::new(),
             },
@@ -943,6 +1451,147 @@ mod tests {
         assert!(RUN_FINISHED_WIRE.contains(
             r#""usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}"#
         ));
+    }
+
+    #[test]
+    fn agent_events_match_the_typescript_pinned_bytes() {
+        let started = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.started".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T01:00:01.000Z".to_owned(),
+            payload: AgentStartedPayload {
+                stage: Some("open-ended-stage".to_owned()),
+                model: Some("gpt-5".to_owned()),
+                session_id: Some("session-local-7".to_owned()),
+                pid: Some(4242),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let text = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.text".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T01:00:02.000Z".to_owned(),
+            payload: AgentTextPayload {
+                stage: Some("narrate".to_owned()),
+                text: "A😀漢".to_owned(),
+                truncated: Some(false),
+                parent_tool_use_id: Some("parent-tool-1".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let tool_use = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.tool_use".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 3,
+            ts: "2026-09-07T01:00:03.000Z".to_owned(),
+            payload: AgentToolUsePayload {
+                stage: Some("act".to_owned()),
+                tool: "read_file".to_owned(),
+                input_excerpt: Some(r#"{"path":"README.md"}"#.to_owned()),
+                truncated: Some(false),
+                tool_use_id: Some("tool-7".to_owned()),
+                parent_tool_use_id: Some("parent-tool-1".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let tool_result = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.tool_result".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 4,
+            ts: "2026-09-07T01:00:04.000Z".to_owned(),
+            payload: AgentToolResultPayload {
+                stage: Some("act".to_owned()),
+                tool: "read_file".to_owned(),
+                is_error: Some(false),
+                result_excerpt: Some("placeholder result".to_owned()),
+                truncated: Some(false),
+                tool_use_id: Some("tool-7".to_owned()),
+                parent_tool_use_id: Some("parent-tool-1".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let completed = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.completed".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 5,
+            ts: "2026-09-07T01:00:05.000Z".to_owned(),
+            payload: AgentCompletedPayload {
+                stage: Some("finish".to_owned()),
+                turns: Some(3),
+                cost_usd: Some(1.25),
+                model: Some("gpt-5".to_owned()),
+                usage: Some(RunUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(40),
+                    cache_read_tokens: Some(20),
+                    cache_creation_tokens: Some(30),
+                    unit: Some("weighted-tokens".to_owned()),
+                    extra: PayloadExtension::new(),
+                }),
+                duration_ms: Some(2500),
+                estimated: Some(true),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let warning = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.warning".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 6,
+            ts: "2026-09-07T01:00:06.000Z".to_owned(),
+            payload: AgentWarningPayload {
+                stage: Some("observe".to_owned()),
+                message: "placeholder warning".to_owned(),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(serialise_event(&started).unwrap(), AGENT_STARTED_WIRE);
+        assert_eq!(serialise_event(&text).unwrap(), AGENT_TEXT_WIRE);
+        assert_eq!(serialise_event(&tool_use).unwrap(), AGENT_TOOL_USE_WIRE);
+        assert_eq!(
+            serialise_event(&tool_result).unwrap(),
+            AGENT_TOOL_RESULT_WIRE
+        );
+        assert_eq!(serialise_event(&completed).unwrap(), AGENT_COMPLETED_WIRE);
+        assert_eq!(serialise_event(&warning).unwrap(), AGENT_WARNING_WIRE);
+    }
+
+    #[test]
+    fn absent_optional_agent_payload_fields_are_omitted_instead_of_null() {
+        let started = AgentStartedPayload {
+            stage: None,
+            model: None,
+            session_id: None,
+            pid: None,
+            extra: PayloadExtension::new(),
+        };
+        let completed = AgentCompletedPayload {
+            stage: None,
+            turns: None,
+            cost_usd: None,
+            model: None,
+            usage: None,
+            duration_ms: None,
+            estimated: None,
+            extra: PayloadExtension::new(),
+        };
+
+        assert_eq!(serde_json::to_string(&started).unwrap(), "{}");
+        assert_eq!(serde_json::to_string(&completed).unwrap(), "{}");
     }
 
     #[test]
@@ -980,7 +1629,7 @@ mod tests {
                 truncated: None,
                 cost_usd: None,
                 usage: None,
-                duration_ms: 1000.0,
+                duration_ms: 1000,
                 estimated: None,
                 extra: PayloadExtension::new(),
             },
@@ -1586,6 +2235,42 @@ mod tests {
     #[test]
     fn rejects_a_negative_ceilings_count() {
         assert!(serde_json::from_str::<RunCeilings>(r#"{"wallMs":-5}"#).is_err());
+    }
+
+    // -- run.finished durationMs is a required u64 (follow-up to issue #6) --
+
+    #[test]
+    fn rejects_a_non_integer_run_finished_duration() {
+        // `u64` deserialization rejects a non-integral value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(
+            serde_json::from_str::<RunFinishedPayload>(
+                r#"{"outcome":"completed","durationMs":1250.5}"#
+            )
+            .is_err()
+        );
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "completed", "durationMs": 1250.5 }),
+        );
+        assert!(parse_event(&input).is_err());
+    }
+
+    #[test]
+    fn rejects_a_negative_run_finished_duration() {
+        // `u64` deserialization rejects a negative value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(
+            serde_json::from_str::<RunFinishedPayload>(
+                r#"{"outcome":"completed","durationMs":-5}"#
+            )
+            .is_err()
+        );
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "completed", "durationMs": -5 }),
+        );
+        assert!(parse_event(&input).is_err());
     }
 
     /// The typed-struct-path bound check the follow-up brief calls for:

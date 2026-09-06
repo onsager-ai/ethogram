@@ -1,5 +1,68 @@
 export const EVENT_SCHEMA_VERSION = 1 as const;
 
+/** Maximum number of Unicode scalar values carried by an `agent.text`. */
+export const MAX_TEXT_SCALARS = 16_384 as const;
+
+/** Maximum number of Unicode scalar values carried by a tool excerpt. */
+export const MAX_EXCERPT_SCALARS = 4_096 as const;
+
+export interface Excerpt {
+  text: string;
+  truncated: boolean;
+}
+
+/**
+ * Keep at most `max` Unicode scalar values from `text`. JavaScript's string
+ * iterator advances by code point rather than UTF-16 code unit, so an astral
+ * character is retained whole instead of being cut into a lone surrogate.
+ * This deliberately does not attempt grapheme-cluster segmentation.
+ *
+ * A JavaScript string can also already contain a *lone* (unpaired) surrogate
+ * — a code unit in `U+D800`-`U+DFFF` with no matching partner — because
+ * JavaScript strings are UTF-16 and do not enforce well-formedness the way a
+ * Rust `String` does. Rust's `excerpt()` needs no equivalent handling: a
+ * `&str` is guaranteed well-formed UTF-8 and cannot hold an unpaired
+ * surrogate in the first place. Left intact here, such a code unit would
+ * serialise to JSON that `JSON.parse` round-trips but `serde_json` rejects,
+ * so the two SDKs could not agree on the resulting event. Per the ruling on
+ * issue #6, every lone surrogate this function encounters is therefore
+ * replaced with `U+FFFD` (the replacement character), whether or not the
+ * text ends up truncated; this is silent by design and does not affect
+ * `truncated`, which continues to mean only that the bound was hit. A valid
+ * surrogate *pair* — how every astral character such as `😀` is encoded — is
+ * left completely alone: replacement is one code point in, one code point
+ * out, so it never changes how many scalar values the bound counts.
+ */
+export function excerpt(text: string, max: number): Excerpt {
+  const kept: string[] = [];
+  for (const scalar of text) {
+    if (kept.length >= max) {
+      return { text: kept.join(""), truncated: true };
+    }
+    kept.push(isLoneSurrogateScalar(scalar) ? REPLACEMENT_CHARACTER : scalar);
+  }
+  return { text: kept.join(""), truncated: false };
+}
+
+/** The Unicode replacement character, `U+FFFD`. */
+const REPLACEMENT_CHARACTER = "\uFFFD";
+
+/**
+ * True when `scalar` — one item yielded by iterating a string by code point
+ * — is a lone (unpaired) surrogate rather than a BMP character or a valid
+ * surrogate pair. The string iteration protocol only ever combines a high
+ * surrogate with an immediately following low surrogate into a single
+ * two-code-unit item; any surrogate that could not be paired comes through
+ * as its own one-code-unit item, which is exactly what this checks for.
+ */
+function isLoneSurrogateScalar(scalar: string): boolean {
+  if (scalar.length !== 1) {
+    return false;
+  }
+  const unit = scalar.charCodeAt(0);
+  return unit >= 0xd800 && unit <= 0xdfff;
+}
+
 export const RUN_KINDS = [
   "loop",
   "handoff",
@@ -59,6 +122,54 @@ export interface RunFinishedPayload {
   estimated?: boolean;
 }
 
+export interface AgentStartedPayload {
+  stage?: string;
+  model?: string;
+  sessionId?: string;
+  pid?: number;
+}
+
+export interface AgentTextPayload {
+  stage?: string;
+  text: string;
+  truncated?: boolean;
+  parentToolUseId?: string;
+}
+
+export interface AgentToolUsePayload {
+  stage?: string;
+  tool: string;
+  inputExcerpt?: string;
+  truncated?: boolean;
+  toolUseId?: string;
+  parentToolUseId?: string;
+}
+
+export interface AgentToolResultPayload {
+  stage?: string;
+  tool: string;
+  isError?: boolean;
+  resultExcerpt?: string;
+  truncated?: boolean;
+  toolUseId?: string;
+  parentToolUseId?: string;
+}
+
+export interface AgentCompletedPayload {
+  stage?: string;
+  turns?: number;
+  costUsd?: number;
+  model?: string;
+  usage?: RunUsage;
+  durationMs?: number;
+  estimated?: boolean;
+}
+
+export interface AgentWarningPayload {
+  stage?: string;
+  message: string;
+}
+
 /**
  * The protocol payload map. Supplying it to `EventDraft` or `Event` produces a
  * correlated discriminated union; their unparameterised forms deliberately
@@ -67,6 +178,12 @@ export interface RunFinishedPayload {
 export interface EventPayloadMap {
   "run.started": RunStartedPayload;
   "run.finished": RunFinishedPayload;
+  "agent.started": AgentStartedPayload;
+  "agent.text": AgentTextPayload;
+  "agent.tool_use": AgentToolUsePayload;
+  "agent.tool_result": AgentToolResultPayload;
+  "agent.completed": AgentCompletedPayload;
+  "agent.warning": AgentWarningPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -190,6 +307,51 @@ const RUN_USAGE_FIELDS = new Set<string>([
   "unit",
 ]);
 
+const AGENT_STARTED_FIELDS = new Set<string>([
+  "stage",
+  "model",
+  "sessionId",
+  "pid",
+]);
+
+const AGENT_TEXT_FIELDS = new Set<string>([
+  "stage",
+  "text",
+  "truncated",
+  "parentToolUseId",
+]);
+
+const AGENT_TOOL_USE_FIELDS = new Set<string>([
+  "stage",
+  "tool",
+  "inputExcerpt",
+  "truncated",
+  "toolUseId",
+  "parentToolUseId",
+]);
+
+const AGENT_TOOL_RESULT_FIELDS = new Set<string>([
+  "stage",
+  "tool",
+  "isError",
+  "resultExcerpt",
+  "truncated",
+  "toolUseId",
+  "parentToolUseId",
+]);
+
+const AGENT_COMPLETED_FIELDS = new Set<string>([
+  "stage",
+  "turns",
+  "costUsd",
+  "model",
+  "usage",
+  "durationMs",
+  "estimated",
+]);
+
+const AGENT_WARNING_FIELDS = new Set<string>(["stage", "message"]);
+
 /**
  * Returns the entries of `value` whose keys are not in `fields`, to be
  * carried forward as an opaque extension rather than rejected or dropped
@@ -227,21 +389,6 @@ function requiredString(
   return fieldValue;
 }
 
-function requiredNumber(
-  value: Record<string, unknown>,
-  field: string,
-  name: string,
-): number {
-  if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
-  }
-  const fieldValue = value[field];
-  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
-    throw new TypeError(`${name}.${field} must be a finite number`);
-  }
-  return fieldValue;
-}
-
 function optionalString(
   value: Record<string, unknown>,
   field: string,
@@ -274,8 +421,8 @@ function optionalNumber(
 
 /**
  * Parses an optional count field that must be a whole, non-negative number
- * — the six `ceilings`/`usage` token- and time-count fields, all of which
- * are counts and can never be fractional or negative. `Number.isSafeInteger`
+ * — integer-valued `ceilings`, `usage`, and agent fields, all of which are
+ * counts and can never be fractional or negative. `Number.isSafeInteger`
  * rejects a non-integer (`10.5`) and a value outside the ±2^53−1 magnitude
  * this protocol's numbers are bounded to (issue #9) in one check; the sign
  * check on top of that rejects a negative count. Unlike `optionalNumber`,
@@ -299,6 +446,33 @@ function optionalSafeInteger(
     throw new TypeError(
       `${name}.${field} must be a non-negative safe integer when present`,
     );
+  }
+  return fieldValue;
+}
+
+/**
+ * Parses a required count field that must be a whole, non-negative number —
+ * the same rule as `optionalSafeInteger`, but for a field the payload cannot
+ * omit. Every count of milliseconds is a `u64` on the Rust side (ruling on
+ * issue #6): `RunFinishedPayload.durationMs` is the only field on this typed
+ * path that is both a count and required, so this is where that rule is
+ * enforced.
+ */
+function requiredSafeInteger(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (
+    typeof fieldValue !== "number" ||
+    !Number.isSafeInteger(fieldValue) ||
+    fieldValue < 0
+  ) {
+    throw new TypeError(`${name}.${field} must be a non-negative safe integer`);
   }
   return fieldValue;
 }
@@ -335,8 +509,7 @@ function parseRunCeilings(value: unknown): RunCeilings {
   };
 }
 
-function parseRunUsage(value: unknown): RunUsage {
-  const name = "RunFinishedPayload.usage";
+function parseRunUsage(value: unknown, name: string): RunUsage {
   if (!isRecord(value)) {
     throw new TypeError(`${name} must be an object`);
   }
@@ -425,9 +598,9 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   const truncated = optionalBoolean(value, "truncated", name);
   const costUsd = optionalNumber(value, "costUsd", name);
   const usage = Object.hasOwn(value, "usage")
-    ? parseRunUsage(value.usage)
+    ? parseRunUsage(value.usage, `${name}.usage`)
     : undefined;
-  const durationMs = requiredNumber(value, "durationMs", name);
+  const durationMs = requiredSafeInteger(value, "durationMs", name);
   const estimated = optionalBoolean(value, "estimated", name);
 
   return {
@@ -442,12 +615,164 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   };
 }
 
+/** Parse and validate an `agent.started` payload, retaining unknown fields. */
+export function parseAgentStartedPayload(value: unknown): AgentStartedPayload {
+  const name = "AgentStartedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const model = optionalString(value, "model", name);
+  const sessionId = optionalString(value, "sessionId", name);
+  const pid = optionalSafeInteger(value, "pid", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    ...(model === undefined ? {} : { model }),
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(pid === undefined ? {} : { pid }),
+    ...extractUnknownFields(value, AGENT_STARTED_FIELDS),
+  };
+}
+
+/** Parse and validate an `agent.text` payload, retaining unknown fields. */
+export function parseAgentTextPayload(value: unknown): AgentTextPayload {
+  const name = "AgentTextPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const text = requiredString(value, "text", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const parentToolUseId = optionalString(value, "parentToolUseId", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    text,
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...extractUnknownFields(value, AGENT_TEXT_FIELDS),
+  };
+}
+
+/** Parse and validate an `agent.tool_use` payload, retaining unknown fields. */
+export function parseAgentToolUsePayload(value: unknown): AgentToolUsePayload {
+  const name = "AgentToolUsePayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const tool = requiredString(value, "tool", name);
+  const inputExcerpt = optionalString(value, "inputExcerpt", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const toolUseId = optionalString(value, "toolUseId", name);
+  const parentToolUseId = optionalString(value, "parentToolUseId", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    tool,
+    ...(inputExcerpt === undefined ? {} : { inputExcerpt }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(toolUseId === undefined ? {} : { toolUseId }),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...extractUnknownFields(value, AGENT_TOOL_USE_FIELDS),
+  };
+}
+
+/**
+ * Parse and validate an `agent.tool_result` payload, retaining unknown fields.
+ */
+export function parseAgentToolResultPayload(
+  value: unknown,
+): AgentToolResultPayload {
+  const name = "AgentToolResultPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const tool = requiredString(value, "tool", name);
+  const isError = optionalBoolean(value, "isError", name);
+  const resultExcerpt = optionalString(value, "resultExcerpt", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const toolUseId = optionalString(value, "toolUseId", name);
+  const parentToolUseId = optionalString(value, "parentToolUseId", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    tool,
+    ...(isError === undefined ? {} : { isError }),
+    ...(resultExcerpt === undefined ? {} : { resultExcerpt }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(toolUseId === undefined ? {} : { toolUseId }),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...extractUnknownFields(value, AGENT_TOOL_RESULT_FIELDS),
+  };
+}
+
+/** Parse and validate an `agent.completed` payload, retaining unknown fields. */
+export function parseAgentCompletedPayload(
+  value: unknown,
+): AgentCompletedPayload {
+  const name = "AgentCompletedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const turns = optionalSafeInteger(value, "turns", name);
+  const costUsd = optionalNumber(value, "costUsd", name);
+  const model = optionalString(value, "model", name);
+  const usage = Object.hasOwn(value, "usage")
+    ? parseRunUsage(value.usage, `${name}.usage`)
+    : undefined;
+  const durationMs = optionalSafeInteger(value, "durationMs", name);
+  const estimated = optionalBoolean(value, "estimated", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    ...(turns === undefined ? {} : { turns }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(model === undefined ? {} : { model }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    ...(estimated === undefined ? {} : { estimated }),
+    ...extractUnknownFields(value, AGENT_COMPLETED_FIELDS),
+  };
+}
+
+/** Parse and validate an `agent.warning` payload, retaining unknown fields. */
+export function parseAgentWarningPayload(value: unknown): AgentWarningPayload {
+  const name = "AgentWarningPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const stage = optionalString(value, "stage", name);
+  const message = requiredString(value, "message", name);
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    message,
+    ...extractUnknownFields(value, AGENT_WARNING_FIELDS),
+  };
+}
+
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
     case "run.started":
       return parseRunStartedPayload(payload);
     case "run.finished":
       return parseRunFinishedPayload(payload);
+    case "agent.started":
+      return parseAgentStartedPayload(payload);
+    case "agent.text":
+      return parseAgentTextPayload(payload);
+    case "agent.tool_use":
+      return parseAgentToolUsePayload(payload);
+    case "agent.tool_result":
+      return parseAgentToolResultPayload(payload);
+    case "agent.completed":
+      return parseAgentCompletedPayload(payload);
+    case "agent.warning":
+      return parseAgentWarningPayload(payload);
     default:
       return payload;
   }
@@ -523,16 +848,16 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
 /**
  * Parse a decoded JSON value as an Event, rejecting envelope drift and invalid
  * payloads for event types this SDK knows. Unknown event types deliberately
- * retain the open payload behaviour: both SDKs validate the two `run.*`
- * vocabulary members here without turning the envelope parser into a closed
- * event-type registry.
+ * retain the open payload behaviour: both SDKs validate their recognised
+ * `run.*` and `agent.*` vocabulary members here without turning the envelope
+ * parser into a closed event-type registry.
  *
  * A payload's *unknown fields* are a separate axis from its *unknown type*
- * and are tolerated rather than rejected (issue #12): `parseRunStartedPayload`
- * and `parseRunFinishedPayload` no longer reject a field they do not
- * recognise, and they carry it forward into the returned payload object
- * rather than silently dropping it, so `serialiseEvent` re-emits it. Only the
- * envelope stays closed to unknown fields, via the check just below.
+ * and are tolerated rather than rejected (issue #12): every recognised
+ * payload parser carries a field it does not recognise forward into the
+ * returned payload object rather than silently dropping it, so
+ * `serialiseEvent` re-emits it. Only the envelope stays closed to unknown
+ * fields, via the check just below.
  */
 export function parseEvent(value: unknown): Event {
   if (!isRecord(value)) {

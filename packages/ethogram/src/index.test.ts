@@ -4,9 +4,14 @@ import { describe, test } from "node:test";
 import {
   EVENT_SCHEMA_VERSION,
   InMemorySink,
+  MAX_EXCERPT_SCALARS,
+  MAX_TEXT_SCALARS,
   RUN_KINDS,
   RUN_OUTCOMES,
+  excerpt,
   foldRun,
+  parseAgentCompletedPayload,
+  parseAgentStartedPayload,
   parseEvent,
   serialiseEvent,
   stamp,
@@ -27,6 +32,22 @@ const RUN_FINISHED_WIRE =
 // and asserted there against the same string.
 const UNKNOWN_PAYLOAD_FIELD_WIRE =
   '{"v":1,"type":"run.started","runId":"run-cross","seq":1,"ts":"2026-09-07T00:00:00.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1},"zzzTail":"after-kind"}}';
+
+// Cross-SDK byte identity for all six agent payloads. These exact literals
+// are pasted into the Rust suite and asserted there against events built from
+// Rust's typed payload structs rather than parsed fixtures.
+const AGENT_STARTED_WIRE =
+  '{"v":1,"type":"agent.started","runId":"run-agent","seq":1,"ts":"2026-09-07T01:00:01.000Z","payload":{"model":"gpt-5","pid":4242,"sessionId":"session-local-7","stage":"open-ended-stage"}}';
+const AGENT_TEXT_WIRE =
+  '{"v":1,"type":"agent.text","runId":"run-agent","seq":2,"ts":"2026-09-07T01:00:02.000Z","payload":{"parentToolUseId":"parent-tool-1","stage":"narrate","text":"A😀漢","truncated":false}}';
+const AGENT_TOOL_USE_WIRE =
+  '{"v":1,"type":"agent.tool_use","runId":"run-agent","seq":3,"ts":"2026-09-07T01:00:03.000Z","payload":{"inputExcerpt":"{\\"path\\":\\"README.md\\"}","parentToolUseId":"parent-tool-1","stage":"act","tool":"read_file","toolUseId":"tool-7","truncated":false}}';
+const AGENT_TOOL_RESULT_WIRE =
+  '{"v":1,"type":"agent.tool_result","runId":"run-agent","seq":4,"ts":"2026-09-07T01:00:04.000Z","payload":{"isError":false,"parentToolUseId":"parent-tool-1","resultExcerpt":"placeholder result","stage":"act","tool":"read_file","toolUseId":"tool-7","truncated":false}}';
+const AGENT_COMPLETED_WIRE =
+  '{"v":1,"type":"agent.completed","runId":"run-agent","seq":5,"ts":"2026-09-07T01:00:05.000Z","payload":{"costUsd":1.25,"durationMs":2500,"estimated":true,"model":"gpt-5","stage":"finish","turns":3,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}';
+const AGENT_WARNING_WIRE =
+  '{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}';
 
 const PERMITTED_RUN_KINDS = [
   "loop",
@@ -76,10 +97,38 @@ function assertRunPayloadCorrelation(event: Event<EventPayloadMap>): void {
   if (event.type === "run.started") {
     const actor: string = event.payload.actor;
     assert.equal(typeof actor, "string");
-  } else {
+  } else if (event.type === "run.finished") {
     const durationMs: number = event.payload.durationMs;
     assert.equal(typeof durationMs, "number");
+  } else if (event.type === "agent.text") {
+    const text: string = event.payload.text;
+    assert.equal(typeof text, "string");
+  } else if (
+    event.type === "agent.tool_use" ||
+    event.type === "agent.tool_result"
+  ) {
+    const tool: string = event.payload.tool;
+    assert.equal(typeof tool, "string");
+  } else if (event.type === "agent.warning") {
+    const message: string = event.payload.message;
+    assert.equal(typeof message, "string");
   }
+}
+
+function containsLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 describe("Event parsing", () => {
@@ -349,6 +398,268 @@ describe("run lifecycle payload parsing", () => {
       /usage\.outputTokens must be a non-negative safe integer/,
     );
   });
+
+  test("rejects a non-integer run.finished durationMs", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome: "completed", durationMs: 1250.5 },
+        }),
+      /durationMs must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative run.finished durationMs", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome: "completed", durationMs: -5 },
+        }),
+      /durationMs must be a non-negative safe integer/,
+    );
+  });
+});
+
+describe("agent payload parsing", () => {
+  test("accepts an open stage string on every agent event", () => {
+    const cases = [
+      ["agent.started", { stage: "consumer-specific/stage" }],
+      ["agent.text", { stage: "consumer-specific/stage", text: "text" }],
+      ["agent.tool_use", { stage: "consumer-specific/stage", tool: "read" }],
+      ["agent.tool_result", { stage: "consumer-specific/stage", tool: "read" }],
+      ["agent.completed", { stage: "consumer-specific/stage" }],
+      ["agent.warning", { stage: "consumer-specific/stage", message: "warning" }],
+    ] as const;
+
+    for (const [type, payload] of cases) {
+      assert.doesNotThrow(() =>
+        parseEvent({ ...completeEvent(), type, payload }),
+      );
+    }
+  });
+
+  test("enforces every required agent payload field", () => {
+    const cases = [
+      ["agent.text", {}, "text"],
+      ["agent.tool_use", {}, "tool"],
+      ["agent.tool_result", {}, "tool"],
+      ["agent.warning", {}, "message"],
+    ] as const;
+
+    for (const [type, payload, field] of cases) {
+      assert.throws(
+        () => parseEvent({ ...completeEvent(), type, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () =>
+          parseEvent({
+            ...completeEvent(),
+            type,
+            payload: { [field]: 7 },
+          }),
+        new RegExp(`${field} must be a string`),
+      );
+    }
+  });
+
+  test("validates every optional agent count as a non-negative safe integer", () => {
+    const cases = [
+      [parseAgentStartedPayload, "pid"],
+      [parseAgentCompletedPayload, "turns"],
+      [parseAgentCompletedPayload, "durationMs"],
+    ] as const;
+
+    for (const [parsePayload, field] of cases) {
+      for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(
+          () => parsePayload({ [field]: invalid }),
+          new RegExp(`${field} must be a non-negative safe integer`),
+        );
+      }
+      assert.doesNotThrow(() =>
+        parsePayload({ [field]: Number.MAX_SAFE_INTEGER }),
+      );
+    }
+  });
+
+  test("reuses run usage validation for agent.completed", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "agent.completed",
+          payload: { usage: { cacheCreationTokens: 10.5 } },
+        }),
+      /usage\.cacheCreationTokens must be a non-negative safe integer/,
+    );
+  });
+
+  test("retains unknown fields through every agent payload parser", () => {
+    const cases = [
+      ["agent.started", { future: { value: 1 } }],
+      ["agent.text", { text: "text", future: { value: 1 } }],
+      ["agent.tool_use", { tool: "read", future: { value: 1 } }],
+      ["agent.tool_result", { tool: "read", future: { value: 1 } }],
+      [
+        "agent.completed",
+        {
+          future: { value: 1 },
+          usage: { inputTokens: 2, futureUsage: "retained" },
+        },
+      ],
+      ["agent.warning", { message: "warning", future: { value: 1 } }],
+    ] as const;
+
+    for (const [type, payload] of cases) {
+      const forwarded = JSON.parse(
+        serialiseEvent(
+          parseEvent({ ...completeEvent(), type, payload }),
+        ),
+      ) as { payload: Record<string, unknown> };
+      assert.deepEqual(forwarded.payload.future, { value: 1 });
+      if (type === "agent.completed") {
+        assert.deepEqual(forwarded.payload.usage, {
+          futureUsage: "retained",
+          inputTokens: 2,
+        });
+      }
+    }
+  });
+});
+
+describe("excerpt", () => {
+  test("exports the protocol scalar bounds", () => {
+    assert.equal(MAX_TEXT_SCALARS, 16_384);
+    assert.equal(MAX_EXCERPT_SCALARS, 4_096);
+  });
+
+  test("handles ASCII below, at, and one scalar over the bound", () => {
+    assert.deepEqual(excerpt("abc", 4), { text: "abc", truncated: false });
+    assert.deepEqual(excerpt("abcd", 4), {
+      text: "abcd",
+      truncated: false,
+    });
+    assert.deepEqual(excerpt("abcde", 4), {
+      text: "abcd",
+      truncated: true,
+    });
+  });
+
+  test("counts astral-plane characters as one scalar and leaves no lone surrogate", () => {
+    const result = excerpt(
+      "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+      MAX_EXCERPT_SCALARS,
+    );
+
+    assert.deepEqual(result, {
+      text: "😀".repeat(MAX_EXCERPT_SCALARS),
+      truncated: true,
+    });
+    assert.equal(Array.from(result.text).length, MAX_EXCERPT_SCALARS);
+    assert.equal(result.text.length, MAX_EXCERPT_SCALARS * 2);
+    assert.equal(containsLoneSurrogate(result.text), false);
+  });
+
+  test("counts three-byte UTF-8 characters as scalars rather than bytes", () => {
+    const result = excerpt(
+      "漢".repeat(MAX_EXCERPT_SCALARS + 1),
+      MAX_EXCERPT_SCALARS,
+    );
+
+    assert.deepEqual(result, {
+      text: "漢".repeat(MAX_EXCERPT_SCALARS),
+      truncated: true,
+    });
+    assert.equal(Array.from(result.text).length, MAX_EXCERPT_SCALARS);
+    assert.equal(Buffer.byteLength(result.text, "utf8"), MAX_EXCERPT_SCALARS * 3);
+  });
+
+  test("pins the same mixed-scalar expectation as Rust", () => {
+    assert.deepEqual(excerpt("A😀漢B", 3), {
+      text: "A😀漢",
+      truncated: true,
+    });
+  });
+
+  test("round-trips an over-bound astral agent.text without creating a surrogate", () => {
+    const bounded = excerpt(
+      "😀".repeat(MAX_TEXT_SCALARS + 1),
+      MAX_TEXT_SCALARS,
+    );
+    const event: Event<EventPayloadMap> = {
+      v: 1,
+      type: "agent.text",
+      runId: "run-excerpt",
+      seq: 1,
+      ts: "2026-09-07T02:00:00.000Z",
+      payload: bounded,
+    };
+
+    const parsed = parseEvent(JSON.parse(serialiseEvent(event)) as unknown);
+    assert.equal(serialiseEvent(parsed), serialiseEvent(event));
+    assert.equal(
+      Array.from((parsed.payload as { text: string }).text).length,
+      MAX_TEXT_SCALARS,
+    );
+    assert.equal(
+      containsLoneSurrogate((parsed.payload as { text: string }).text),
+      false,
+    );
+  });
+
+  test("replaces a lone high surrogate with U+FFFD (issue #6)", () => {
+    // The previously-reported case: a lone high surrogate with no matching
+    // low surrogate. Per the ruling, this is silently replaced with U+FFFD
+    // rather than left intact or rejected, so the resulting JSON is
+    // well-formed and serde_json can parse it.
+    const loneHighSurrogate = String.fromCharCode(0xd83d);
+    const result = excerpt(`a${loneHighSurrogate}b`, 2);
+
+    assert.deepEqual(result, { text: "a�", truncated: true });
+    assert.equal(containsLoneSurrogate(result.text), false);
+    assert.equal(
+      JSON.stringify(result),
+      '{"text":"a�","truncated":true}',
+    );
+  });
+
+  test("replaces a lone low surrogate with U+FFFD", () => {
+    const loneLowSurrogate = String.fromCharCode(0xdc00);
+    const result = excerpt(`a${loneLowSurrogate}b`, 3);
+
+    assert.deepEqual(result, { text: "a�b", truncated: false });
+    assert.equal(containsLoneSurrogate(result.text), false);
+  });
+
+  test("leaves a valid surrogate pair completely untouched", () => {
+    // A naive fix that replaces surrogate code units individually (rather
+    // than the code points the string iterator yields) would mangle this:
+    // "😀" is itself a high/low surrogate pair, and neither half is lone.
+    const result = excerpt("😀", 5);
+
+    assert.deepEqual(result, { text: "😀", truncated: false });
+  });
+
+  test("replaces a lone surrogate while leaving a valid pair in the same string alone", () => {
+    const loneHighSurrogate = String.fromCharCode(0xd83d);
+    const result = excerpt(`😀a${loneHighSurrogate}`, 3);
+
+    assert.deepEqual(result, { text: `😀a�`, truncated: false });
+  });
+
+  test("does not mark a lone surrogate exactly at the bound as truncated", () => {
+    // Replacement is one code point in, one code point out, so it must not
+    // change how many scalar values the bound counts.
+    const loneLowSurrogate = String.fromCharCode(0xdc00);
+    const result = excerpt(`a${loneLowSurrogate}`, 2);
+
+    assert.deepEqual(result, { text: "a�", truncated: false });
+  });
 });
 
 describe("stamp", () => {
@@ -562,6 +873,110 @@ describe("serialiseEvent payload key sorting", () => {
 
     assert.equal(serialiseEvent(started), RUN_STARTED_WIRE);
     assert.equal(serialiseEvent(finished), RUN_FINISHED_WIRE);
+  });
+
+  test("pins byte-identical agent events with Rust", () => {
+    const events: Event<EventPayloadMap>[] = [
+      {
+        v: 1,
+        type: "agent.started",
+        runId: "run-agent",
+        seq: 1,
+        ts: "2026-09-07T01:00:01.000Z",
+        payload: {
+          stage: "open-ended-stage",
+          model: "gpt-5",
+          sessionId: "session-local-7",
+          pid: 4242,
+        },
+      },
+      {
+        v: 1,
+        type: "agent.text",
+        runId: "run-agent",
+        seq: 2,
+        ts: "2026-09-07T01:00:02.000Z",
+        payload: {
+          stage: "narrate",
+          text: "A😀漢",
+          truncated: false,
+          parentToolUseId: "parent-tool-1",
+        },
+      },
+      {
+        v: 1,
+        type: "agent.tool_use",
+        runId: "run-agent",
+        seq: 3,
+        ts: "2026-09-07T01:00:03.000Z",
+        payload: {
+          stage: "act",
+          tool: "read_file",
+          inputExcerpt: '{"path":"README.md"}',
+          truncated: false,
+          toolUseId: "tool-7",
+          parentToolUseId: "parent-tool-1",
+        },
+      },
+      {
+        v: 1,
+        type: "agent.tool_result",
+        runId: "run-agent",
+        seq: 4,
+        ts: "2026-09-07T01:00:04.000Z",
+        payload: {
+          stage: "act",
+          tool: "read_file",
+          isError: false,
+          resultExcerpt: "placeholder result",
+          truncated: false,
+          toolUseId: "tool-7",
+          parentToolUseId: "parent-tool-1",
+        },
+      },
+      {
+        v: 1,
+        type: "agent.completed",
+        runId: "run-agent",
+        seq: 5,
+        ts: "2026-09-07T01:00:05.000Z",
+        payload: {
+          stage: "finish",
+          turns: 3,
+          costUsd: 1.25,
+          model: "gpt-5",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 40,
+            cacheReadTokens: 20,
+            cacheCreationTokens: 30,
+            unit: "weighted-tokens",
+          },
+          durationMs: 2500,
+          estimated: true,
+        },
+      },
+      {
+        v: 1,
+        type: "agent.warning",
+        runId: "run-agent",
+        seq: 6,
+        ts: "2026-09-07T01:00:06.000Z",
+        payload: {
+          stage: "observe",
+          message: "placeholder warning",
+        },
+      },
+    ];
+
+    assert.deepEqual(events.map(serialiseEvent), [
+      AGENT_STARTED_WIRE,
+      AGENT_TEXT_WIRE,
+      AGENT_TOOL_USE_WIRE,
+      AGENT_TOOL_RESULT_WIRE,
+      AGENT_COMPLETED_WIRE,
+      AGENT_WARNING_WIRE,
+    ]);
   });
 
   test("sorts all amended run usage fields", () => {

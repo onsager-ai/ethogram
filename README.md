@@ -13,10 +13,10 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Run lifecycle implemented.** The version 1 envelope and its `run.started` and
-`run.finished` vocabulary exist in both SDKs. The conformance corpus remains
-empty until the first real capture lands, because an invented fixture would
-become an immutable guess.
+**Run lifecycle and agent observation implemented.** The version 1 envelope,
+its `run.*` lifecycle, and the six `agent.*` observations exist in both SDKs.
+The conformance corpus remains empty until the first real capture lands,
+because an invented fixture would become an immutable guess.
 
 ## Why it is a separate repository
 
@@ -115,6 +115,24 @@ changes what every reader must understand.
 `unit`; an absent `unit` means tokens, while a present value prevents consumers
 from summing unlike harness units.
 
+## Agent observation
+
+| type | required payload | optional payload | meaning |
+|---|---|---|---|
+| `agent.started` | — | `stage`, `model`, `sessionId`, `pid` | Records that an agent began, with the harness's own session identifier providing the route back to its raw local transcript. |
+| `agent.text` | `text` | `stage`, `truncated`, `parentToolUseId` | Carries bounded assistant narration and, when nested beneath a tool call, names that parent. |
+| `agent.tool_use` | `tool` | `stage`, `inputExcerpt`, `truncated`, `toolUseId`, `parentToolUseId` | Records a tool invocation with bounded input and identifiers that preserve nesting. |
+| `agent.tool_result` | `tool` | `stage`, `isError`, `resultExcerpt`, `truncated`, `toolUseId`, `parentToolUseId` | Records a bounded tool response and associates it with the corresponding invocation. |
+| `agent.completed` | — | `stage`, `turns`, `costUsd`, `model`, `usage`, `durationMs`, `estimated` | Records completion and any harness-reported totals without requiring metrics the harness does not expose. |
+| `agent.warning` | `message` | `stage` | Carries a non-terminal harness warning without promoting it to a run outcome. |
+
+`stage` is an open string on every agent observation. Pipeline stages belong to
+the producing harness, so closing this field here would import one consumer's
+pipeline vocabulary into the shared protocol and exclude stages used by other
+consumers. `agent.completed.usage` has the same shape and meaning as
+`run.finished.usage`; it is one wire shape rather than two coincidentally
+similar declarations.
+
 **Payloads are tolerant at read and retaining on forward (issue #12).** An
 unknown payload field is never rejected and never dropped: a sink that
 forwards an event it does not fully understand must be byte-preserving, or the
@@ -128,26 +146,29 @@ as they always were.
 **On narration.** This protocol carries what an agent said and did — assistant
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is
-the lesser of two limits that were adopted together, and the other one is not
-expressible here: **consumers are expected to keep narration away from anything
-that decides** — a classification, a gate, a verdict. This repository defines
-the transport and cannot enforce that; a consumer that renders narration and
-also acts on it has broken a constraint this format assumes.
+16,384 Unicode scalar values for `agent.text` and 4,096 for tool input and
+result excerpts. Excerpting counts code points, not UTF-8 bytes or UTF-16 code
+units, and cuts only on a code point boundary; it may still divide a grapheme
+cluster such as a combining sequence or joined emoji. The other limit adopted
+with these bounds is not expressible here: **consumers are expected to keep
+narration away from anything that decides** — a classification, a gate, a
+verdict. This repository defines the transport and cannot enforce that; a
+consumer that renders narration and also acts on it has broken a constraint
+this format assumes.
 
-## Open before the first extraction
+## Decisions before the first extraction
 
 The scaffold recorded three questions that are expensive to change once a
-fixture exists. The envelope question is settled here; the first two remain in
-place for the changes that record their own decisions:
+fixture exists. All three are now settled and remain here with their reasons:
 
 1. **Where the version starts.** Chreode's `EVENT_SCHEMA_VERSION` is already
    `1`, with persisted events behind it. Starting this protocol at `0` would
    force a renumbering of a live wire; starting at `1` adopts chreode's
    numbering as the shared one.
-2. **Whether `stage` is open or closed.** Chreode's `StageName` is a closed
-   union of its own pipeline stages. If this protocol closes it, ostrom-hub's
-   loops have no stage to name; if it stays an open string, chreode's enum
-   becomes a consumer-side refinement.
+2. **Whether `stage` is open or closed — settled.** It stays an open string.
+   Chreode's `StageName` is a closed union of its own pipeline stages, but
+   closing the protocol field would leave other consumers' loops with no stage
+   to name; chreode's enum is therefore a consumer-side refinement.
 3. **Which envelope fields are required — settled.** Producers emit the
    deliberately incomplete `EventDraft`; sinks store only complete `Event`
    values. Making `seq` or `ts` optional on stored events would force every
