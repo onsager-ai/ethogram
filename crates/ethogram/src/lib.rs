@@ -71,8 +71,60 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// Key ordering is not part of the contract because JSON objects are
 /// unordered. The conformance harness exercises this function, then compares
 /// recursively key-sorted forms rather than incidental object order.
+///
+/// Numbers are canonicalised before serialisation: any `f64` with a zero
+/// fractional part and a magnitude below 2^53 is emitted as an integer, so
+/// that `1.0` and `1` produce identical bytes (issue #9). This matches the
+/// TypeScript SDK, where `JSON.stringify` already collapses `1.0` to `1`.
 pub fn serialise_event<P: Serialize>(event: &Event<P>) -> serde_json::Result<String> {
-    serde_json::to_string(event)
+    let value = serde_json::to_value(event)?;
+    let canonical = canonicalise_numbers(value);
+    serde_json::to_string(&canonical)
+}
+
+/// The largest magnitude at which every integer is exactly representable as
+/// an `f64`, per the ruling in issue #9.
+const MAX_SAFE_INTEGRAL_MAGNITUDE: f64 = 9_007_199_254_740_992.0;
+
+/// Recursively rewrites integral-valued floats as integers, per issue #9.
+///
+/// An `f64` with a zero fractional part and a magnitude below 2^53 is
+/// replaced by the equivalent integer `Value`. Every other number —
+/// non-integral values, and integral values at or above 2^53 — is left
+/// exactly as it was serialised by `serde_json`.
+fn canonicalise_numbers(value: Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(canonicalise_numbers).collect())
+        }
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, child)| (key, canonicalise_numbers(child)))
+                .collect(),
+        ),
+        Value::Number(number) => Value::Number(canonicalise_number(number)),
+        primitive => primitive,
+    }
+}
+
+fn canonicalise_number(number: serde_json::Number) -> serde_json::Number {
+    if number.is_i64() || number.is_u64() {
+        // Already an integer on the wire; nothing to canonicalise.
+        return number;
+    }
+
+    let Some(as_f64) = number.as_f64() else {
+        return number;
+    };
+
+    if as_f64.fract() != 0.0 || as_f64.abs() >= MAX_SAFE_INTEGRAL_MAGNITUDE {
+        return number;
+    }
+
+    // `-0.0 as i64` is `0`, so negative zero canonicalises to `0`, matching
+    // JavaScript's `JSON.stringify(-0)`.
+    serde_json::Number::from(as_f64 as i64)
 }
 
 fn deserialize_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -301,9 +353,102 @@ mod tests {
 
     #[test]
     fn compact_serialiser_emits_no_presentation_whitespace() {
+        // Object keys come back sorted, because canonicalisation round-trips
+        // through `serde_json::Value`, whose map is a `BTreeMap` in this
+        // workspace. Key order was never part of the contract (see the
+        // doc comment on `serialise_event`), so this asserts today's order
+        // rather than the declaration order of the `Event` struct.
         assert_eq!(
             serialise_event(&complete_event()).unwrap(),
-            r#"{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"ok":true}}"#
+            r#"{"payload":{"ok":true},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
+        );
+    }
+
+    #[test]
+    fn integral_float_and_integer_payloads_serialise_identically() {
+        let float_event = Event {
+            payload: json!({ "count": 1.0 }),
+            ..complete_event()
+        };
+        let integer_event = Event {
+            payload: json!({ "count": 1 }),
+            ..complete_event()
+        };
+
+        assert_eq!(
+            serialise_event(&float_event).unwrap(),
+            serialise_event(&integer_event).unwrap()
+        );
+    }
+
+    #[test]
+    fn integral_floats_canonicalise_to_integers() {
+        let event = Event {
+            payload: json!({ "one": 1.0, "hundred": 100.0, "writtenAsExponent": 1e2 }),
+            ..complete_event()
+        };
+
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            r#"{"payload":{"hundred":100,"one":1,"writtenAsExponent":100},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
+        );
+    }
+
+    #[test]
+    fn non_integral_values_are_left_untouched() {
+        let event = Event {
+            payload: json!({ "tenth": 0.1, "tiny": 1e-7 }),
+            ..complete_event()
+        };
+
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            r#"{"payload":{"tenth":0.1,"tiny":1e-7},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
+        );
+    }
+
+    #[test]
+    fn nested_and_array_integral_floats_are_canonicalised() {
+        let event = Event {
+            payload: json!({
+                "nested": { "value": 2.0 },
+                "list": [3.0, 4.5, 5.0]
+            }),
+            ..complete_event()
+        };
+
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            r#"{"payload":{"list":[3,4.5,5],"nested":{"value":2}},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
+        );
+    }
+
+    #[test]
+    fn negative_zero_serialises_as_zero() {
+        let event = Event {
+            payload: json!({ "value": -0.0 }),
+            ..complete_event()
+        };
+
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            r#"{"payload":{"value":0},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
+        );
+    }
+
+    #[test]
+    fn integral_values_at_or_above_the_safe_magnitude_keep_their_current_representation() {
+        let event = Event {
+            payload: json!({ "value": 9_007_199_254_740_992.0_f64 }),
+            ..complete_event()
+        };
+
+        // This asserts today's behaviour at and beyond the 2^53 boundary,
+        // which the ruling in issue #9 deliberately leaves untouched, so a
+        // future change to it is visible here rather than silent.
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            r#"{"payload":{"value":9007199254740992.0},"runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","type":"test.happened","v":1}"#
         );
     }
 

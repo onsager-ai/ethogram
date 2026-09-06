@@ -46,7 +46,19 @@ order it receives. After exercising each SDK's compact serialiser, both
 harnesses re-parse that output and recursively sort object keys by their UTF-8
 bytes, leaving array order untouched, before the cross-language diff. That
 canonical comparison removes only object-key order while retaining differences
-in field presence, values, arrays, and number formatting.
+in field presence, values, and arrays.
+
+Number formatting, by contrast, is no longer a free variable (issue #9):
+**integral-valued numbers serialise without a fractional part.** `1.0` is `1`
+on the wire. Left to each language's own JSON writer, two conforming producers
+disagree on bytes for a value they agree on numerically — JavaScript's
+`JSON.stringify` already collapses `1.0` to `1`, while Rust's `serde_json`
+writes `1.0`. The Rust SDK now canonicalises before compact serialisation: any
+`f64` whose fractional part is zero and whose magnitude is below 2^53 is
+emitted as an integer, recursively, throughout the event including inside
+`payload`. This is sound precisely because the ruling assumes no payload ever
+needs to distinguish `1` from `1.0`; a field that does needs that distinction
+carried as a string instead, not as a number that happens to look integral.
 
 `v1/` exists empty in this change because the harness is part of the envelope
 contract, while the first immutable fixture must wait for the first real event.
