@@ -76,6 +76,23 @@ Number formatting is also not a free variable (issue #9):
   serialisation: any `f64` whose fractional part is zero and whose magnitude
   is below 2^53 is emitted as an integer, recursively, throughout the event
   including inside `payload`.
+- **A non-integral number's notation follows ECMAScript's, not
+  `serde_json`'s** (issue #9). Left alone, the two SDKs choose the same
+  shortest round-tripping decimal digits for a given value but disagree on
+  when to lay them out in plain decimal versus exponential form —
+  `serde_json` switches to exponential notation at `1e-6`, while
+  JavaScript's `Number.prototype.toString` keeps plain decimal down to
+  `1e-5`, so a value such as `2.5e-6` would serialise as `2.5e-6` from one
+  SDK and `0.0000025` from the other if nothing intervened. The Rust SDK is
+  the one that moves: it re-lays the digits `serde_json` already produced
+  according to the ECMA-262 `Number::toString` rule — plain decimal when the
+  value's decimal exponent falls in `[-6, 21)`, exponential otherwise —
+  rather than recomputing them, since the digits themselves already agree.
+  This applies uniformly to every number the 2^53 rule below leaves as a
+  float, including an integral value at or beyond that bound: such a value
+  no longer keeps the trailing `.0` `serde_json` would otherwise append,
+  because ECMAScript's notation rule does not distinguish a whole number
+  from any other by how it happens to be represented internally.
 - **Negative zero serialises as `0`.** `-0.0` and `0` are not a distinction
   either SDK's wire format preserves, matching `JSON.stringify(-0)` in
   JavaScript.
