@@ -16,6 +16,22 @@ export interface Excerpt {
  * iterator advances by code point rather than UTF-16 code unit, so an astral
  * character is retained whole instead of being cut into a lone surrogate.
  * This deliberately does not attempt grapheme-cluster segmentation.
+ *
+ * A JavaScript string can also already contain a *lone* (unpaired) surrogate
+ * — a code unit in `U+D800`-`U+DFFF` with no matching partner — because
+ * JavaScript strings are UTF-16 and do not enforce well-formedness the way a
+ * Rust `String` does. Rust's `excerpt()` needs no equivalent handling: a
+ * `&str` is guaranteed well-formed UTF-8 and cannot hold an unpaired
+ * surrogate in the first place. Left intact here, such a code unit would
+ * serialise to JSON that `JSON.parse` round-trips but `serde_json` rejects,
+ * so the two SDKs could not agree on the resulting event. Per the ruling on
+ * issue #6, every lone surrogate this function encounters is therefore
+ * replaced with `U+FFFD` (the replacement character), whether or not the
+ * text ends up truncated; this is silent by design and does not affect
+ * `truncated`, which continues to mean only that the bound was hit. A valid
+ * surrogate *pair* — how every astral character such as `😀` is encoded — is
+ * left completely alone: replacement is one code point in, one code point
+ * out, so it never changes how many scalar values the bound counts.
  */
 export function excerpt(text: string, max: number): Excerpt {
   const kept: string[] = [];
@@ -23,9 +39,28 @@ export function excerpt(text: string, max: number): Excerpt {
     if (kept.length >= max) {
       return { text: kept.join(""), truncated: true };
     }
-    kept.push(scalar);
+    kept.push(isLoneSurrogateScalar(scalar) ? REPLACEMENT_CHARACTER : scalar);
   }
   return { text: kept.join(""), truncated: false };
+}
+
+/** The Unicode replacement character, `U+FFFD`. */
+const REPLACEMENT_CHARACTER = "\uFFFD";
+
+/**
+ * True when `scalar` — one item yielded by iterating a string by code point
+ * — is a lone (unpaired) surrogate rather than a BMP character or a valid
+ * surrogate pair. The string iteration protocol only ever combines a high
+ * surrogate with an immediately following low surrogate into a single
+ * two-code-unit item; any surrogate that could not be paired comes through
+ * as its own one-code-unit item, which is exactly what this checks for.
+ */
+function isLoneSurrogateScalar(scalar: string): boolean {
+  if (scalar.length !== 1) {
+    return false;
+  }
+  const unit = scalar.charCodeAt(0);
+  return unit >= 0xd800 && unit <= 0xdfff;
 }
 
 export const RUN_KINDS = [
@@ -354,21 +389,6 @@ function requiredString(
   return fieldValue;
 }
 
-function requiredNumber(
-  value: Record<string, unknown>,
-  field: string,
-  name: string,
-): number {
-  if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
-  }
-  const fieldValue = value[field];
-  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
-    throw new TypeError(`${name}.${field} must be a finite number`);
-  }
-  return fieldValue;
-}
-
 function optionalString(
   value: Record<string, unknown>,
   field: string,
@@ -426,6 +446,33 @@ function optionalSafeInteger(
     throw new TypeError(
       `${name}.${field} must be a non-negative safe integer when present`,
     );
+  }
+  return fieldValue;
+}
+
+/**
+ * Parses a required count field that must be a whole, non-negative number —
+ * the same rule as `optionalSafeInteger`, but for a field the payload cannot
+ * omit. Every count of milliseconds is a `u64` on the Rust side (ruling on
+ * issue #6): `RunFinishedPayload.durationMs` is the only field on this typed
+ * path that is both a count and required, so this is where that rule is
+ * enforced.
+ */
+function requiredSafeInteger(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (
+    typeof fieldValue !== "number" ||
+    !Number.isSafeInteger(fieldValue) ||
+    fieldValue < 0
+  ) {
+    throw new TypeError(`${name}.${field} must be a non-negative safe integer`);
   }
   return fieldValue;
 }
@@ -553,7 +600,7 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   const usage = Object.hasOwn(value, "usage")
     ? parseRunUsage(value.usage, `${name}.usage`)
     : undefined;
-  const durationMs = requiredNumber(value, "durationMs", name);
+  const durationMs = requiredSafeInteger(value, "durationMs", name);
   const estimated = optionalBoolean(value, "estimated", name);
 
   return {

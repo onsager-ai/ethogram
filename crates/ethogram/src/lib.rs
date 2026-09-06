@@ -22,6 +22,16 @@ pub struct Excerpt {
 /// Keeps at most `max` Unicode scalar values from `text`, cutting on a code
 /// point boundary. This deliberately does not attempt grapheme-cluster
 /// segmentation.
+///
+/// Unlike the TypeScript SDK's `excerpt()`, this never needs to replace a
+/// lone surrogate with `U+FFFD` (issue #6): a Rust `&str` is guaranteed
+/// well-formed UTF-8 and so cannot hold an unpaired surrogate code unit in
+/// the first place — there is nothing here for that rule to act on. The
+/// asymmetry exists because a lone surrogate is representable in a
+/// JavaScript string (which is UTF-16 and does not enforce well-formedness)
+/// and not in Rust's `String`; leaving it intact on the TypeScript side would
+/// let a producer build an `agent.text` or excerpt that one SDK can hold and
+/// the other cannot even parse.
 #[must_use]
 pub fn excerpt(text: &str, max: usize) -> Excerpt {
     Excerpt {
@@ -230,7 +240,8 @@ pub struct RunFinishedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
-    pub duration_ms: f64,
+    #[serde(deserialize_with = "deserialize_safe_u64")]
+    pub duration_ms: u64,
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -877,10 +888,14 @@ where
 /// deserialises straight into a typed payload struct, for example
 /// `serde_json::from_str::<Event<RunFinishedPayload>>(...)`, never goes
 /// through `parse_event` and so never runs that check. `RunCeilings.tokens`,
-/// `RunCeilings.wall_ms`, and `RunUsage`'s four token-count fields are the
-/// known integral fields on that typed path — the run ceiling and usage counts
-/// plus agent `pid`, `turns`, and `duration_ms` — are therefore bounded here
-/// individually via `deserialize_optional_safe_u64` below.
+/// `RunCeilings.wall_ms`, `RunUsage`'s four token-count fields, and agent
+/// `pid` and `turns` are the known *optional* integral fields on that typed
+/// path and are bounded here individually via `deserialize_optional_safe_u64`
+/// below. `RunFinishedPayload.duration_ms` and `AgentCompletedPayload.duration_ms`
+/// are both durations in milliseconds, per the ruling that every count of
+/// milliseconds is a `u64`; the former is required rather than optional, so
+/// it applies this function directly instead of going through the optional
+/// wrapper.
 fn deserialize_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -1424,7 +1439,7 @@ mod tests {
                     unit: Some("weighted-tokens".to_owned()),
                     extra: PayloadExtension::new(),
                 }),
-                duration_ms: 1250.0,
+                duration_ms: 1250,
                 estimated: Some(true),
                 extra: PayloadExtension::new(),
             },
@@ -1614,7 +1629,7 @@ mod tests {
                 truncated: None,
                 cost_usd: None,
                 usage: None,
-                duration_ms: 1000.0,
+                duration_ms: 1000,
                 estimated: None,
                 extra: PayloadExtension::new(),
             },
@@ -2220,6 +2235,42 @@ mod tests {
     #[test]
     fn rejects_a_negative_ceilings_count() {
         assert!(serde_json::from_str::<RunCeilings>(r#"{"wallMs":-5}"#).is_err());
+    }
+
+    // -- run.finished durationMs is a required u64 (follow-up to issue #6) --
+
+    #[test]
+    fn rejects_a_non_integer_run_finished_duration() {
+        // `u64` deserialization rejects a non-integral value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(
+            serde_json::from_str::<RunFinishedPayload>(
+                r#"{"outcome":"completed","durationMs":1250.5}"#
+            )
+            .is_err()
+        );
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "completed", "durationMs": 1250.5 }),
+        );
+        assert!(parse_event(&input).is_err());
+    }
+
+    #[test]
+    fn rejects_a_negative_run_finished_duration() {
+        // `u64` deserialization rejects a negative value by construction;
+        // this test pins that behaviour rather than assuming it.
+        assert!(
+            serde_json::from_str::<RunFinishedPayload>(
+                r#"{"outcome":"completed","durationMs":-5}"#
+            )
+            .is_err()
+        );
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "completed", "durationMs": -5 }),
+        );
+        assert!(parse_event(&input).is_err());
     }
 
     /// The typed-struct-path bound check the follow-up brief calls for:

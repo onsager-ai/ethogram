@@ -398,6 +398,30 @@ describe("run lifecycle payload parsing", () => {
       /usage\.outputTokens must be a non-negative safe integer/,
     );
   });
+
+  test("rejects a non-integer run.finished durationMs", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome: "completed", durationMs: 1250.5 },
+        }),
+      /durationMs must be a non-negative safe integer/,
+    );
+  });
+
+  test("rejects a negative run.finished durationMs", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.finished",
+          payload: { outcome: "completed", durationMs: -5 },
+        }),
+      /durationMs must be a non-negative safe integer/,
+    );
+  });
 });
 
 describe("agent payload parsing", () => {
@@ -588,22 +612,53 @@ describe("excerpt", () => {
     );
   });
 
-  test("documents JavaScript's current treatment of an input lone surrogate", () => {
-    // The protocol has not ruled on invalid Unicode already present in a
-    // JavaScript string. The iterator retains this pre-existing lone high
-    // surrogate as one item; JSON.stringify escapes it, producing JSON that
-    // serde_json rejects. This pins observation, not a sanitisation rule.
+  test("replaces a lone high surrogate with U+FFFD (issue #6)", () => {
+    // The previously-reported case: a lone high surrogate with no matching
+    // low surrogate. Per the ruling, this is silently replaced with U+FFFD
+    // rather than left intact or rejected, so the resulting JSON is
+    // well-formed and serde_json can parse it.
     const loneHighSurrogate = String.fromCharCode(0xd83d);
     const result = excerpt(`a${loneHighSurrogate}b`, 2);
 
-    assert.deepEqual(result, {
-      text: `a${loneHighSurrogate}`,
-      truncated: true,
-    });
+    assert.deepEqual(result, { text: "a�", truncated: true });
+    assert.equal(containsLoneSurrogate(result.text), false);
     assert.equal(
       JSON.stringify(result),
-      '{"text":"a\\ud83d","truncated":true}',
+      '{"text":"a�","truncated":true}',
     );
+  });
+
+  test("replaces a lone low surrogate with U+FFFD", () => {
+    const loneLowSurrogate = String.fromCharCode(0xdc00);
+    const result = excerpt(`a${loneLowSurrogate}b`, 3);
+
+    assert.deepEqual(result, { text: "a�b", truncated: false });
+    assert.equal(containsLoneSurrogate(result.text), false);
+  });
+
+  test("leaves a valid surrogate pair completely untouched", () => {
+    // A naive fix that replaces surrogate code units individually (rather
+    // than the code points the string iterator yields) would mangle this:
+    // "😀" is itself a high/low surrogate pair, and neither half is lone.
+    const result = excerpt("😀", 5);
+
+    assert.deepEqual(result, { text: "😀", truncated: false });
+  });
+
+  test("replaces a lone surrogate while leaving a valid pair in the same string alone", () => {
+    const loneHighSurrogate = String.fromCharCode(0xd83d);
+    const result = excerpt(`😀a${loneHighSurrogate}`, 3);
+
+    assert.deepEqual(result, { text: `😀a�`, truncated: false });
+  });
+
+  test("does not mark a lone surrogate exactly at the bound as truncated", () => {
+    // Replacement is one code point in, one code point out, so it must not
+    // change how many scalar values the bound counts.
+    const loneLowSurrogate = String.fromCharCode(0xdc00);
+    const result = excerpt(`a${loneLowSurrogate}`, 2);
+
+    assert.deepEqual(result, { text: "a�", truncated: false });
   });
 });
 
