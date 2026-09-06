@@ -13,8 +13,9 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Scaffold.** The vocabulary is not yet extracted, and nothing depends on this
-repository. The founding decision below is settled; the first extraction is not.
+**Envelope implemented.** The version 1 envelope exists in both SDKs and the
+conformance harness holds their wire behaviour together. The vocabulary is not
+yet extracted, so the corpus remains empty until the first real event lands.
 
 ## Why it is a separate repository
 
@@ -69,16 +70,29 @@ reverse-engineered from the disagreement, and will encode it.
 
 ## The envelope
 
-Every durable event carries the same envelope, discriminated on `type`:
+The protocol has two related shapes because capture and durable observation
+have different responsibilities. A producer emits an `EventDraft` containing
+only `type`, `payload`, and optional `capturedAt`; a sink turns it into an
+`Event` by adding the fields a reader must be able to rely on. `capturedAt`,
+when supplied from the producer's clock, is preserved unchanged and is the only
+optional field on the stored envelope.
 
-| field | meaning |
-|---|---|
-| `v` | schema version |
-| `type` | dot-namespaced `domain.past_tense`, e.g. `agent.tool_use` |
-| `runId` | the harness session this belongs to |
-| `seq` | gapless per-run sequence, assigned by the server, from 1 |
-| `ts` | ISO-8601, stamped by the server |
-| `payload` | correlated with `type` |
+| field | stamped by | meaning |
+|---|---|---|
+| `v` | sink | schema version, `1` |
+| `type` | producer | dot-namespaced `domain.past_tense`, e.g. `agent.tool_use` |
+| `runId` | sink, from the run the draft was submitted to | one harness session |
+| `seq` | sink | gapless per run, from 1 |
+| `ts` | sink | ISO-8601 from the sink's clock at append |
+| `payload` | producer | correlated with `type` |
+| `capturedAt` | producer, optionally | ISO-8601 from the producer's clock at capture |
+
+An `Event` always has the first six fields. A reader can therefore replay and
+then follow a run, fold it, and prove it is gapless without handling an
+unstamped intermediate shape. When one sink receives already-stamped events
+from another, it preserves `seq` and `ts` and rejects a gap rather than
+renumbering it. This assumes each producer submits drafts to exactly one sink
+per run; concurrent sinks would require `seq` to gain a partition.
 
 A *run* is one harness session. Loops and handoffs are kinds of run, not
 separate concepts.
@@ -94,8 +108,9 @@ also acts on it has broken a constraint this format assumes.
 
 ## Open before the first extraction
 
-Three questions the scaffold deliberately does not answer, each of which is
-expensive to change once a fixture exists:
+The scaffold recorded three questions that are expensive to change once a
+fixture exists. The envelope question is settled here; the first two remain in
+place for the changes that record their own decisions:
 
 1. **Where the version starts.** Chreode's `EVENT_SCHEMA_VERSION` is already
    `1`, with persisted events behind it. Starting this protocol at `0` would
@@ -105,9 +120,11 @@ expensive to change once a fixture exists:
    union of its own pipeline stages. If this protocol closes it, ostrom-hub's
    loops have no stage to name; if it stays an open string, chreode's enum
    becomes a consumer-side refinement.
-3. **Which envelope fields are required.** Chreode assigns `seq` and `ts`
-   server-side; a producer emitting into a different substrate may not have
-   either at capture.
+3. **Which envelope fields are required — settled.** Producers emit the
+   deliberately incomplete `EventDraft`; sinks store only complete `Event`
+   values. Making `seq` or `ts` optional on stored events would force every
+   reader to handle an object that cannot support replay-then-follow, folding,
+   or proof of gaplessness.
 
 ## Layout
 
