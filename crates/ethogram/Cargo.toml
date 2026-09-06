@@ -10,5 +10,14 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+# Not a product feature. It reproduces, inside this crate's own CI, what a
+# consumer does to us when it enables serde_json's `preserve_order` anywhere in
+# the dependency graph — Cargo unifies features, so that choice reaches this
+# crate whether or not it wants it. umwelt enables it. The canonical form must
+# come out identical either way, so CI runs the suite twice: once plain, once
+# with this on.
+preserve-order-probe = ["serde_json/preserve_order"]
+
 [lints]
 workspace = true

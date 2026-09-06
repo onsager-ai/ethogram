@@ -83,17 +83,33 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// conformance harness diffs producer output directly rather than
 /// normalising it first.
 ///
-/// The payload always round-trips through `serde_json::Value` before
-/// serialisation — whose map is a `BTreeMap` in this workspace, because
-/// `preserve_order` stays off — before the envelope is serialised. That
-/// round-trip is what makes the sorted-key guarantee hold even when `P` is a
-/// typed struct: serialised directly, a struct emits its fields in
-/// declaration order and the sort would silently stop applying.
+/// The payload always round-trips through `serde_json::Value` before the
+/// envelope is serialised. That round-trip is what makes the sorted-key
+/// guarantee hold even when `P` is a typed struct: serialised directly, a
+/// struct emits its fields in declaration order and the sort would silently
+/// stop applying.
+///
+/// The keys are then sorted **explicitly**, rather than relying on
+/// `serde_json::Map` being a `BTreeMap`. That reliance would have made this
+/// SDK's canonical form depend on a Cargo feature it does not control:
+/// `preserve_order` backs the map with an insertion-ordered map instead, and
+/// Cargo unifies features across a dependency graph, so any consumer enabling
+/// it anywhere — umwelt does — would silently turn sorting off here while this
+/// repository's own CI, which never enables it, stayed green.
 ///
 /// Numbers are canonicalised before serialisation: any `f64` with a zero
 /// fractional part and a magnitude below 2^53 is emitted as an integer, so
 /// that `1.0` and `1` produce identical bytes (issue #9). This matches the
 /// TypeScript SDK, where `JSON.stringify` already collapses `1.0` to `1`.
+///
+/// Every remaining `f64` — non-integral values, and integral values at or
+/// above 2^53 that the rule above leaves as floats — is laid out in
+/// ECMAScript's `Number::toString` notation rather than `serde_json`'s own
+/// (issue #9): plain decimal when the value's decimal exponent falls in
+/// `[-6, 21)`, exponential otherwise. `serde_json` agrees with JavaScript on
+/// which digits to print (both compute the shortest round-tripping decimal),
+/// so `float_serialiser` below re-lays those digits rather than
+/// recomputing them; see its doc comment for the algorithm.
 pub fn serialise_event<P: Serialize>(event: &Event<P>) -> serde_json::Result<String> {
     let payload = canonicalise_numbers(serde_json::to_value(&event.payload)?);
     let canonical = Event {
@@ -105,7 +121,10 @@ pub fn serialise_event<P: Serialize>(event: &Event<P>) -> serde_json::Result<Str
         payload,
         captured_at: event.captured_at.clone(),
     };
-    serde_json::to_string(&canonical)
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, EcmaScriptFormatter);
+    serde::Serialize::serialize(&canonical, &mut serializer)?;
+    Ok(String::from_utf8(bytes).expect("a JSON serialiser only ever writes valid UTF-8"))
 }
 
 /// Recursively validates that every integral-valued number in `value` is
@@ -177,12 +196,20 @@ fn canonicalise_numbers(value: Value) -> Value {
         Value::Array(values) => {
             Value::Array(values.into_iter().map(canonicalise_numbers).collect())
         }
-        Value::Object(values) => Value::Object(
-            values
+        Value::Object(values) => {
+            // Sort explicitly rather than leaning on `Map` being a `BTreeMap`.
+            // With serde_json's `preserve_order` feature the map is
+            // insertion-ordered, and Cargo unifies features across the whole
+            // dependency graph — so a consumer enabling it would otherwise turn
+            // this sort off without touching this crate, and without failing
+            // this crate's own CI. Sorting here holds under either backing map.
+            let mut entries: Vec<(String, Value)> = values
                 .into_iter()
                 .map(|(key, child)| (key, canonicalise_numbers(child)))
-                .collect(),
-        ),
+                .collect();
+            entries.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
+            Value::Object(entries.into_iter().collect())
+        }
         Value::Number(number) => Value::Number(canonicalise_number(number)),
         primitive => primitive,
     }
@@ -205,6 +232,138 @@ fn canonicalise_number(number: serde_json::Number) -> serde_json::Number {
     // `-0.0 as i64` is `0`, so negative zero canonicalises to `0`, matching
     // JavaScript's `JSON.stringify(-0)`.
     serde_json::Number::from(as_f64 as i64)
+}
+
+/// A `serde_json` `Formatter` that re-lays every `f64` it is asked to write
+/// into ECMAScript's `Number::toString` notation (issue #9), leaving every
+/// other token — strings, booleans, `null`, and the plain integers that
+/// `canonicalise_number` already produced — exactly as `serde_json`'s own
+/// `CompactFormatter` would write them. `Formatter`'s default methods forward
+/// to `CompactFormatter`'s behaviour, so overriding only `write_f64` is
+/// enough: the rest of the compact form is untouched.
+struct EcmaScriptFormatter;
+
+impl serde_json::ser::Formatter for EcmaScriptFormatter {
+    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        // `serde_json`'s own float formatter (ryu) already computes the
+        // shortest decimal digit string that round-trips to `value` — the
+        // same digits JavaScript's formatter would choose. What differs is
+        // only the layout: where the two put the decimal point, and when
+        // they switch to exponential notation. So the digits are taken
+        // as-is from `serde_json`'s text and re-laid, never recomputed.
+        let mut default_bytes = Vec::new();
+        serde_json::ser::CompactFormatter.write_f64(&mut default_bytes, value)?;
+        let default_repr = std::str::from_utf8(&default_bytes)
+            .expect("serde_json's float formatter only ever writes ASCII");
+        writer.write_all(relay_ecmascript_notation(default_repr).as_bytes())
+    }
+}
+
+/// Re-lays `serde_json`'s compact `f64` text (for example `"1.5e-5"` or
+/// `"9007199254740992.0"`) into the string ECMAScript's `Number::toString`
+/// would produce for the same value, per the ECMA-262 `Number::toString`
+/// abstract operation (section 6.1.6.1.20 as of ES2023):
+///
+/// Let the value be written as `s × 10^(n − k)`, where `s` is the `k`-digit
+/// integer of shortest-round-trip decimal digits (no leading or trailing
+/// zero) and `n` is the position of the decimal point relative to the start
+/// of those digits. Then:
+///
+/// - if `k <= n <= 21`: the `k` digits followed by `n - k` zeroes (plain,
+///   no fractional part) — for example `1e20` with `s = 1`, `k = 1`, `n =
+///   21` becomes `"1"` followed by twenty zeroes;
+/// - else if `0 < n <= 21`: the digits with a decimal point inserted after
+///   the `n`th one;
+/// - else if `-6 < n <= 0`: `"0."` followed by `-n` zeroes and the digits —
+///   this is the plain-decimal band the ruling in issue #9 is about, since
+///   `serde_json` switches to exponential one step earlier, at `n = -5`
+///   rather than `n = -6`;
+/// - otherwise: exponential notation, the first digit, a `.` and the
+///   remaining digits when `k > 1`, then `e`, `+` or `-`, and `|n - 1|`.
+///
+/// `serde_json`'s own text is always sign-optional plain-or-scientific
+/// decimal, so `s`, `k` and `n` are recovered by splitting off an optional
+/// `-` sign and `e`-exponent, concatenating the integer and fractional
+/// digits, and trimming leading and trailing zeroes (adjusting the exponent
+/// for each trailing zero trimmed, since removing one divides the digit
+/// string's integer value by ten).
+fn relay_ecmascript_notation(serialised: &str) -> String {
+    let (negative, unsigned) = match serialised.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, serialised),
+    };
+    let (digits, n) = decompose_decimal(unsigned);
+    let digit_count = i64::try_from(digits.len())
+        .expect("a finite f64's shortest decimal digit string is nowhere near i64::MAX digits");
+
+    let body = if n >= digit_count && n <= 21 {
+        format!("{digits}{}", "0".repeat((n - digit_count) as usize))
+    } else if n > 0 && n <= 21 {
+        let point = n as usize;
+        format!("{}.{}", &digits[..point], &digits[point..])
+    } else if n > -6 && n <= 0 {
+        format!("0.{}{digits}", "0".repeat((-n) as usize))
+    } else {
+        let exponent = n - 1;
+        let mantissa = if digit_count == 1 {
+            digits
+        } else {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        };
+        let sign = if exponent >= 0 { '+' } else { '-' };
+        format!("{mantissa}e{sign}{}", exponent.abs())
+    };
+
+    if negative { format!("-{body}") } else { body }
+}
+
+/// Decomposes the unsigned decimal text of a finite, non-zero `f64` (as
+/// `serde_json` writes it: an optional `e`/`E` exponent over a mantissa that
+/// is a plain integer or has a single `.`) into `(digits, n)`, where `digits`
+/// is the shortest round-tripping digit string with no leading or trailing
+/// zero, and `n` is the position of the decimal point relative to its start
+/// — the `s` and `n` of the ECMA-262 `Number::toString` algorithm (`digits`
+/// is `s` written out; `k` is `digits.len()`).
+fn decompose_decimal(unsigned: &str) -> (String, i64) {
+    let (mantissa, exponent_text) = match unsigned.find(['e', 'E']) {
+        Some(index) => (&unsigned[..index], &unsigned[index + 1..]),
+        None => (unsigned, ""),
+    };
+    let written_exponent: i64 = if exponent_text.is_empty() {
+        0
+    } else {
+        exponent_text
+            .parse()
+            .expect("serde_json only ever writes a plain signed integer exponent")
+    };
+    let (integer_part, fractional_part) = match mantissa.find('.') {
+        Some(index) => (&mantissa[..index], &mantissa[index + 1..]),
+        None => (mantissa, ""),
+    };
+
+    let mut digits = format!("{integer_part}{fractional_part}");
+    let mut exponent = written_exponent - fractional_part.len() as i64;
+
+    // Leading zeroes (from an integer part of "0") do not change the value
+    // represented, so they are dropped without touching the exponent.
+    digits = digits.trim_start_matches('0').to_owned();
+
+    // A trailing zero, by contrast, changes the integer value read from the
+    // digit string, so each one dropped must raise the exponent by one to
+    // compensate — this only ever fires on the artificial ".0" `serde_json`
+    // appends to an integral float, since a genuine shortest round-tripping
+    // digit string never ends in zero.
+    let without_trailing_zeroes = digits.trim_end_matches('0');
+    let trailing_zeroes_dropped = digits.len() - without_trailing_zeroes.len();
+    exponent += trailing_zeroes_dropped as i64;
+    digits = without_trailing_zeroes.to_owned();
+
+    let digit_count = i64::try_from(digits.len())
+        .expect("a finite f64's shortest decimal digit string is nowhere near i64::MAX digits");
+    (digits, exponent + digit_count)
 }
 
 fn deserialize_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -474,7 +633,11 @@ mod tests {
     }
 
     #[test]
-    fn non_integral_values_are_left_untouched() {
+    fn non_integral_values_outside_the_divergent_band_are_unchanged() {
+        // `0.1` and `1e-7` already sit outside the `[1e-6, 1e-5)` band where
+        // `serde_json` and ECMAScript disagree on notation (issue #9), so
+        // relaying them through `relay_ecmascript_notation` reproduces
+        // `serde_json`'s own bytes rather than changing them.
         let event = Event {
             payload: json!({ "tenth": 0.1, "tiny": 1e-7 }),
             ..complete_event()
@@ -516,23 +679,102 @@ mod tests {
     }
 
     #[test]
-    fn integral_values_at_or_above_the_safe_magnitude_keep_their_current_representation() {
+    fn integral_values_at_or_above_the_safe_magnitude_still_lose_their_decimal_point() {
         let event = Event {
             payload: json!({ "value": 9_007_199_254_740_992.0_f64 }),
             ..complete_event()
         };
 
-        // This asserts today's behaviour at and beyond the 2^53 boundary,
-        // which the ruling in issue #9 deliberately leaves untouched, so a
-        // future change to it is visible here rather than silent. This event
-        // is built and serialised directly rather than round-tripped through
+        // The 2^53 bound in the ruling of issue #9 governs only whether a
+        // float collapses to a wire integer, deliberately left unchanged
+        // here: at and beyond 2^53 the value stays a float. But it is still
+        // a whole number, and ECMAScript's notation rule (also issue #9)
+        // gives every whole number in the plain-decimal band no decimal
+        // point regardless of how it is represented internally, so this now
+        // matches `(9007199254740992).toString()` in JavaScript instead of
+        // carrying the `.0` `serde_json` used to append. This event is built
+        // and serialised directly rather than round-tripped through
         // `parse_event`, so it is exercising `serialise_event`'s
         // canonicalisation, not the parse-time bound in
         // `validate_payload_numbers` (covered separately below).
         assert_eq!(
             serialise_event(&event).unwrap(),
-            r#"{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"value":9007199254740992.0}}"#
+            r#"{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"value":9007199254740992}}"#
         );
+    }
+
+    #[test]
+    fn ecmascript_notation_matches_measured_javascript_output_at_the_band_edges_and_beyond() {
+        // Every expected string here was measured, not derived from belief
+        // about the ECMA-262 algorithm: each is the exact output of
+        // `JSON.stringify(JSON.parse(JSON.stringify(<input>)))` in Node 24.
+        // The band edges are the ones the ruling in issue #9 names
+        // (`9.99e-7`, `1e-6`, `2.5e-6`, `1e-5`, `1.5e-5`, `1e20`, `1e21`);
+        // the rest exercise a plain fraction, a small fraction outside the
+        // band, and the extremes of `f64`'s exponent range, each with its
+        // negative counterpart.
+        let cases: &[(f64, &str)] = &[
+            // -- 9.99e-7: last value serde_json and ECMAScript still agree
+            //    on below the band; both already choose exponential here.
+            (9.99e-7, "9.99e-7"),
+            (-9.99e-7, "-9.99e-7"),
+            // -- 1e-6: the band's lower edge. serde_json writes "1e-6";
+            //    ECMAScript's plain-decimal band starts here (n = -5).
+            (1e-6, "0.000001"),
+            (-1e-6, "-0.000001"),
+            // -- 2.5e-6: inside the band, same disagreement as 1e-6.
+            (2.5e-6, "0.0000025"),
+            (-2.5e-6, "-0.0000025"),
+            // -- 1e-5: the band's upper edge; both sides already agree
+            //    ("0.00001"), which this pins so a regression is visible.
+            (1e-5, "0.00001"),
+            (-1e-5, "-0.00001"),
+            // -- 1.5e-5: just above the band, both sides already agree.
+            (1.5e-5, "0.000015"),
+            (-1.5e-5, "-0.000015"),
+            // -- 1e20: the top of the plain-decimal band (n = 21).
+            (1e20, "100000000000000000000"),
+            (-1e20, "-100000000000000000000"),
+            // -- 1e21: one step past the plain-decimal band (n = 22).
+            (1e21, "1e+21"),
+            (-1e21, "-1e+21"),
+            // -- An ordinary fraction and an integral float well inside the
+            //    plain-decimal band, as a sanity check.
+            (0.1, "0.1"),
+            (-0.1, "-0.1"),
+            (1.5, "1.5"),
+            (-1.5, "-1.5"),
+            (0.00012345, "0.00012345"),
+            (-0.00012345, "-0.00012345"),
+            // -- Small-magnitude values already on the exponential side.
+            (1e-7, "1e-7"),
+            (-1e-7, "-1e-7"),
+            (1.23e-7, "1.23e-7"),
+            (-1.23e-7, "-1.23e-7"),
+            (1e-21, "1e-21"),
+            (-1e-21, "-1e-21"),
+            // -- f64's extremes: the smallest subnormal and the largest
+            //    finite value, both single- and multi-digit mantissas.
+            (5e-324, "5e-324"),
+            (-5e-324, "-5e-324"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (-f64::MAX, "-1.7976931348623157e+308"),
+        ];
+
+        for (input, expected) in cases {
+            let event = Event {
+                payload: json!({ "value": *input }),
+                ..complete_event()
+            };
+
+            assert_eq!(
+                serialise_event(&event).unwrap(),
+                format!(
+                    r#"{{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"value":{expected}}}}}"#
+                ),
+                "input {input:?} expected notation {expected}"
+            );
+        }
     }
 
     #[test]
