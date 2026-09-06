@@ -14,6 +14,183 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 /// time rather than rounding it.
 const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum RunKind {
+    #[serde(rename = "loop")]
+    Loop,
+    #[serde(rename = "handoff")]
+    Handoff,
+    #[serde(rename = "subagent")]
+    Subagent,
+    #[serde(rename = "session")]
+    Session,
+    #[serde(rename = "judgment")]
+    Judgment,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum RunOutcome {
+    #[serde(rename = "completed")]
+    Completed,
+    #[serde(rename = "failed")]
+    Failed,
+    #[serde(rename = "no-op")]
+    NoOp,
+    #[serde(rename = "timed-out")]
+    TimedOut,
+    #[serde(rename = "interrupted")]
+    Interrupted,
+    #[serde(rename = "permission-denied")]
+    PermissionDenied,
+    #[serde(rename = "canceled")]
+    Canceled,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunCeilings {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cost_usd: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tokens: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub wall_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunStartedPayload {
+    pub kind: RunKind,
+    pub actor: String,
+    pub harness: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_run_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub schedule: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub repository: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub work_order: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ceilings: Option<RunCeilings>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunUsage {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub input_tokens: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_tokens: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_read_tokens: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_creation_tokens: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unit: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunFinishedPayload {
+    pub outcome: RunOutcome,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reason: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cost_usd: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub usage: Option<RunUsage>,
+    pub duration_ms: f64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub estimated: Option<bool>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventDraft<P = Value> {
@@ -22,7 +199,7 @@ pub struct EventDraft<P = Value> {
     pub payload: P,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional_string",
+        deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub captured_at: Option<String>,
@@ -42,7 +219,7 @@ pub struct Event<P = Value> {
     pub payload: P,
     #[serde(
         default,
-        deserialize_with = "deserialize_optional_string",
+        deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub captured_at: Option<String>,
@@ -68,10 +245,23 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
     }
 }
 
+/// Parses the open event envelope and validates payloads for event types this
+/// SDK knows. Unknown event types deliberately retain the open `Value` payload:
+/// both SDKs validate the two `run.*` vocabulary members here without turning
+/// the envelope parser into a closed event-type registry.
 pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     let event: Event = serde_json::from_str(input)?;
     validate_payload_numbers(&event.payload, "payload").map_err(de::Error::custom)?;
+    validate_known_payload(&event.event_type, &event.payload)?;
     Ok(event)
+}
+
+fn validate_known_payload(event_type: &str, payload: &Value) -> serde_json::Result<()> {
+    match event_type {
+        "run.started" => serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop),
+        "run.finished" => serde_json::from_value::<RunFinishedPayload>(payload.clone()).map(drop),
+        _ => Ok(()),
+    }
 }
 
 /// Serialises an event in its canonical compact form: no presentation
@@ -394,11 +584,12 @@ where
     }
 }
 
-fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+fn deserialize_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    String::deserialize(deserializer).map(Some)
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -489,6 +680,10 @@ mod tests {
 
     use super::*;
 
+    const RUN_STARTED_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-child","seq":1,"ts":"2026-09-06T10:45:01.000Z","payload":{"actor":"builder","ceilings":{"costUsd":2.5,"tokens":4000,"wallMs":60000},"harness":"codex","kind":"subagent","model":"gpt-5","parentRunId":"run-parent","parentToolUseId":"tool-7","repository":"onsager-ai/ethogram","schedule":"builder@2026-09-06T10:45Z","workOrder":"order-5"},"capturedAt":"2026-09-06T10:45:00.000Z"}"#;
+
+    const RUN_FINISHED_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
+
     fn complete_event() -> Event {
         Event {
             v: EVENT_SCHEMA_VERSION,
@@ -499,6 +694,228 @@ mod tests {
             payload: json!({ "ok": true }),
             captured_at: None,
         }
+    }
+
+    fn lifecycle_event_input(event_type: &str, payload: Value) -> String {
+        serde_json::to_string(&Event {
+            event_type: event_type.to_owned(),
+            payload,
+            ..complete_event()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_every_permitted_run_kind() {
+        for kind in ["loop", "handoff", "subagent", "session", "judgment"] {
+            let input = lifecycle_event_input(
+                "run.started",
+                json!({ "kind": kind, "actor": "builder", "harness": "codex" }),
+            );
+            parse_event(&input).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_run_kind() {
+        let input = lifecycle_event_input(
+            "run.started",
+            json!({ "kind": "pipeline", "actor": "builder", "harness": "codex" }),
+        );
+
+        let error = parse_event(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown variant `pipeline`"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_every_permitted_run_outcome() {
+        for outcome in [
+            "completed",
+            "failed",
+            "no-op",
+            "timed-out",
+            "interrupted",
+            "permission-denied",
+            "canceled",
+        ] {
+            let input = lifecycle_event_input(
+                "run.finished",
+                json!({ "outcome": outcome, "durationMs": 1250 }),
+            );
+            parse_event(&input).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_run_outcome() {
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "succeeded", "durationMs": 1250 }),
+        );
+
+        let error = parse_event(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown variant `succeeded`"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_each_missing_required_run_started_field() {
+        for field in ["kind", "actor", "harness"] {
+            let mut payload = json!({
+                "kind": "subagent",
+                "actor": "builder",
+                "harness": "codex"
+            });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input("run.started", payload);
+
+            let error = parse_event(&input).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_run_finished_field() {
+        for field in ["outcome", "durationMs"] {
+            let mut payload = json!({ "outcome": "completed", "durationMs": 1250 });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input("run.finished", payload);
+
+            let error = parse_event(&input).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_event_types_keep_their_open_payload() {
+        assert!(
+            parse_event(&lifecycle_event_input(
+                "future.happened",
+                json!({ "anything": [true, null, "goes"] })
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn run_lifecycle_events_match_the_typescript_pinned_bytes() {
+        // Both payload structs deliberately declare fields in protocol-table
+        // order rather than alphabetically. These assertions therefore also
+        // prove that typed payloads still take the canonical sorted-key path.
+        let started = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "run.started".to_owned(),
+            run_id: "run-child".to_owned(),
+            seq: 1,
+            ts: "2026-09-06T10:45:01.000Z".to_owned(),
+            payload: RunStartedPayload {
+                kind: RunKind::Subagent,
+                actor: "builder".to_owned(),
+                harness: "codex".to_owned(),
+                model: Some("gpt-5".to_owned()),
+                parent_run_id: Some("run-parent".to_owned()),
+                parent_tool_use_id: Some("tool-7".to_owned()),
+                schedule: Some("builder@2026-09-06T10:45Z".to_owned()),
+                repository: Some("onsager-ai/ethogram".to_owned()),
+                work_order: Some("order-5".to_owned()),
+                ceilings: Some(RunCeilings {
+                    cost_usd: Some(2.5),
+                    tokens: Some(4000.0),
+                    wall_ms: Some(60000.0),
+                }),
+            },
+            captured_at: Some("2026-09-06T10:45:00.000Z".to_owned()),
+        };
+        let finished = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "run.finished".to_owned(),
+            run_id: "run-child".to_owned(),
+            seq: 2,
+            ts: "2026-09-06T10:45:02.000Z".to_owned(),
+            payload: RunFinishedPayload {
+                outcome: RunOutcome::Completed,
+                reason: Some("placeholder complete".to_owned()),
+                truncated: Some(false),
+                cost_usd: Some(1.25),
+                usage: Some(RunUsage {
+                    input_tokens: Some(10.0),
+                    output_tokens: Some(40.0),
+                    cache_read_tokens: Some(20.0),
+                    cache_creation_tokens: Some(30.0),
+                    unit: Some("weighted-tokens".to_owned()),
+                }),
+                duration_ms: 1250.0,
+                estimated: Some(true),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(serialise_event(&started).unwrap(), RUN_STARTED_WIRE);
+        assert_eq!(serialise_event(&finished).unwrap(), RUN_FINISHED_WIRE);
+        assert!(RUN_FINISHED_WIRE.contains(
+            r#""usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}"#
+        ));
+    }
+
+    #[test]
+    fn absent_optional_run_payload_fields_are_omitted_instead_of_null() {
+        let started = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "run.started".to_owned(),
+            run_id: "run-root".to_owned(),
+            seq: 1,
+            ts: "2026-09-06T00:00:00.000Z".to_owned(),
+            payload: RunStartedPayload {
+                kind: RunKind::Session,
+                actor: "user".to_owned(),
+                harness: "codex".to_owned(),
+                model: None,
+                parent_run_id: None,
+                parent_tool_use_id: None,
+                schedule: None,
+                repository: None,
+                work_order: None,
+                ceilings: None,
+            },
+            captured_at: None,
+        };
+        let finished = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "run.finished".to_owned(),
+            run_id: "run-root".to_owned(),
+            seq: 2,
+            ts: "2026-09-06T00:00:01.000Z".to_owned(),
+            payload: RunFinishedPayload {
+                outcome: RunOutcome::NoOp,
+                reason: None,
+                truncated: None,
+                cost_usd: None,
+                usage: None,
+                duration_ms: 1000.0,
+                estimated: None,
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(
+            serialise_event(&started).unwrap(),
+            r#"{"v":1,"type":"run.started","runId":"run-root","seq":1,"ts":"2026-09-06T00:00:00.000Z","payload":{"actor":"user","harness":"codex","kind":"session"}}"#
+        );
+        assert_eq!(
+            serialise_event(&finished).unwrap(),
+            r#"{"v":1,"type":"run.finished","runId":"run-root","seq":2,"ts":"2026-09-06T00:00:01.000Z","payload":{"durationMs":1000,"outcome":"no-op"}}"#
+        );
     }
 
     #[test]

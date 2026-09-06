@@ -1,12 +1,73 @@
 export const EVENT_SCHEMA_VERSION = 1 as const;
 
+export const RUN_KINDS = [
+  "loop",
+  "handoff",
+  "subagent",
+  "session",
+  "judgment",
+] as const;
+
+export type RunKind = (typeof RUN_KINDS)[number];
+
+export const RUN_OUTCOMES = [
+  "completed",
+  "failed",
+  "no-op",
+  "timed-out",
+  "interrupted",
+  "permission-denied",
+  "canceled",
+] as const;
+
+export type RunOutcome = (typeof RUN_OUTCOMES)[number];
+
+export interface RunCeilings {
+  costUsd?: number;
+  tokens?: number;
+  wallMs?: number;
+}
+
+export interface RunStartedPayload {
+  kind: RunKind;
+  actor: string;
+  harness: string;
+  model?: string;
+  parentRunId?: string;
+  parentToolUseId?: string;
+  schedule?: string;
+  repository?: string;
+  workOrder?: string;
+  ceilings?: RunCeilings;
+}
+
+export interface RunUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  unit?: string;
+}
+
+export interface RunFinishedPayload {
+  outcome: RunOutcome;
+  reason?: string;
+  truncated?: boolean;
+  costUsd?: number;
+  usage?: RunUsage;
+  durationMs: number;
+  estimated?: boolean;
+}
+
 /**
- * The open payload map is deliberately empty for the envelope-only release.
- * Later vocabulary specs can add keyed payloads to this interface; the mapped
- * types below then become correlated discriminated unions without changing the
- * public EventDraft or Event shapes.
+ * The protocol payload map. Supplying it to `EventDraft` or `Event` produces a
+ * correlated discriminated union; their unparameterised forms deliberately
+ * remain open for callers that only need the envelope or handle future types.
  */
-export interface EventPayloadMap {}
+export interface EventPayloadMap {
+  "run.started": RunStartedPayload;
+  "run.finished": RunFinishedPayload;
+}
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
 
@@ -20,7 +81,7 @@ type DraftFor<Payloads extends object> = {
   [Type in EventType<Payloads>]: DraftMember<Type, Payloads[Type]>;
 }[EventType<Payloads>];
 
-export type EventDraft<Payloads extends object = EventPayloadMap> =
+export type EventDraft<Payloads extends object = object> =
   [EventType<Payloads>] extends [never]
     ? DraftMember<string, unknown>
     : DraftFor<Payloads>;
@@ -39,7 +100,7 @@ type EventFor<Payloads extends object> = {
   [Type in EventType<Payloads>]: EventMember<Type, Payloads[Type]>;
 }[EventType<Payloads>];
 
-export type Event<Payloads extends object = EventPayloadMap> =
+export type Event<Payloads extends object = object> =
   [EventType<Payloads>] extends [never]
     ? EventMember<string, unknown>
     : EventFor<Payloads>;
@@ -87,6 +148,257 @@ const EVENT_FIELDS = new Set<string>([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
+const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
+
+const RUN_STARTED_FIELDS = new Set<string>([
+  "kind",
+  "actor",
+  "harness",
+  "model",
+  "parentRunId",
+  "parentToolUseId",
+  "schedule",
+  "repository",
+  "workOrder",
+  "ceilings",
+]);
+
+const RUN_CEILING_FIELDS = new Set<string>([
+  "costUsd",
+  "tokens",
+  "wallMs",
+]);
+
+const RUN_FINISHED_FIELDS = new Set<string>([
+  "outcome",
+  "reason",
+  "truncated",
+  "costUsd",
+  "usage",
+  "durationMs",
+  "estimated",
+]);
+
+const RUN_USAGE_FIELDS = new Set<string>([
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheCreationTokens",
+  "unit",
+]);
+
+function rejectUnknownFields(
+  value: Record<string, unknown>,
+  fields: ReadonlySet<string>,
+  name: string,
+): void {
+  const unknownFields = Object.keys(value).filter((field) => !fields.has(field));
+  if (unknownFields.length > 0) {
+    throw new TypeError(
+      `${name} contains unknown field${unknownFields.length === 1 ? "" : "s"}: ${unknownFields.join(", ")}`,
+    );
+  }
+}
+
+function requiredString(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): string {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string") {
+    throw new TypeError(`${name}.${field} must be a string`);
+  }
+  return fieldValue;
+}
+
+function requiredNumber(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
+    throw new TypeError(`${name}.${field} must be a finite number`);
+  }
+  return fieldValue;
+}
+
+function optionalString(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): string | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string") {
+    throw new TypeError(`${name}.${field} must be a string when present`);
+  }
+  return fieldValue;
+}
+
+function optionalNumber(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): number | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
+    throw new TypeError(`${name}.${field} must be a finite number when present`);
+  }
+  return fieldValue;
+}
+
+function optionalBoolean(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): boolean | undefined {
+  if (!Object.hasOwn(value, field)) {
+    return undefined;
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "boolean") {
+    throw new TypeError(`${name}.${field} must be a boolean when present`);
+  }
+  return fieldValue;
+}
+
+function parseRunCeilings(value: unknown): RunCeilings {
+  const name = "RunStartedPayload.ceilings";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  rejectUnknownFields(value, RUN_CEILING_FIELDS, name);
+
+  const costUsd = optionalNumber(value, "costUsd", name);
+  const tokens = optionalNumber(value, "tokens", name);
+  const wallMs = optionalNumber(value, "wallMs", name);
+  return {
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(tokens === undefined ? {} : { tokens }),
+    ...(wallMs === undefined ? {} : { wallMs }),
+  };
+}
+
+function parseRunUsage(value: unknown): RunUsage {
+  const name = "RunFinishedPayload.usage";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  rejectUnknownFields(value, RUN_USAGE_FIELDS, name);
+
+  const inputTokens = optionalNumber(value, "inputTokens", name);
+  const outputTokens = optionalNumber(value, "outputTokens", name);
+  const cacheReadTokens = optionalNumber(value, "cacheReadTokens", name);
+  const cacheCreationTokens = optionalNumber(
+    value,
+    "cacheCreationTokens",
+    name,
+  );
+  const unit = optionalString(value, "unit", name);
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheCreationTokens === undefined ? {} : { cacheCreationTokens }),
+    ...(unit === undefined ? {} : { unit }),
+  };
+}
+
+/** Parse and validate a `run.started` payload. */
+export function parseRunStartedPayload(value: unknown): RunStartedPayload {
+  const name = "RunStartedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  rejectUnknownFields(value, RUN_STARTED_FIELDS, name);
+
+  const kind = requiredString(value, "kind", name);
+  if (!RUN_KIND_VALUES.has(kind)) {
+    throw new TypeError(`${name}.kind has unknown value: ${kind}`);
+  }
+  const actor = requiredString(value, "actor", name);
+  const harness = requiredString(value, "harness", name);
+  const model = optionalString(value, "model", name);
+  const parentRunId = optionalString(value, "parentRunId", name);
+  const parentToolUseId = optionalString(value, "parentToolUseId", name);
+  const schedule = optionalString(value, "schedule", name);
+  const repository = optionalString(value, "repository", name);
+  const workOrder = optionalString(value, "workOrder", name);
+  const ceilings = Object.hasOwn(value, "ceilings")
+    ? parseRunCeilings(value.ceilings)
+    : undefined;
+
+  return {
+    kind: kind as RunKind,
+    actor,
+    harness,
+    ...(model === undefined ? {} : { model }),
+    ...(parentRunId === undefined ? {} : { parentRunId }),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...(schedule === undefined ? {} : { schedule }),
+    ...(repository === undefined ? {} : { repository }),
+    ...(workOrder === undefined ? {} : { workOrder }),
+    ...(ceilings === undefined ? {} : { ceilings }),
+  };
+}
+
+/** Parse and validate a `run.finished` payload. */
+export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
+  const name = "RunFinishedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  rejectUnknownFields(value, RUN_FINISHED_FIELDS, name);
+
+  const outcome = requiredString(value, "outcome", name);
+  if (!RUN_OUTCOME_VALUES.has(outcome)) {
+    throw new TypeError(`${name}.outcome has unknown value: ${outcome}`);
+  }
+  const reason = optionalString(value, "reason", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const costUsd = optionalNumber(value, "costUsd", name);
+  const usage = Object.hasOwn(value, "usage")
+    ? parseRunUsage(value.usage)
+    : undefined;
+  const durationMs = requiredNumber(value, "durationMs", name);
+  const estimated = optionalBoolean(value, "estimated", name);
+
+  return {
+    outcome: outcome as RunOutcome,
+    ...(reason === undefined ? {} : { reason }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(usage === undefined ? {} : { usage }),
+    durationMs,
+    ...(estimated === undefined ? {} : { estimated }),
+  };
+}
+
+function parseKnownPayload(eventType: string, payload: unknown): unknown {
+  switch (eventType) {
+    case "run.started":
+      return parseRunStartedPayload(payload);
+    case "run.finished":
+      return parseRunFinishedPayload(payload);
+    default:
+      return payload;
+  }
 }
 
 /**
@@ -156,7 +468,13 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
   return value;
 }
 
-/** Parse a decoded JSON value as an Event, rejecting envelope drift. */
+/**
+ * Parse a decoded JSON value as an Event, rejecting envelope drift and invalid
+ * payloads for event types this SDK knows. Unknown event types deliberately
+ * retain the open payload behaviour: both SDKs validate the two `run.*`
+ * vocabulary members here without turning the envelope parser into a closed
+ * event-type registry.
+ */
 export function parseEvent(value: unknown): Event {
   if (!isRecord(value)) {
     throw new TypeError("Event must be a JSON object");
@@ -198,6 +516,7 @@ export function parseEvent(value: unknown): Event {
     throw new TypeError("Event.payload must be a JSON value");
   }
   validatePayloadNumbers(value.payload, "payload");
+  const payload = parseKnownPayload(value.type, value.payload);
   if (
     Object.hasOwn(value, "capturedAt") &&
     typeof value.capturedAt !== "string"
@@ -211,7 +530,7 @@ export function parseEvent(value: unknown): Event {
     runId: value.runId,
     seq: value.seq as number,
     ts: value.ts,
-    payload: value.payload,
+    payload,
     ...(typeof value.capturedAt === "string"
       ? { capturedAt: value.capturedAt }
       : {}),
@@ -293,4 +612,66 @@ export class InMemorySink {
     }
     return events;
   }
+}
+
+export interface FoldedRun {
+  runId: string;
+  kind: RunKind;
+  actor: string;
+  harness: string;
+  parentRunId?: string;
+  outcome?: RunOutcome;
+  durationMs?: number;
+  open: boolean;
+}
+
+/**
+ * Reference implementation of the lifecycle fold for one run, not a
+ * consumer-facing run model. Unrelated events between the two lifecycle
+ * markers are ignored; malformed lifecycle payloads and mismatched run ids
+ * are rejected so the example cannot manufacture a coherent run from an
+ * incoherent sequence.
+ */
+export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
+  let run: FoldedRun | undefined;
+
+  for (const event of events) {
+    if (event.type === "run.started") {
+      if (run !== undefined) {
+        throw new Error("Run fold received more than one run.started event");
+      }
+      const payload = parseRunStartedPayload(event.payload);
+      run = {
+        runId: event.runId,
+        kind: payload.kind,
+        actor: payload.actor,
+        harness: payload.harness,
+        ...(payload.parentRunId === undefined
+          ? {}
+          : { parentRunId: payload.parentRunId }),
+        open: true,
+      };
+      continue;
+    }
+
+    if (event.type === "run.finished") {
+      if (run === undefined) {
+        throw new Error("Run fold received run.finished before run.started");
+      }
+      if (event.runId !== run.runId) {
+        throw new Error(
+          `Run fold expected run id ${run.runId}; received ${event.runId}`,
+        );
+      }
+      const payload = parseRunFinishedPayload(event.payload);
+      run = {
+        ...run,
+        outcome: payload.outcome,
+        durationMs: payload.durationMs,
+        open: false,
+      };
+    }
+  }
+
+  return run;
 }
