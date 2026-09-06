@@ -46,8 +46,27 @@ pub enum RunOutcome {
     Canceled,
 }
 
+/// Unknown fields on a payload are never rejected and never dropped (issue
+/// #12): a sink that forwards an event it does not fully understand must be
+/// byte-preserving, or the stream loses data silently at exactly the
+/// boundary this protocol exists to cross. Each payload struct below carries
+/// one of these as a `#[serde(flatten)]` field, so a field this SDK does not
+/// recognise is captured here on parse and re-emitted on serialisation
+/// instead of being silently discarded by ordinary serde struct
+/// deserialisation (which ignores unmatched keys once `deny_unknown_fields`
+/// is absent).
+///
+/// This is `serde_json::Map<String, Value>` rather than an `IndexMap`, per
+/// the ruling: `serde_json::Map` is already a dependency, and adding
+/// `indexmap` for this would be a new dependency for no gain, because
+/// `serialise_event` sorts payload keys explicitly regardless of the map's
+/// own ordering (see its doc comment). An empty map flattens to zero
+/// additional keys, not an empty nested object, so a payload with no unknown
+/// fields serialises exactly as it did before this field existed.
+pub type PayloadExtension = serde_json::Map<String, Value>;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RunCeilings {
     #[serde(
         default,
@@ -67,10 +86,12 @@ pub struct RunCeilings {
         skip_serializing_if = "Option::is_none"
     )]
     pub wall_ms: Option<f64>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RunStartedPayload {
     pub kind: RunKind,
     pub actor: String,
@@ -117,10 +138,12 @@ pub struct RunStartedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub ceilings: Option<RunCeilings>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RunUsage {
     #[serde(
         default,
@@ -152,10 +175,12 @@ pub struct RunUsage {
         skip_serializing_if = "Option::is_none"
     )]
     pub unit: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RunFinishedPayload {
     pub outcome: RunOutcome,
     #[serde(
@@ -189,6 +214,8 @@ pub struct RunFinishedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub estimated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -249,6 +276,16 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
 /// SDK knows. Unknown event types deliberately retain the open `Value` payload:
 /// both SDKs validate the two `run.*` vocabulary members here without turning
 /// the envelope parser into a closed event-type registry.
+///
+/// A payload's *unknown fields* are a separate axis from its *unknown type*
+/// and are tolerated rather than rejected (issue #12): `RunStartedPayload`
+/// and `RunFinishedPayload` no longer carry `deny_unknown_fields`, so a field
+/// this SDK does not recognise does not fail validation here, and their
+/// `#[serde(flatten)]` extension field means a caller who deserialises
+/// directly into one of those typed structs (bypassing this function's
+/// `Value` payload) still gets it back on re-serialisation rather than
+/// silently losing it. Only the envelope stays closed to unknown fields, via
+/// the `deny_unknown_fields` still present on `Event` and `EventDraft` below.
 pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     let event: Event = serde_json::from_str(input)?;
     validate_payload_numbers(&event.payload, "payload").map_err(de::Error::custom)?;
@@ -833,7 +870,9 @@ mod tests {
                     cost_usd: Some(2.5),
                     tokens: Some(4000.0),
                     wall_ms: Some(60000.0),
+                    extra: PayloadExtension::new(),
                 }),
+                extra: PayloadExtension::new(),
             },
             captured_at: Some("2026-09-06T10:45:00.000Z".to_owned()),
         };
@@ -854,9 +893,11 @@ mod tests {
                     cache_read_tokens: Some(20.0),
                     cache_creation_tokens: Some(30.0),
                     unit: Some("weighted-tokens".to_owned()),
+                    extra: PayloadExtension::new(),
                 }),
                 duration_ms: 1250.0,
                 estimated: Some(true),
+                extra: PayloadExtension::new(),
             },
             captured_at: None,
         };
@@ -887,6 +928,7 @@ mod tests {
                 repository: None,
                 work_order: None,
                 ceilings: None,
+                extra: PayloadExtension::new(),
             },
             captured_at: None,
         };
@@ -904,6 +946,7 @@ mod tests {
                 usage: None,
                 duration_ms: 1000.0,
                 estimated: None,
+                extra: PayloadExtension::new(),
             },
             captured_at: None,
         };
@@ -1389,5 +1432,97 @@ mod tests {
         assert_eq!(error.expected, 2);
         assert_eq!(error.received, 3);
         assert_eq!(sink.events("run-1").len(), 1);
+    }
+
+    /// Builds an `Event<RunStartedPayload>` around a hand-written payload
+    /// JSON body, going through the typed struct (not `Value`) so these
+    /// tests exercise the `#[serde(flatten)]` extension field a caller using
+    /// the typed API directly would rely on for retention (issue #12), not
+    /// just the untyped `Event<Value>` path `parse_event` returns.
+    fn typed_run_started_event(payload_json: &str) -> Event<RunStartedPayload> {
+        Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "run.started".to_owned(),
+            run_id: "run-1".to_owned(),
+            seq: 1,
+            ts: "2026-09-06T00:00:01.000Z".to_owned(),
+            payload: serde_json::from_str::<RunStartedPayload>(payload_json).unwrap(),
+            captured_at: None,
+        }
+    }
+
+    #[test]
+    fn unknown_payload_field_round_trips_across_the_sort_boundary() {
+        // "0alpha" sorts before the known key "actor"; "zzzTail" sorts after
+        // the known key "kind". Both unknown fields must survive parse and
+        // reappear in the canonical sorted position (issue #12).
+        let input = r#"{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","zzzTail":"after-kind"}"#;
+
+        assert_eq!(
+            serialise_event(&typed_run_started_event(input)).unwrap(),
+            r#"{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","zzzTail":"after-kind"}}"#
+        );
+    }
+
+    #[test]
+    fn unknown_payload_field_holding_nested_object_and_array_is_preserved_and_sorted() {
+        let input = r#"{"kind":"loop","actor":"builder","harness":"codex","nested":{"zebra":1,"apple":2},"list":[{"zebra":1,"apple":2},3,"text"]}"#;
+
+        assert_eq!(
+            serialise_event(&typed_run_started_event(input)).unwrap(),
+            r#"{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1}}}"#
+        );
+    }
+
+    #[test]
+    fn unknown_payload_numbers_round_trip_byte_identically() {
+        // The hazard named in the follow-up brief: `#[serde(flatten)]` routes
+        // deserialised values through serde's internal buffering layer, and
+        // that layer is known in some cases to change how a number is
+        // represented. Measured here: it does not, for any of the four
+        // shapes this protocol's number canonicalisation cares about
+        // (issue #9) — a large integer just inside the safe bound, a small
+        // integer, an integral-valued float, and a non-integral value. Each
+        // keeps its own wire representation (or, for the integral float,
+        // takes the same integer form a *known* integral field would) rather
+        // than drifting into a different one.
+        let input = r#"{"kind":"loop","actor":"builder","harness":"codex","bigInt":9007199254740991,"smallInt":1,"integralFloat":2.0,"fraction":0.000001}"#;
+
+        assert_eq!(
+            serialise_event(&typed_run_started_event(input)).unwrap(),
+            r#"{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","bigInt":9007199254740991,"fraction":0.000001,"harness":"codex","integralFloat":2,"kind":"loop","smallInt":1}}"#
+        );
+    }
+
+    #[test]
+    fn payload_without_unknown_fields_serialises_exactly_as_before() {
+        // The extension field must not surface as an empty object when there
+        // is nothing unknown to carry (issue #12).
+        let input = r#"{"kind":"loop","actor":"builder","harness":"codex"}"#;
+
+        let serialised = serialise_event(&typed_run_started_event(input)).unwrap();
+        assert_eq!(
+            serialised,
+            r#"{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop"}}"#
+        );
+        assert!(!serialised.contains("extra"));
+    }
+
+    /// Cross-SDK byte identity for an event with an unknown payload field
+    /// (issue #12). This exact literal is also hand-built in the TypeScript
+    /// suite (`index.test.ts`, "pins byte-identical bytes for an unknown
+    /// payload field with Rust") and asserted there against the same string.
+    const UNKNOWN_PAYLOAD_FIELD_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-cross","seq":1,"ts":"2026-09-07T00:00:00.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1},"zzzTail":"after-kind"}}"#;
+
+    #[test]
+    fn unknown_payload_field_matches_the_typescript_pinned_bytes() {
+        let input = r#"{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"zebra":1,"apple":2},3,"text"],"nested":{"zebra":1,"apple":2},"zzzTail":"after-kind"}"#;
+        let event = Event {
+            run_id: "run-cross".to_owned(),
+            ts: "2026-09-07T00:00:00.000Z".to_owned(),
+            ..typed_run_started_event(input)
+        };
+
+        assert_eq!(serialise_event(&event).unwrap(), UNKNOWN_PAYLOAD_FIELD_WIRE);
     }
 }

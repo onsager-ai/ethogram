@@ -115,6 +115,16 @@ changes what every reader must understand.
 `unit`; an absent `unit` means tokens, while a present value prevents consumers
 from summing unlike harness units.
 
+**Payloads are tolerant at read and retaining on forward (issue #12).** An
+unknown payload field is never rejected and never dropped: a sink that
+forwards an event it does not fully understand must be byte-preserving, or the
+stream loses data silently at exactly the boundary this protocol exists to
+cross. What stays strict is the envelope (an unknown envelope field is still
+rejected), the closed unions above (`kind` and `outcome`), and the required
+payload fields in the table — a `run.finished` without `durationMs` is
+malformed no matter what else it carries. Unknown event `type`s remain open,
+as they always were.
+
 **On narration.** This protocol carries what an agent said and did — assistant
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is

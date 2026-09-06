@@ -21,6 +21,13 @@ const RUN_STARTED_WIRE =
 const RUN_FINISHED_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}';
 
+// Cross-SDK byte identity for an event with an unknown payload field (issue
+// #12). This exact literal is also hand-built in the Rust suite
+// (`lib.rs`'s `unknown_payload_field_matches_the_typescript_pinned_bytes`)
+// and asserted there against the same string.
+const UNKNOWN_PAYLOAD_FIELD_WIRE =
+  '{"v":1,"type":"run.started","runId":"run-cross","seq":1,"ts":"2026-09-07T00:00:00.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1},"zzzTail":"after-kind"}}';
+
 const PERMITTED_RUN_KINDS = [
   "loop",
   "handoff",
@@ -526,6 +533,129 @@ describe("serialiseEvent payload key sorting", () => {
       serialiseEvent(finished),
       '{"v":1,"type":"run.finished","runId":"run-root","seq":2,"ts":"2026-09-06T00:00:01.000Z","payload":{"durationMs":1000,"outcome":"no-op"}}',
     );
+  });
+});
+
+describe("payload tolerance (issue #12)", () => {
+  // Payloads are tolerant at read and retaining on forward: an unknown
+  // payload field is never rejected and never dropped, so a forwarder that
+  // parses a newer producer's event does not lose data silently at exactly
+  // the boundary this protocol exists to cross. What stays strict is the
+  // envelope, the closed unions (`kind`, `outcome`), and required fields of
+  // a known type — all covered elsewhere in this file.
+
+  test("an unknown payload field round-trips across the sort boundary", () => {
+    // "0alpha" sorts before the known key "actor"; "zzzTail" sorts after
+    // the known key "kind". Both unknown fields must survive parsing and
+    // reappear in the canonical sorted position.
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        "0alpha": "before-actor",
+        actor: "builder",
+        harness: "codex",
+        kind: "loop",
+        zzzTail: "after-kind",
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","zzzTail":"after-kind"}}',
+    );
+  });
+
+  test("an unknown payload field holding a nested object and an array is preserved and sorted", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        kind: "loop",
+        actor: "builder",
+        harness: "codex",
+        nested: { zebra: 1, apple: 2 },
+        list: [{ zebra: 1, apple: 2 }, 3, "text"],
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1}}}',
+    );
+  });
+
+  test("unknown payload numbers round-trip byte-identically", () => {
+    // The hazard named in the follow-up brief is specific to Rust's
+    // `#[serde(flatten)]` buffering layer, which does not exist on this
+    // side, but the expectation is the same: a large integer just inside
+    // the safe bound, a small integer, an integral-valued float, and a
+    // non-integral value must each keep their own canonical representation
+    // (issue #9) after passing through as an unrecognised field.
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: {
+        kind: "loop",
+        actor: "builder",
+        harness: "codex",
+        bigInt: 9007199254740991,
+        smallInt: 1,
+        integralFloat: 2.0,
+        fraction: 0.000001,
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","bigInt":9007199254740991,"fraction":0.000001,"harness":"codex","integralFloat":2,"kind":"loop","smallInt":1}}',
+    );
+  });
+
+  test("a payload without unknown fields serialises exactly as before", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-1",
+      seq: 1,
+      ts: "2026-09-06T00:00:01.000Z",
+      payload: { kind: "loop", actor: "builder", harness: "codex" },
+    };
+
+    assert.equal(
+      serialiseEvent(parseEvent(raw)),
+      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","harness":"codex","kind":"loop"}}',
+    );
+  });
+
+  test("pins byte-identical bytes for an unknown payload field with Rust", () => {
+    const raw = {
+      v: 1,
+      type: "run.started",
+      runId: "run-cross",
+      seq: 1,
+      ts: "2026-09-07T00:00:00.000Z",
+      payload: {
+        "0alpha": "before-actor",
+        actor: "builder",
+        harness: "codex",
+        kind: "loop",
+        list: [{ zebra: 1, apple: 2 }, 3, "text"],
+        nested: { zebra: 1, apple: 2 },
+        zzzTail: "after-kind",
+      },
+    };
+
+    assert.equal(serialiseEvent(parseEvent(raw)), UNKNOWN_PAYLOAD_FIELD_WIRE);
   });
 });
 

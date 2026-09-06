@@ -190,17 +190,26 @@ const RUN_USAGE_FIELDS = new Set<string>([
   "unit",
 ]);
 
-function rejectUnknownFields(
+/**
+ * Returns the entries of `value` whose keys are not in `fields`, to be
+ * carried forward as an opaque extension rather than rejected or dropped
+ * (issue #12): a sink that forwards an event it does not fully understand
+ * must be byte-preserving, or the stream loses data silently at exactly the
+ * boundary this protocol exists to cross. Only the **envelope** and the
+ * closed unions (`kind`, `outcome`) stay strict; an unknown payload field is
+ * tolerated at read and retained on forward.
+ */
+function extractUnknownFields(
   value: Record<string, unknown>,
   fields: ReadonlySet<string>,
-  name: string,
-): void {
-  const unknownFields = Object.keys(value).filter((field) => !fields.has(field));
-  if (unknownFields.length > 0) {
-    throw new TypeError(
-      `${name} contains unknown field${unknownFields.length === 1 ? "" : "s"}: ${unknownFields.join(", ")}`,
-    );
+): Record<string, unknown> {
+  const unknown: Record<string, unknown> = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (!fields.has(key)) {
+      unknown[key] = fieldValue;
+    }
   }
+  return unknown;
 }
 
 function requiredString(
@@ -283,7 +292,6 @@ function parseRunCeilings(value: unknown): RunCeilings {
   if (!isRecord(value)) {
     throw new TypeError(`${name} must be an object`);
   }
-  rejectUnknownFields(value, RUN_CEILING_FIELDS, name);
 
   const costUsd = optionalNumber(value, "costUsd", name);
   const tokens = optionalNumber(value, "tokens", name);
@@ -292,6 +300,7 @@ function parseRunCeilings(value: unknown): RunCeilings {
     ...(costUsd === undefined ? {} : { costUsd }),
     ...(tokens === undefined ? {} : { tokens }),
     ...(wallMs === undefined ? {} : { wallMs }),
+    ...extractUnknownFields(value, RUN_CEILING_FIELDS),
   };
 }
 
@@ -300,7 +309,6 @@ function parseRunUsage(value: unknown): RunUsage {
   if (!isRecord(value)) {
     throw new TypeError(`${name} must be an object`);
   }
-  rejectUnknownFields(value, RUN_USAGE_FIELDS, name);
 
   const inputTokens = optionalNumber(value, "inputTokens", name);
   const outputTokens = optionalNumber(value, "outputTokens", name);
@@ -317,16 +325,22 @@ function parseRunUsage(value: unknown): RunUsage {
     ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
     ...(cacheCreationTokens === undefined ? {} : { cacheCreationTokens }),
     ...(unit === undefined ? {} : { unit }),
+    ...extractUnknownFields(value, RUN_USAGE_FIELDS),
   };
 }
 
-/** Parse and validate a `run.started` payload. */
+/**
+ * Parse and validate a `run.started` payload. Unknown fields are tolerated
+ * and retained (issue #12): required fields and the closed `kind` union stay
+ * strict, but a field this SDK does not recognise survives parsing and is
+ * re-emitted on serialisation rather than being rejected or silently
+ * dropped by the object literal below.
+ */
 export function parseRunStartedPayload(value: unknown): RunStartedPayload {
   const name = "RunStartedPayload";
   if (!isRecord(value)) {
     throw new TypeError(`${name} must be an object`);
   }
-  rejectUnknownFields(value, RUN_STARTED_FIELDS, name);
 
   const kind = requiredString(value, "kind", name);
   if (!RUN_KIND_VALUES.has(kind)) {
@@ -355,16 +369,22 @@ export function parseRunStartedPayload(value: unknown): RunStartedPayload {
     ...(repository === undefined ? {} : { repository }),
     ...(workOrder === undefined ? {} : { workOrder }),
     ...(ceilings === undefined ? {} : { ceilings }),
+    ...extractUnknownFields(value, RUN_STARTED_FIELDS),
   };
 }
 
-/** Parse and validate a `run.finished` payload. */
+/**
+ * Parse and validate a `run.finished` payload. Unknown fields are tolerated
+ * and retained (issue #12): required fields and the closed `outcome` union
+ * stay strict, but a field this SDK does not recognise survives parsing and
+ * is re-emitted on serialisation rather than being rejected or silently
+ * dropped by the object literal below.
+ */
 export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   const name = "RunFinishedPayload";
   if (!isRecord(value)) {
     throw new TypeError(`${name} must be an object`);
   }
-  rejectUnknownFields(value, RUN_FINISHED_FIELDS, name);
 
   const outcome = requiredString(value, "outcome", name);
   if (!RUN_OUTCOME_VALUES.has(outcome)) {
@@ -387,6 +407,7 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
     ...(usage === undefined ? {} : { usage }),
     durationMs,
     ...(estimated === undefined ? {} : { estimated }),
+    ...extractUnknownFields(value, RUN_FINISHED_FIELDS),
   };
 }
 
@@ -474,6 +495,13 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
  * retain the open payload behaviour: both SDKs validate the two `run.*`
  * vocabulary members here without turning the envelope parser into a closed
  * event-type registry.
+ *
+ * A payload's *unknown fields* are a separate axis from its *unknown type*
+ * and are tolerated rather than rejected (issue #12): `parseRunStartedPayload`
+ * and `parseRunFinishedPayload` no longer reject a field they do not
+ * recognise, and they carry it forward into the returned payload object
+ * rather than silently dropping it, so `serialiseEvent` re-emits it. Only the
+ * envelope stays closed to unknown fields, via the check just below.
  */
 export function parseEvent(value: unknown): Event {
   if (!isRecord(value)) {
