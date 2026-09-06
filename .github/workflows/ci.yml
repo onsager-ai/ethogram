@@ -50,6 +50,13 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Test
         run: cargo test
+      # Cargo unifies features across a dependency graph, so a consumer that
+      # enables serde_json's `preserve_order` anywhere enables it here too, and
+      # it changes the map backing every payload. The canonical form must not
+      # move. Without this run, that breakage is invisible to us and visible
+      # only in the consumer's output.
+      - name: Test under a consumer's preserve_order
+        run: cargo test --features preserve-order-probe
 
   conformance:
     # This job is the mechanical proof behind repository principle 1.

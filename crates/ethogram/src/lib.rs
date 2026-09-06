@@ -83,12 +83,19 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// conformance harness diffs producer output directly rather than
 /// normalising it first.
 ///
-/// The payload always round-trips through `serde_json::Value` before
-/// serialisation — whose map is a `BTreeMap` in this workspace, because
-/// `preserve_order` stays off — before the envelope is serialised. That
-/// round-trip is what makes the sorted-key guarantee hold even when `P` is a
-/// typed struct: serialised directly, a struct emits its fields in
-/// declaration order and the sort would silently stop applying.
+/// The payload always round-trips through `serde_json::Value` before the
+/// envelope is serialised. That round-trip is what makes the sorted-key
+/// guarantee hold even when `P` is a typed struct: serialised directly, a
+/// struct emits its fields in declaration order and the sort would silently
+/// stop applying.
+///
+/// The keys are then sorted **explicitly**, rather than relying on
+/// `serde_json::Map` being a `BTreeMap`. That reliance would have made this
+/// SDK's canonical form depend on a Cargo feature it does not control:
+/// `preserve_order` backs the map with an insertion-ordered map instead, and
+/// Cargo unifies features across a dependency graph, so any consumer enabling
+/// it anywhere — umwelt does — would silently turn sorting off here while this
+/// repository's own CI, which never enables it, stayed green.
 ///
 /// Numbers are canonicalised before serialisation: any `f64` with a zero
 /// fractional part and a magnitude below 2^53 is emitted as an integer, so
@@ -177,12 +184,20 @@ fn canonicalise_numbers(value: Value) -> Value {
         Value::Array(values) => {
             Value::Array(values.into_iter().map(canonicalise_numbers).collect())
         }
-        Value::Object(values) => Value::Object(
-            values
+        Value::Object(values) => {
+            // Sort explicitly rather than leaning on `Map` being a `BTreeMap`.
+            // With serde_json's `preserve_order` feature the map is
+            // insertion-ordered, and Cargo unifies features across the whole
+            // dependency graph — so a consumer enabling it would otherwise turn
+            // this sort off without touching this crate, and without failing
+            // this crate's own CI. Sorting here holds under either backing map.
+            let mut entries: Vec<(String, Value)> = values
                 .into_iter()
                 .map(|(key, child)| (key, canonicalise_numbers(child)))
-                .collect(),
-        ),
+                .collect();
+            entries.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
+            Value::Object(entries.into_iter().collect())
+        }
         Value::Number(number) => Value::Number(canonicalise_number(number)),
         primitive => primitive,
     }
