@@ -112,3 +112,22 @@ instead of a number that happens to look integral.
 
 `v1/` remains empty until the first real capture because the first immutable
 fixture must record observed producer output rather than an invented example.
+
+## Library views
+
+The `ethogram-corpus` crate and `@onsager-ai/ethogram-corpus` package expose
+the canonical files to consumers without requiring them to know this
+repository's layout. They are separate libraries that depend on the SDKs; the
+SDKs never depend on the corpus.
+
+Their committed generated modules are views of this directory, not independent
+fixture definitions. After adding a captured `v1/*.json` fixture, run:
+
+```sh
+pnpm run generate:corpus
+```
+
+The generator sorts file names by UTF-8 bytes and rewrites both language
+modules deterministically. CI reruns it and rejects any working-tree diff, so
+a directory fixture missing from either module and a stale module entry whose
+file was removed both fail the same check.

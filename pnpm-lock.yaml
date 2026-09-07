@@ -20,6 +20,22 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  packages/ethogram-corpus:
+    dependencies:
+      '@onsager-ai/ethogram':
+        specifier: workspace:*
+        version: link:../ethogram
+    devDependencies:
+      '@types/node':
+        specifier: 20.19.25
+        version: 20.19.25
+      tsx:
+        specifier: 4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
 packages:
 
   '@esbuild/aix-ppc64@0.27.7':
