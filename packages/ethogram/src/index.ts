@@ -413,11 +413,13 @@ export interface DecisionOption {
  * number, or tool name, never the subject's content.
  *
  * `onTimeout` is enforced rather than conventional: it is allowed only for
- * `permission`, and its only permitted value is `"deny"`. A tripwire that
- * auto-proceeded on timeout would violate ostrom's "never auto-proceed" rule;
- * enforcing the restriction in `validate` prevents a producer from shipping
- * that mistake quietly. `parseEvent` deliberately does not apply this policy,
- * because a forwarder must retain any representable request.
+ * `permission`, its only permitted value is `"deny"`, and that value must
+ * name one of this request's own `options[].id` — a request cannot declare a
+ * timeout action it never offered. A tripwire that auto-proceeded on timeout
+ * would violate ostrom's "never auto-proceed" rule; enforcing the
+ * restriction in `validate` prevents a producer from shipping that mistake
+ * quietly. `parseEvent` deliberately does not apply this policy, because a
+ * forwarder must retain any representable request.
  */
 export interface DecisionRequestedPayload {
   /** Producer-assigned and unique within the run. */
@@ -1612,6 +1614,13 @@ export function validate(eventType: string, payload: unknown): void {
             `DecisionRequestedPayload.onTimeout must be "deny" when kind is "permission"; received "${requested.onTimeout}"`,
           );
         }
+        if (
+          !requested.options.some((option) => option.id === requested.onTimeout)
+        ) {
+          throw new TypeError(
+            `DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received "${requested.onTimeout}"`,
+          );
+        }
       }
       validateScalarBound(
         requested.dossier.question,
@@ -1659,6 +1668,17 @@ export function validate(eventType: string, payload: unknown): void {
  *
  * The chosen `optionId` must be present in the request's options. The sole
  * exception is the request's `onTimeout` value when `byTimeout` is true.
+ *
+ * This exception has not become dead weight now that `validate` requires
+ * `onTimeout` to name an existing option: this function never calls
+ * `validate`, so it has no way to know whether the `request` it was handed
+ * ever passed that check. A request forwarded without validation, or
+ * emitted by a producer written before the rule existed, can still reach
+ * here with an `onTimeout` absent from its own `options` — the same shape
+ * `parseEvent` deliberately still accepts. The exception is what lets a
+ * genuine timeout answer against such a request validate correctly instead
+ * of being misreported as an unrecognised option.
+ *
  * `reversal`, when present, must always be a request option, and the two
  * `decisionId` values must match.
  */

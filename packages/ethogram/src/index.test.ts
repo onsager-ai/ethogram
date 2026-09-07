@@ -1226,6 +1226,10 @@ describe("decision payload parsing and validation (spec #7)", () => {
     assert.doesNotThrow(() =>
       validate(DECISION_REQUESTED, {
         ...minimalRequest("permission"),
+        options: [
+          { id: "allow", label: "Allow" },
+          { id: "deny", label: "Deny" },
+        ],
         onTimeout: "deny",
       }),
     );
@@ -1236,6 +1240,34 @@ describe("decision payload parsing and validation (spec #7)", () => {
     }
   });
 
+  test("validate rejects onTimeout naming no request option", () => {
+    // minimalRequest's only option is "allow"; "deny" is permitted by the
+    // kind/value rules above but was never offered.
+    assert.throws(
+      () =>
+        validate(DECISION_REQUESTED, {
+          ...minimalRequest("permission"),
+          onTimeout: "deny",
+        }),
+      new TypeError(
+        "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"deny\"",
+      ),
+    );
+  });
+
+  test("validate accepts onTimeout naming an existing option", () => {
+    assert.doesNotThrow(() =>
+      validate(DECISION_REQUESTED, {
+        ...minimalRequest("permission"),
+        options: [
+          { id: "allow", label: "Allow" },
+          { id: "deny", label: "Deny" },
+        ],
+        onTimeout: "deny",
+      }),
+    );
+  });
+
   test("parseEvent accepts onTimeout on a tripwire", () => {
     // This is a producer-policy violation, but it is representable. The test
     // fails if the rule ever leaks from validate into parsing.
@@ -1244,6 +1276,19 @@ describe("decision payload parsing and validation (spec #7)", () => {
         ...completeEvent(),
         type: DECISION_REQUESTED,
         payload: { ...minimalRequest("tripwire"), onTimeout: "deny" },
+      }),
+    );
+  });
+
+  test("parseEvent accepts onTimeout naming no request option", () => {
+    // Naming an option the request never offered is a producer-policy
+    // violation, but the event is still representable. This fails if the
+    // options-membership rule ever leaks into parsing.
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        type: DECISION_REQUESTED,
+        payload: { ...minimalRequest("permission"), onTimeout: "deny" },
       }),
     );
   });
@@ -2665,6 +2710,49 @@ describe("InMemorySink", () => {
           payload: { text: "too late" },
         }),
       RunClosedError,
+    );
+  });
+
+  test("appendEvent refuses a real control.applied after run.finished, not a sequence gap", () => {
+    // A `control.applied` sounds like the one post-terminal event that
+    // "surely" should still be recordable — an interrupt landing just after
+    // the run ends. Ruled on umwelt#1: a closed run accepts nothing after
+    // run.finished, control events included, and this is refused the same
+    // way as any other post-terminal append: as RunClosedError, not
+    // SequenceError, even though this append's seq is otherwise the
+    // expected next value.
+    const sink = new InMemorySink(() => "unused");
+    sink.appendEvent(completeEvent());
+    sink.appendEvent({
+      ...completeEvent(),
+      type: RUN_FINISHED,
+      seq: 2,
+      payload: { outcome: "completed", durationMs: 1 },
+    });
+
+    const before = sink.events("run-1");
+
+    let closedError: unknown;
+    try {
+      sink.appendEvent({
+        ...completeEvent(),
+        type: CONTROL_APPLIED,
+        seq: 3,
+        payload: { controlId: "control-1", ok: true },
+      });
+    } catch (error) {
+      closedError = error;
+    }
+
+    assert.ok(closedError instanceof RunClosedError);
+    assert.ok(!(closedError instanceof SequenceError));
+    assert.equal((closedError as RunClosedError).runId, "run-1");
+
+    assert.deepEqual(sink.events("run-1"), before);
+    assert.equal(
+      sink.events("run-1").length,
+      2,
+      "a refused control.applied append must not consume a seq",
     );
   });
 

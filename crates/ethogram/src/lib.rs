@@ -1013,11 +1013,13 @@ pub struct DecisionOption {
 /// number, or tool name, never the subject's content.
 ///
 /// `on_timeout` is enforced rather than conventional: it is allowed only for
-/// `permission`, and its only permitted value is `deny`. A tripwire that
-/// auto-proceeded on timeout would violate ostrom's "never auto-proceed" rule;
-/// enforcing the restriction in [`validate`] prevents a producer from
-/// shipping that mistake quietly. [`parse_event`] deliberately does not apply
-/// this policy, because a forwarder must retain any representable request.
+/// `permission`, its only permitted value is `deny`, and that value must name
+/// one of this request's own `options[].id` — a request cannot declare a
+/// timeout action it never offered. A tripwire that auto-proceeded on timeout
+/// would violate ostrom's "never auto-proceed" rule; enforcing the
+/// restriction in [`validate`] prevents a producer from shipping that mistake
+/// quietly. [`parse_event`] deliberately does not apply this policy, because
+/// a forwarder must retain any representable request.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionRequestedPayload {
@@ -1297,6 +1299,15 @@ where
                     "DecisionRequestedPayload.onTimeout must be \"deny\" when kind is \"permission\"; received \"{on_timeout}\""
                 )));
             }
+            if !requested
+                .options
+                .iter()
+                .any(|option| option.id == on_timeout)
+            {
+                return Err(de::Error::custom(format_args!(
+                    "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"{on_timeout}\""
+                )));
+            }
         }
 
         validate_scalar_bound(
@@ -1343,6 +1354,17 @@ where
 ///
 /// The chosen `option_id` must be present in the request's options. The sole
 /// exception is the request's `on_timeout` value when `by_timeout` is true.
+///
+/// This exception has not become dead weight now that [`validate`] requires
+/// `on_timeout` to name an existing option: this function never calls
+/// `validate`, so it has no way to know whether the `request` it was handed
+/// ever passed that check. A request forwarded without validation, or
+/// emitted by a producer written before the rule existed, can still reach
+/// here with an `on_timeout` absent from its own `options` — the same shape
+/// [`parse_event`] deliberately still accepts. The exception is what lets a
+/// genuine timeout answer against such a request validate correctly instead
+/// of being misreported as an unrecognised option.
+///
 /// A `reversal`, when present, must always be an option from the request, and
 /// the two `decision_id` values must match.
 pub fn validate_decision_answer_against_request(
@@ -3671,6 +3693,8 @@ mod tests {
         );
 
         let mut valid_permission = minimal_decision_request("permission");
+        valid_permission["options"] =
+            json!([{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }]);
         valid_permission["onTimeout"] = json!("deny");
         validate(DECISION_REQUESTED, &valid_permission).unwrap();
 
@@ -3686,10 +3710,42 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_on_timeout_naming_no_request_option() {
+        // `options` here is only `allow`; `deny` is permitted by the
+        // kind/value rules above but was never offered.
+        let mut payload = minimal_decision_request("permission");
+        payload["onTimeout"] = json!("deny");
+        let error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"deny\""
+        );
+    }
+
+    #[test]
+    fn validate_accepts_on_timeout_naming_an_existing_option() {
+        let mut payload = minimal_decision_request("permission");
+        payload["options"] =
+            json!([{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }]);
+        payload["onTimeout"] = json!("deny");
+        validate(DECISION_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
     fn parse_event_accepts_on_timeout_on_a_tripwire() {
         // `onTimeout` on a tripwire is a producer-policy violation, but it is
         // representable. This fails if the rule ever leaks into parsing.
         let mut payload = minimal_decision_request("tripwire");
+        payload["onTimeout"] = json!("deny");
+        parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload)).unwrap();
+    }
+
+    #[test]
+    fn parse_event_accepts_on_timeout_naming_no_request_option() {
+        // Naming an option the request never offered is a producer-policy
+        // violation, but the event is still representable. This fails if the
+        // options-membership rule ever leaks into parsing.
+        let mut payload = minimal_decision_request("permission");
         payload["onTimeout"] = json!("deny");
         parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload)).unwrap();
     }
@@ -4788,6 +4844,55 @@ mod tests {
         assert!(
             matches!(error, AppendError::RunClosed(_)),
             "error was: {error:?}"
+        );
+    }
+
+    #[test]
+    fn append_event_refuses_a_real_control_applied_after_run_finished() {
+        // A `control.applied` sounds like the one post-terminal event that
+        // "surely" should still be recordable — an interrupt landing just
+        // after the run ends. Ruled on umwelt#1: a closed run accepts
+        // nothing after `run.finished`, control events included, and this is
+        // refused the same way as any other post-terminal append: as
+        // `RunClosed`, not `Sequence`, even though this append's `seq` is
+        // otherwise the expected next value.
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        sink.append_event(Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        })
+        .unwrap();
+
+        let before = sink.events("run-1").to_vec();
+
+        let error = sink
+            .append_event(Event {
+                event_type: CONTROL_APPLIED.to_owned(),
+                seq: 3,
+                payload: json!({ "controlId": "control-1", "ok": true }),
+                ..complete_event()
+            })
+            .unwrap_err();
+
+        let AppendError::RunClosed(run_closed) = error else {
+            panic!(
+                "expected AppendError::RunClosed for a control.applied appended after run.finished, got {error:?}"
+            );
+        };
+        assert_eq!(run_closed.run_id, "run-1");
+
+        assert_eq!(
+            sink.events("run-1").to_vec(),
+            before,
+            "a refused control.applied append must not change stored events"
+        );
+        assert_eq!(
+            sink.events("run-1").len(),
+            2,
+            "a refused control.applied append must not consume a seq"
         );
     }
 
