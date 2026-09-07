@@ -311,6 +311,47 @@ export interface ControlAppliedPayload {
   landedIn?: string;
 }
 
+export const CAPTURE_REFUSAL_CAUSES = [
+  "over_bound",
+  "gap",
+  "duplicate",
+  "finished",
+  "malformed",
+] as const;
+
+export type KnownCaptureRefusalCause =
+  (typeof CAPTURE_REFUSAL_CAUSES)[number];
+
+/**
+ * A capture-refusal cause this SDK knows, or an unfamiliar wire string
+ * retained verbatim for a newer vocabulary. Consumers must handle the
+ * unfamiliar-string case explicitly and must never map it onto a known cause.
+ */
+export type CaptureRefusalCause =
+  | KnownCaptureRefusalCause
+  | (string & {});
+
+/**
+ * Records an event refused by a relay or capturing runtime on that runtime's
+ * own run. It names the source run without embedding the refused content,
+ * whose size may be the reason for refusal.
+ */
+export interface CaptureRefusedPayload {
+  cause: CaptureRefusalCause;
+  sourceRunId: string;
+  sourceSeq?: number;
+  sourceType?: string;
+  field?: string;
+  count?: number;
+  max?: number;
+  /**
+   * A bounded, excerpted parser message for `malformed`, not content from the
+   * refused event itself. `truncated` records whether it was excerpted.
+   */
+  detail?: string;
+  truncated?: boolean;
+}
+
 /** The wire string for a `run.started` event's `type` field. */
 export const RUN_STARTED = "run.started" as const;
 /** The wire string for a `run.finished` event's `type` field. */
@@ -331,6 +372,8 @@ export const AGENT_WARNING = "agent.warning" as const;
 export const CONTROL_REQUESTED = "control.requested" as const;
 /** The wire string for a `control.applied` event's `type` field. */
 export const CONTROL_APPLIED = "control.applied" as const;
+/** The wire string for a `capture.refused` event's `type` field. */
+export const CAPTURE_REFUSED = "capture.refused" as const;
 
 /**
  * Every event `type` this SDK has a typed payload for. This is not a closed
@@ -350,6 +393,7 @@ export const KNOWN_TYPES = [
   AGENT_WARNING,
   CONTROL_REQUESTED,
   CONTROL_APPLIED,
+  CAPTURE_REFUSED,
 ] as const;
 
 export type KnownType = (typeof KNOWN_TYPES)[number];
@@ -370,6 +414,7 @@ export interface EventPayloadMap {
   [AGENT_WARNING]: AgentWarningPayload;
   [CONTROL_REQUESTED]: ControlRequestedPayload;
   [CONTROL_APPLIED]: ControlAppliedPayload;
+  [CAPTURE_REFUSED]: CaptureRefusedPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -456,6 +501,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
 const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
+const CAPTURE_REFUSAL_CAUSE_VALUES = new Set<string>(CAPTURE_REFUSAL_CAUSES);
 const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
 
 const RUN_STARTED_FIELDS = new Set<string>([
@@ -557,6 +603,18 @@ const CONTROL_APPLIED_FIELDS = new Set<string>([
   "reason",
   "truncated",
   "landedIn",
+]);
+
+const CAPTURE_REFUSED_FIELDS = new Set<string>([
+  "cause",
+  "sourceRunId",
+  "sourceSeq",
+  "sourceType",
+  "field",
+  "count",
+  "max",
+  "detail",
+  "truncated",
 ]);
 
 /**
@@ -1022,6 +1080,42 @@ export function parseControlAppliedPayload(
   };
 }
 
+/**
+ * Parse a representable `capture.refused` payload. Unknown fields and
+ * unfamiliar `cause` strings are tolerated and retained, while required
+ * fields stay strict.
+ */
+export function parseCaptureRefusedPayload(
+  value: unknown,
+): CaptureRefusedPayload {
+  const name = "CaptureRefusedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const cause = requiredString(value, "cause", name);
+  const sourceRunId = requiredString(value, "sourceRunId", name);
+  const sourceSeq = optionalSafeInteger(value, "sourceSeq", name);
+  const sourceType = optionalString(value, "sourceType", name);
+  const field = optionalString(value, "field", name);
+  const count = optionalSafeInteger(value, "count", name);
+  const max = optionalSafeInteger(value, "max", name);
+  const detail = optionalString(value, "detail", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  return {
+    cause: cause as CaptureRefusalCause,
+    sourceRunId,
+    ...(sourceSeq === undefined ? {} : { sourceSeq }),
+    ...(sourceType === undefined ? {} : { sourceType }),
+    ...(field === undefined ? {} : { field }),
+    ...(count === undefined ? {} : { count }),
+    ...(max === undefined ? {} : { max }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...extractUnknownFields(value, CAPTURE_REFUSED_FIELDS),
+  };
+}
+
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
     case RUN_STARTED:
@@ -1044,6 +1138,8 @@ function parseKnownPayload(eventType: string, payload: unknown): unknown {
       return parseControlRequestedPayload(payload);
     case CONTROL_APPLIED:
       return parseControlAppliedPayload(payload);
+    case CAPTURE_REFUSED:
+      return parseCaptureRefusedPayload(payload);
     default:
       return payload;
   }
@@ -1205,6 +1301,20 @@ export function validate(eventType: string, payload: unknown): void {
       validateScalarBound(
         applied.reason,
         "ControlAppliedPayload.reason",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case CAPTURE_REFUSED: {
+      const refused = parsed as CaptureRefusedPayload;
+      if (!CAPTURE_REFUSAL_CAUSE_VALUES.has(refused.cause)) {
+        throw new TypeError(
+          `CaptureRefusedPayload.cause has unknown value: ${refused.cause}`,
+        );
+      }
+      validateScalarBound(
+        refused.detail,
+        "CaptureRefusedPayload.detail",
         MAX_EXCERPT_SCALARS,
       );
       return;

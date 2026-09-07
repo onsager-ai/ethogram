@@ -33,13 +33,15 @@ pub const AGENT_WARNING: &str = "agent.warning";
 pub const CONTROL_REQUESTED: &str = "control.requested";
 /// The wire string for a `control.applied` event's `type` field.
 pub const CONTROL_APPLIED: &str = "control.applied";
+/// The wire string for a `capture.refused` event's `type` field.
+pub const CAPTURE_REFUSED: &str = "capture.refused";
 
 /// Every event `type` this SDK has a typed payload for. This is not a closed
 /// vocabulary: `parse_event` still accepts a type it has never heard of (see
 /// `check_known_payload_representation`'s fallthrough), and a consumer may
 /// still match a literal for vocabulary this SDK has not learned. A constant
 /// is a name for a string, not a gate.
-pub const KNOWN_TYPES: [&str; 10] = [
+pub const KNOWN_TYPES: [&str; 11] = [
     RUN_STARTED,
     RUN_FINISHED,
     AGENT_STARTED,
@@ -50,6 +52,7 @@ pub const KNOWN_TYPES: [&str; 10] = [
     AGENT_WARNING,
     CONTROL_REQUESTED,
     CONTROL_APPLIED,
+    CAPTURE_REFUSED,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,6 +264,66 @@ impl<'de> Deserialize<'de> for ControlKind {
         Ok(match value.as_str() {
             "interrupt" => Self::Interrupt,
             "steer" => Self::Steer,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
+/// A capture-refusal cause this SDK knows, or an unfamiliar wire string
+/// retained verbatim in `Unknown`. Consumers must handle `Unknown` explicitly
+/// and must never map it onto a known cause.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureRefusalCause {
+    /// The refused event exceeded a capture bound.
+    OverBound,
+    /// The refused event would leave a gap in the source run's sequence.
+    Gap,
+    /// The refused event duplicated one already recorded.
+    Duplicate,
+    /// The source run had already finished.
+    Finished,
+    /// The refused event could not be parsed into a representable envelope.
+    Malformed,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
+}
+
+impl CaptureRefusalCause {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OverBound => "over_bound",
+            Self::Gap => "gap",
+            Self::Duplicate => "duplicate",
+            Self::Finished => "finished",
+            Self::Malformed => "malformed",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for CaptureRefusalCause {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureRefusalCause {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "over_bound" => Self::OverBound,
+            "gap" => Self::Gap,
+            "duplicate" => Self::Duplicate,
+            "finished" => Self::Finished,
+            "malformed" => Self::Malformed,
             _ => Self::Unknown(value),
         })
     }
@@ -776,6 +839,62 @@ pub struct ControlAppliedPayload {
     pub extra: PayloadExtension,
 }
 
+/// Records an event refused by a relay or capturing runtime on that runtime's
+/// own run. It names the source run without embedding the refused content,
+/// whose size may be the reason for refusal.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRefusedPayload {
+    pub cause: CaptureRefusalCause,
+    pub source_run_id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_seq: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_type: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub field: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub count: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max: Option<u64>,
+    /// A bounded, excerpted parser message for `malformed`, not content from
+    /// the refused event itself. `truncated` records whether it was excerpted.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub detail: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventDraft<P = Value> {
@@ -943,6 +1062,18 @@ where
             "ControlAppliedPayload.reason",
             MAX_EXCERPT_SCALARS,
         )?;
+    } else if event_type == CAPTURE_REFUSED {
+        let refused = serde_json::from_value::<CaptureRefusedPayload>(payload)?;
+        if let CaptureRefusalCause::Unknown(value) = refused.cause {
+            return Err(de::Error::custom(format_args!(
+                "CaptureRefusedPayload.cause has unknown value: {value}"
+            )));
+        }
+        validate_scalar_bound(
+            refused.detail.as_deref(),
+            "CaptureRefusedPayload.detail",
+            MAX_EXCERPT_SCALARS,
+        )?;
     }
 
     Ok(())
@@ -1004,6 +1135,8 @@ fn check_known_payload_representation(event_type: &str, payload: &Value) -> serd
         serde_json::from_value::<ControlRequestedPayload>(payload.clone()).map(drop)
     } else if event_type == CONTROL_APPLIED {
         serde_json::from_value::<ControlAppliedPayload>(payload.clone()).map(drop)
+    } else if event_type == CAPTURE_REFUSED {
+        serde_json::from_value::<CaptureRefusedPayload>(payload.clone()).map(drop)
     } else {
         Ok(())
     }
@@ -1615,6 +1748,17 @@ mod tests {
     // future vocabulary-aware SDK would emit.
     const UNKNOWN_CONTROL_KIND_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}"#;
 
+    // Cross-SDK byte identity for a fully populated `over_bound` refusal and
+    // a minimal `gap` refusal (spec #15). These exact literals are pasted into
+    // the TypeScript suite and asserted against events hand-built through each
+    // SDK's typed API.
+    const CAPTURE_REFUSED_OVER_BOUND_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":1,"ts":"2026-09-07T06:00:00.000Z","payload":{"cause":"over_bound","count":20000,"field":"AgentTextPayload.text","max":16384,"sourceRunId":"run-source","sourceSeq":8,"sourceType":"agent.text"}}"#;
+    const CAPTURE_REFUSED_GAP_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":2,"ts":"2026-09-07T06:00:01.000Z","payload":{"cause":"gap","sourceRunId":"run-source-gap"}}"#;
+
+    // This value is intentionally one neither SDK will ever know. The cause
+    // string and the whole canonical event must survive an older relay exactly.
+    const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}"#;
+
     fn complete_event() -> Event {
         Event {
             v: EVENT_SCHEMA_VERSION,
@@ -1906,6 +2050,16 @@ mod tests {
                     "reason": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
                 }),
                 "ControlAppliedPayload.reason",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                CAPTURE_REFUSED,
+                json!({
+                    "cause": "malformed",
+                    "sourceRunId": "run-source",
+                    "detail": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "CaptureRefusedPayload.detail",
                 MAX_EXCERPT_SCALARS,
             ),
         ];
@@ -2697,6 +2851,251 @@ mod tests {
             serialise_event(&applied_interrupt).unwrap(),
             CONTROL_APPLIED_INTERRUPT_WIRE
         );
+    }
+
+    // -- capture.refused (spec #15) -------------------------------------
+
+    #[test]
+    fn accepts_every_permitted_capture_refusal_cause() {
+        for cause in ["over_bound", "gap", "duplicate", "finished", "malformed"] {
+            let payload = json!({ "cause": cause, "sourceRunId": "run-source" });
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+            parse_event(&input).unwrap();
+            validate(CAPTURE_REFUSED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_capture_refused_field() {
+        for field in ["cause", "sourceRunId"] {
+            let mut payload = json!({ "cause": "gap", "sourceRunId": "run-source" });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+
+            let parse_error = parse_event(&input).unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for {field} was: {parse_error}"
+            );
+            let validation_error = validate(CAPTURE_REFUSED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for {field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_an_unknown_capture_refusal_cause_verbatim_and_validate_reports_it() {
+        let event = parse_event(UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE).unwrap();
+        let parsed: CaptureRefusedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+
+        assert_eq!(
+            parsed.cause,
+            CaptureRefusalCause::Unknown("never-a-valid-capture-refusal-cause".to_owned())
+        );
+        let error = validate(CAPTURE_REFUSED, &event.payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "CaptureRefusedPayload.cause has unknown value: never-a-valid-capture-refusal-cause"
+        );
+        assert_eq!(parsed.cause.as_str(), "never-a-valid-capture-refusal-cause");
+        assert_eq!(
+            serde_json::to_string(&parsed.cause).unwrap(),
+            r#""never-a-valid-capture-refusal-cause""#
+        );
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE
+        );
+    }
+
+    #[test]
+    fn capture_refused_counts_are_non_negative_safe_integers() {
+        for field in ["sourceSeq", "count", "max"] {
+            for invalid in [json!(-1), json!(1.5), json!(9_007_199_254_740_992_u64)] {
+                let mut payload = json!({ "cause": "over_bound", "sourceRunId": "run-source" });
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_owned(), invalid);
+                let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+
+                assert!(parse_event(&input).is_err(), "parse accepted {field}");
+                assert!(
+                    validate(CAPTURE_REFUSED, &payload).is_err(),
+                    "validate accepted {field}"
+                );
+            }
+
+            let mut payload = json!({ "cause": "over_bound", "sourceRunId": "run-source" });
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), json!(MAX_SAFE_INTEGER_MAGNITUDE));
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+            parse_event(&input).unwrap();
+            validate(CAPTURE_REFUSED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn capture_refused_never_carries_content_bearing_fields() {
+        // This is a fully populated typed payload, so adding even an optional
+        // field to `CaptureRefusedPayload` first breaks this struct literal.
+        // Once that field is populated, the exact permitted-key assertion
+        // below still fails unless the protocol's no-content boundary is
+        // deliberately revisited. Listing only currently imagined forbidden
+        // names would not catch a newly invented content field.
+        let payload = CaptureRefusedPayload {
+            cause: CaptureRefusalCause::OverBound,
+            source_run_id: "run-source".to_owned(),
+            source_seq: Some(8),
+            source_type: Some(AGENT_TEXT.to_owned()),
+            field: Some("AgentTextPayload.text".to_owned()),
+            count: Some(20_000),
+            max: Some(16_384),
+            detail: Some("parser message only".to_owned()),
+            truncated: Some(false),
+            extra: PayloadExtension::new(),
+        };
+        let serialised = serde_json::to_value(payload).unwrap();
+        let keys: std::collections::HashSet<&str> = serialised
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([
+                "cause",
+                "sourceRunId",
+                "sourceSeq",
+                "sourceType",
+                "field",
+                "count",
+                "max",
+                "detail",
+                "truncated",
+            ])
+        );
+    }
+
+    #[test]
+    fn absent_optional_capture_refused_fields_are_omitted_instead_of_null() {
+        let payload = CaptureRefusedPayload {
+            cause: CaptureRefusalCause::Gap,
+            source_run_id: "run-source-gap".to_owned(),
+            source_seq: None,
+            source_type: None,
+            field: None,
+            count: None,
+            max: None,
+            detail: None,
+            truncated: None,
+            extra: PayloadExtension::new(),
+        };
+        let serialised = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(
+            serialised,
+            json!({ "cause": "gap", "sourceRunId": "run-source-gap" })
+        );
+        assert!(!serialised.to_string().contains(":null"));
+    }
+
+    #[test]
+    fn capture_refused_retains_and_re_emits_unknown_payload_fields() {
+        let payload: CaptureRefusedPayload = serde_json::from_value(json!({
+            "cause": "gap",
+            "sourceRunId": "run-source-gap",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.extra.get("future"), Some(&json!({ "value": 1 })));
+        assert_eq!(
+            serde_json::to_value(payload).unwrap()["future"],
+            json!({ "value": 1 })
+        );
+    }
+
+    #[test]
+    fn parse_event_carries_an_over_bound_capture_detail_that_validate_refuses() {
+        let input = lifecycle_event_input(
+            CAPTURE_REFUSED,
+            json!({
+                "cause": "malformed",
+                "sourceRunId": "run-source",
+                "detail": "x".repeat(MAX_EXCERPT_SCALARS + 1)
+            }),
+        );
+        let event = parse_event(&input).unwrap();
+        let error = validate(CAPTURE_REFUSED, &event.payload).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "CaptureRefusedPayload.detail has 4097 Unicode scalar values; maximum is 4096"
+        );
+    }
+
+    #[test]
+    fn capture_refused_events_match_the_typescript_pinned_bytes() {
+        let over_bound = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CAPTURE_REFUSED.to_owned(),
+            run_id: "run-relay".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T06:00:00.000Z".to_owned(),
+            payload: CaptureRefusedPayload {
+                cause: CaptureRefusalCause::OverBound,
+                source_run_id: "run-source".to_owned(),
+                source_seq: Some(8),
+                source_type: Some(AGENT_TEXT.to_owned()),
+                field: Some("AgentTextPayload.text".to_owned()),
+                count: Some(20_000),
+                max: Some(16_384),
+                detail: None,
+                truncated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let gap = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CAPTURE_REFUSED.to_owned(),
+            run_id: "run-relay".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T06:00:01.000Z".to_owned(),
+            payload: CaptureRefusedPayload {
+                cause: CaptureRefusalCause::Gap,
+                source_run_id: "run-source-gap".to_owned(),
+                source_seq: None,
+                source_type: None,
+                field: None,
+                count: None,
+                max: None,
+                detail: None,
+                truncated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        validate(CAPTURE_REFUSED, &over_bound.payload).unwrap();
+        assert!(over_bound.payload.count.unwrap() > over_bound.payload.max.unwrap());
+        assert_eq!(
+            serialise_event(&over_bound).unwrap(),
+            CAPTURE_REFUSED_OVER_BOUND_WIRE
+        );
+        assert_eq!(serialise_event(&gap).unwrap(), CAPTURE_REFUSED_GAP_WIRE);
+
+        for expected in [CAPTURE_REFUSED_OVER_BOUND_WIRE, CAPTURE_REFUSED_GAP_WIRE] {
+            let parsed = parse_event(expected).unwrap();
+            assert_eq!(serialise_event(&parsed).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -3624,7 +4023,7 @@ mod tests {
         assert!(serde_json::from_str::<Event<RunStartedPayload>>(&input).is_ok());
     }
 
-    /// For each of the eight known types, builds a minimally valid event of
+    /// For each of the eleven known types, builds a minimally valid event of
     /// that type, serialises it, and parses the `type` field back out of the
     /// result — then compares that against the exported constant.
     ///
@@ -3690,11 +4089,18 @@ mod tests {
             ),
             CONTROL_APPLIED
         );
+        assert_eq!(
+            round_tripped_type(
+                CAPTURE_REFUSED,
+                json!({ "cause": "gap", "sourceRunId": "run-source" }),
+            ),
+            CAPTURE_REFUSED
+        );
     }
 
     #[test]
-    fn known_types_holds_exactly_the_ten_recognised_types_with_no_duplicates() {
-        assert_eq!(KNOWN_TYPES.len(), 10);
+    fn known_types_holds_exactly_the_eleven_recognised_types_with_no_duplicates() {
+        assert_eq!(KNOWN_TYPES.len(), 11);
 
         let unique: std::collections::HashSet<&str> = KNOWN_TYPES.iter().copied().collect();
         assert_eq!(
@@ -3715,6 +4121,7 @@ mod tests {
                 AGENT_WARNING,
                 CONTROL_REQUESTED,
                 CONTROL_APPLIED,
+                CAPTURE_REFUSED,
             ])
         );
     }

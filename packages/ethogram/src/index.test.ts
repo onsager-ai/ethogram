@@ -8,6 +8,8 @@ import {
   AGENT_TOOL_RESULT,
   AGENT_TOOL_USE,
   AGENT_WARNING,
+  CAPTURE_REFUSAL_CAUSES,
+  CAPTURE_REFUSED,
   CONTROL_APPLIED,
   CONTROL_KINDS,
   CONTROL_REQUESTED,
@@ -26,12 +28,14 @@ import {
   foldRun,
   parseAgentCompletedPayload,
   parseAgentStartedPayload,
+  parseCaptureRefusedPayload,
   parseControlAppliedPayload,
   parseControlRequestedPayload,
   parseEvent,
   serialiseEvent,
   stamp,
   validate,
+  type CaptureRefusedPayload,
   type Event,
   type EventDraft,
   type EventPayloadMap,
@@ -105,7 +109,29 @@ const CONTROL_APPLIED_INTERRUPT_WIRE =
 const UNKNOWN_CONTROL_KIND_WIRE =
   '{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}';
 
+// Cross-SDK byte identity for a fully populated `over_bound` refusal and a
+// minimal `gap` refusal (spec #15). These exact literals are pasted into the
+// Rust suite and asserted against events hand-built through each SDK's typed
+// API.
+const CAPTURE_REFUSED_OVER_BOUND_WIRE =
+  '{"v":1,"type":"capture.refused","runId":"run-relay","seq":1,"ts":"2026-09-07T06:00:00.000Z","payload":{"cause":"over_bound","count":20000,"field":"AgentTextPayload.text","max":16384,"sourceRunId":"run-source","sourceSeq":8,"sourceType":"agent.text"}}';
+const CAPTURE_REFUSED_GAP_WIRE =
+  '{"v":1,"type":"capture.refused","runId":"run-relay","seq":2,"ts":"2026-09-07T06:00:01.000Z","payload":{"cause":"gap","sourceRunId":"run-source-gap"}}';
+
+// This value is intentionally one neither SDK will ever know. The cause
+// string and the whole canonical event must survive an older relay exactly.
+const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE =
+  '{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}';
+
 const PERMITTED_CONTROL_KINDS = ["interrupt", "steer"] as const;
+
+const PERMITTED_CAPTURE_REFUSAL_CAUSES = [
+  "over_bound",
+  "gap",
+  "duplicate",
+  "finished",
+  "malformed",
+] as const;
 
 const PERMITTED_RUN_KINDS = [
   "loop",
@@ -172,6 +198,9 @@ function assertRunPayloadCorrelation(event: Event<EventPayloadMap>): void {
   } else if (event.type === "agent.warning") {
     const message: string = event.payload.message;
     assert.equal(typeof message, "string");
+  } else if (event.type === "capture.refused") {
+    const sourceRunId: string = event.payload.sourceRunId;
+    assert.equal(typeof sourceRunId, "string");
   }
 }
 
@@ -776,6 +805,178 @@ describe("control payload parsing (spec #8)", () => {
   });
 });
 
+describe("capture.refused payload parsing (spec #15)", () => {
+  test("accepts every permitted capture refusal cause", () => {
+    assert.deepEqual(
+      CAPTURE_REFUSAL_CAUSES,
+      PERMITTED_CAPTURE_REFUSAL_CAUSES,
+    );
+    for (const cause of PERMITTED_CAPTURE_REFUSAL_CAUSES) {
+      const payload = { cause, sourceRunId: "run-source" };
+      assert.doesNotThrow(() =>
+        parseEvent({ ...completeEvent(), type: CAPTURE_REFUSED, payload }),
+      );
+      assert.doesNotThrow(() => validate(CAPTURE_REFUSED, payload));
+    }
+  });
+
+  test("rejects each missing required capture.refused field", () => {
+    for (const field of ["cause", "sourceRunId"]) {
+      const payload: Record<string, unknown> = {
+        cause: "gap",
+        sourceRunId: "run-source",
+      };
+      delete payload[field];
+
+      assert.throws(
+        () =>
+          parseEvent({ ...completeEvent(), type: CAPTURE_REFUSED, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () => validate(CAPTURE_REFUSED, payload),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("parses an unknown cause verbatim, reports it, and round-trips its bytes", () => {
+    const parsed = parseEvent(
+      JSON.parse(UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE) as unknown,
+    );
+    const cause = (parsed.payload as { cause: string }).cause;
+
+    assert.equal(cause, "never-a-valid-capture-refusal-cause");
+    assert.throws(
+      () => validate(CAPTURE_REFUSED, parsed.payload),
+      /cause has unknown value: never-a-valid-capture-refusal-cause/,
+    );
+    assert.equal(serialiseEvent(parsed), UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE);
+  });
+
+  test("validates every optional count as a non-negative safe integer", () => {
+    for (const field of ["sourceSeq", "count", "max"] as const) {
+      for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        const payload = {
+          cause: "over_bound",
+          sourceRunId: "run-source",
+          [field]: invalid,
+        };
+        assert.throws(
+          () =>
+            parseEvent({ ...completeEvent(), type: CAPTURE_REFUSED, payload }),
+          new RegExp(`${field}.*safe integer`),
+        );
+        assert.throws(
+          () => validate(CAPTURE_REFUSED, payload),
+          new RegExp(`${field}.*safe integer`),
+        );
+      }
+
+      const payload = {
+        cause: "over_bound",
+        sourceRunId: "run-source",
+        [field]: Number.MAX_SAFE_INTEGER,
+      };
+      assert.doesNotThrow(() =>
+        parseEvent({ ...completeEvent(), type: CAPTURE_REFUSED, payload }),
+      );
+      assert.doesNotThrow(() => validate(CAPTURE_REFUSED, payload));
+    }
+  });
+
+  test("carries an over-bound detail at parse and rejects it at validate", () => {
+    const event = parseEvent({
+      ...completeEvent(),
+      type: CAPTURE_REFUSED,
+      payload: {
+        cause: "malformed",
+        sourceRunId: "run-source",
+        detail: "x".repeat(MAX_EXCERPT_SCALARS + 1),
+      },
+    });
+
+    assert.throws(
+      () => validate(CAPTURE_REFUSED, event.payload),
+      /CaptureRefusedPayload\.detail has 4097 Unicode scalar values; maximum is 4096/,
+    );
+  });
+
+  test("retains and re-emits unknown payload fields", () => {
+    const forwarded = JSON.parse(
+      serialiseEvent(
+        parseEvent({
+          ...completeEvent(),
+          type: CAPTURE_REFUSED,
+          payload: {
+            cause: "gap",
+            sourceRunId: "run-source-gap",
+            future: { value: 1 },
+          },
+        }),
+      ),
+    ) as { payload: Record<string, unknown> };
+
+    assert.deepEqual(forwarded.payload.future, { value: 1 });
+  });
+
+  test("omits absent optional fields instead of writing null", () => {
+    const payload = parseCaptureRefusedPayload({
+      cause: "gap",
+      sourceRunId: "run-source-gap",
+    });
+
+    assert.equal(
+      JSON.stringify(payload),
+      '{"cause":"gap","sourceRunId":"run-source-gap"}',
+    );
+    assert.ok(!JSON.stringify(payload).includes(":null"));
+  });
+
+  test("never carries a content-bearing field", () => {
+    // `Required` makes this genuinely fully populated: adding even an
+    // optional field to `CaptureRefusedPayload` first fails typechecking.
+    // Once it is populated here, the exact permitted-key assertion still
+    // fails unless the no-content boundary is deliberately revisited.
+    // Listing only currently imagined forbidden names would not catch a
+    // newly invented content field.
+    const payload = {
+      cause: "over_bound",
+      sourceRunId: "run-source",
+      sourceSeq: 8,
+      sourceType: AGENT_TEXT,
+      field: "AgentTextPayload.text",
+      count: 20_000,
+      max: 16_384,
+      detail: "parser message only",
+      truncated: false,
+    } satisfies Required<CaptureRefusedPayload>;
+    const event: Event<EventPayloadMap> = {
+      v: 1,
+      type: CAPTURE_REFUSED,
+      runId: "run-relay",
+      seq: 1,
+      ts: "2026-09-07T06:00:00.000Z",
+      payload,
+    };
+    const serialised = JSON.parse(serialiseEvent(event)) as {
+      payload: Record<string, unknown>;
+    };
+
+    assert.deepEqual(Object.keys(serialised.payload).sort(), [
+      "cause",
+      "count",
+      "detail",
+      "field",
+      "max",
+      "sourceRunId",
+      "sourceSeq",
+      "sourceType",
+      "truncated",
+    ]);
+  });
+});
+
 describe("validate", () => {
   test("enforces required fields and integer bounds for known types", () => {
     assert.throws(() => validate(RUN_STARTED, {}), /required field: kind/);
@@ -857,6 +1058,16 @@ describe("validate", () => {
           reason: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
         },
         "ControlAppliedPayload.reason",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        CAPTURE_REFUSED,
+        {
+          cause: "malformed",
+          sourceRunId: "run-source",
+          detail: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+        },
+        "CaptureRefusedPayload.detail",
         MAX_EXCERPT_SCALARS,
       ],
     ];
@@ -1459,6 +1670,55 @@ describe("serialiseEvent payload key sorting", () => {
     );
   });
 
+  test("pins byte-identical capture.refused events with Rust", () => {
+    const overBound: Event<EventPayloadMap> = {
+      v: 1,
+      type: CAPTURE_REFUSED,
+      runId: "run-relay",
+      seq: 1,
+      ts: "2026-09-07T06:00:00.000Z",
+      payload: {
+        cause: "over_bound",
+        sourceRunId: "run-source",
+        sourceSeq: 8,
+        sourceType: AGENT_TEXT,
+        field: "AgentTextPayload.text",
+        count: 20_000,
+        max: 16_384,
+      },
+    };
+    const gap: Event<EventPayloadMap> = {
+      v: 1,
+      type: CAPTURE_REFUSED,
+      runId: "run-relay",
+      seq: 2,
+      ts: "2026-09-07T06:00:01.000Z",
+      payload: { cause: "gap", sourceRunId: "run-source-gap" },
+    };
+
+    validate(CAPTURE_REFUSED, overBound.payload);
+    assert.ok(
+      overBound.payload.count !== undefined &&
+        overBound.payload.max !== undefined &&
+        overBound.payload.count > overBound.payload.max,
+    );
+    assert.equal(
+      serialiseEvent(overBound),
+      CAPTURE_REFUSED_OVER_BOUND_WIRE,
+    );
+    assert.equal(serialiseEvent(gap), CAPTURE_REFUSED_GAP_WIRE);
+
+    for (const expected of [
+      CAPTURE_REFUSED_OVER_BOUND_WIRE,
+      CAPTURE_REFUSED_GAP_WIRE,
+    ]) {
+      assert.equal(
+        serialiseEvent(parseEvent(JSON.parse(expected) as unknown)),
+        expected,
+      );
+    }
+  });
+
   test("sorts all amended run usage fields", () => {
     const parsed = parseEvent(JSON.parse(RUN_FINISHED_WIRE) as unknown);
     assert.equal(serialiseEvent(parsed), RUN_FINISHED_WIRE);
@@ -1923,11 +2183,18 @@ describe("known event type constants (issue #4)", () => {
       roundTrippedType(CONTROL_APPLIED, { controlId: "control-1", ok: true }),
       CONTROL_APPLIED,
     );
+    assert.equal(
+      roundTrippedType(CAPTURE_REFUSED, {
+        cause: "gap",
+        sourceRunId: "run-source",
+      }),
+      CAPTURE_REFUSED,
+    );
   });
 
-  test("KNOWN_TYPES holds exactly the ten recognised types, with no duplicates", () => {
-    assert.equal(KNOWN_TYPES.length, 10);
-    assert.equal(new Set(KNOWN_TYPES).size, 10);
+  test("KNOWN_TYPES holds exactly the eleven recognised types, with no duplicates", () => {
+    assert.equal(KNOWN_TYPES.length, 11);
+    assert.equal(new Set(KNOWN_TYPES).size, 11);
     assert.deepEqual(
       new Set(KNOWN_TYPES),
       new Set([
@@ -1941,6 +2208,7 @@ describe("known event type constants (issue #4)", () => {
         AGENT_WARNING,
         CONTROL_REQUESTED,
         CONTROL_APPLIED,
+        CAPTURE_REFUSED,
       ]),
     );
   });
