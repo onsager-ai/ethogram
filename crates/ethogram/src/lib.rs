@@ -4476,6 +4476,99 @@ mod tests {
         assert!(error.to_string().contains("expected a string"));
     }
 
+    // -- an optional field is absent or has a value; null is neither (#28) --
+    //
+    // Ruled from hub#146: an explicit `null` on an optional payload field is
+    // a parse error in both SDKs, because `Option<T>`/an optional field
+    // cannot represent it faithfully — this is a representability question,
+    // not a validation policy. `rejects_null_for_optional_captured_at_field`
+    // above already covers the envelope's own optional field; the three
+    // tests below cover one payload field of each optional shape this SDK
+    // has (string, safe integer, boolean), and the final test pairs with all
+    // three to show the same fields parse cleanly when merely absent.
+
+    #[test]
+    fn rejects_null_for_optional_string_payload_field() {
+        // run.started.parentRunId: Option<String> via `deserialize_optional`.
+        let payload = json!({
+            "kind": "subagent",
+            "actor": "builder",
+            "harness": "codex",
+            "parentRunId": null
+        });
+        let input = lifecycle_event_input("run.started", payload);
+
+        let error = parse_event(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("expected a string"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_null_for_optional_integer_payload_field() {
+        // agent.completed.turns: Option<u64> via
+        // `deserialize_optional_safe_u64`.
+        let input = lifecycle_event_input("agent.completed", json!({ "turns": null }));
+
+        let error = parse_event(&input).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid type: null, expected u64"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_null_for_optional_boolean_payload_field() {
+        // agent.text.truncated: Option<bool> via `deserialize_optional`.
+        let input =
+            lifecycle_event_input("agent.text", json!({ "text": "hello", "truncated": null }));
+
+        let error = parse_event(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("expected a boolean"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_optional_payload_fields_when_absent_not_null() {
+        // The positive half of the three rejection tests just above: the
+        // same fields, simply omitted rather than sent as `null`, parse
+        // cleanly. Absence is the only spelling of absence.
+        let run_started = lifecycle_event_input(
+            "run.started",
+            json!({ "kind": "subagent", "actor": "builder", "harness": "codex" }),
+        );
+        assert!(
+            parse_event(&run_started)
+                .unwrap()
+                .payload
+                .get("parentRunId")
+                .is_none()
+        );
+
+        let agent_completed = lifecycle_event_input("agent.completed", json!({}));
+        assert!(
+            parse_event(&agent_completed)
+                .unwrap()
+                .payload
+                .get("turns")
+                .is_none()
+        );
+
+        let agent_text = lifecycle_event_input("agent.text", json!({ "text": "hello" }));
+        assert!(
+            parse_event(&agent_text)
+                .unwrap()
+                .payload
+                .get("truncated")
+                .is_none()
+        );
+    }
+
     #[test]
     fn stamp_sets_version_and_preserves_captured_at() {
         let captured_at = "2026-09-06T00:00:00.000Z".to_owned();

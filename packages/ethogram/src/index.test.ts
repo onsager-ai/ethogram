@@ -284,6 +284,82 @@ describe("Event parsing", () => {
     );
   });
 
+  // Ruled from hub#146: an optional field is absent or has a value; an
+  // explicit `null` is a parse error, because it cannot populate an optional
+  // field faithfully. This is a representability question, not a `validate`
+  // policy. The capturedAt test just above already covers the envelope's own
+  // optional field; the three tests below cover one payload field of each
+  // optional shape this SDK has (string, safe integer, boolean), and the
+  // final test pairs with all three to show the same fields parse cleanly
+  // when merely absent.
+
+  test("rejects null for the optional run.started.parentRunId string field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "subagent",
+            actor: "builder",
+            harness: "codex",
+            parentRunId: null,
+          },
+        }),
+      /RunStartedPayload\.parentRunId must be a string when present/,
+    );
+  });
+
+  test("rejects null for the optional agent.completed.turns integer field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "agent.completed",
+          payload: { turns: null },
+        }),
+      /AgentCompletedPayload\.turns must be a non-negative safe integer when present/,
+    );
+  });
+
+  test("rejects null for the optional agent.text.truncated boolean field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "agent.text",
+          payload: { text: "hello", truncated: null },
+        }),
+      /AgentTextPayload\.truncated must be a boolean when present/,
+    );
+  });
+
+  test("accepts the same optional payload fields when merely absent, not null", () => {
+    const started = parseEvent({
+      ...completeEvent(),
+      type: "run.started",
+      payload: { kind: "subagent", actor: "builder", harness: "codex" },
+    });
+    assert.equal(
+      Object.hasOwn(started.payload as object, "parentRunId"),
+      false,
+    );
+
+    const completed = parseEvent({
+      ...completeEvent(),
+      type: "agent.completed",
+      payload: {},
+    });
+    assert.equal(Object.hasOwn(completed.payload as object, "turns"), false);
+
+    const text = parseEvent({
+      ...completeEvent(),
+      type: "agent.text",
+      payload: { text: "hello" },
+    });
+    assert.equal(Object.hasOwn(text.payload as object, "truncated"), false);
+  });
+
   test("accepts an integral payload number at the safe bound", () => {
     assert.doesNotThrow(() =>
       parseEvent({

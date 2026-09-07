@@ -98,6 +98,17 @@ from another, it preserves `seq` and `ts` and rejects a gap rather than
 renumbering it. This assumes each producer submits drafts to exactly one sink
 per run; concurrent sinks would require `seq` to gain a partition.
 
+**An optional field is either absent or has a value; an explicit `null` is a
+parse error (hub#146).** Absence is the only spelling of absence. The likeliest
+source of a stray `null` is a JavaScript producer: `JSON.stringify` omits an
+`undefined` field but preserves a `null` one, so a producer that initialises a
+field to `null` rather than leaving it unset would put a value meaning "no
+value" on the wire — a second spelling of absence that both SDKs would then
+have to agree about. Refusing it at parse keeps one spelling. This is a
+**parse** rule, not a `validate` policy like the bounds below: an explicit
+`null` cannot populate an `Option<T>`/optional field faithfully, so it is a
+representability question rather than a producer-conduct one.
+
 A *run* is one harness session, or one process that observes them. Loops,
 handoffs, and relays are kinds of run, not separate concepts.
 
