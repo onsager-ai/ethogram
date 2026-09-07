@@ -2,6 +2,7 @@
 
 use crate::Fixture;
 
+#[rustfmt::skip]
 pub(crate) static V1_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "agent-completed-max-turns.json",
