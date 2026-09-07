@@ -566,16 +566,32 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub turns: Option<u64>,
-    /// Cumulative for the harness session named by the corresponding
-    /// `agent.started.sessionId`, not per invocation: this is the running
-    /// total as of *this* completion, so a session that reports
-    /// `agent.completed` more than once reports an increasing total each
-    /// time rather than a fresh delta. Summing every `agent.completed.costUsd`
-    /// in a run therefore over-counts whenever a session reports more than
-    /// once — take the maximum observed within each `sessionId` instead, and
-    /// sum only across distinct sessions. `run.finished.costUsd` carries the
-    /// runtime's own computed total for the whole run and is the number to
-    /// trust there.
+    /// Echoes the harness session identifier `agent.started` already
+    /// carries, so this completion can state which session's totals it is
+    /// reporting. `cost_usd` and `usage` below are cumulative per session
+    /// rather than per invocation, and that rule was unusable from a
+    /// completion alone before this field existed: `sessionId` appeared only
+    /// on `agent.started`, so a consumer had to correlate backwards to
+    /// whichever `agent.started` opened the session before it could safely
+    /// take a maximum within a session or sum across sessions. Carrying it
+    /// here too makes the rule applicable from the very event that states
+    /// the totals it governs.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_id: Option<String>,
+    /// Cumulative for the harness session named by this payload's own
+    /// `session_id` (which echoes the `sessionId` on the `agent.started`
+    /// that opened it), not per invocation: this is the running total as of
+    /// *this* completion, so a session that reports `agent.completed` more
+    /// than once reports an increasing total each time rather than a fresh
+    /// delta. Summing every `agent.completed.costUsd` in a run therefore
+    /// over-counts whenever a session reports more than once — take the
+    /// maximum observed within each `sessionId` instead, and sum only across
+    /// distinct sessions. `run.finished.costUsd` carries the runtime's own
+    /// computed total for the whole run and is the number to trust there.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -1432,6 +1448,13 @@ mod tests {
     const AGENT_COMPLETED_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":5,"ts":"2026-09-07T01:00:05.000Z","payload":{"costUsd":1.25,"durationMs":2500,"estimated":true,"model":"gpt-5","stage":"finish","turns":3,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
     const AGENT_WARNING_WIRE: &str = r#"{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}"#;
 
+    // Cross-SDK byte identity for `agent.completed.sessionId` (issue #6 on
+    // umwelt#22). This exact literal is pasted into the TypeScript suite and
+    // asserted there against an event built from TypeScript's correlated
+    // payload union, proving both SDKs agree on the new field's bytes without
+    // touching a single existing fixture.
+    const AGENT_COMPLETED_WITH_SESSION_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}"#;
+
     fn complete_event() -> Event {
         Event {
             v: EVENT_SCHEMA_VERSION,
@@ -1776,6 +1799,7 @@ mod tests {
         }))
         .unwrap();
         let completed: AgentCompletedPayload = serde_json::from_value(json!({
+            "sessionId": "session-local-7",
             "future": { "value": 1 },
             "usage": { "inputTokens": 2, "futureUsage": "retained" }
         }))
@@ -1809,6 +1833,13 @@ mod tests {
         assert_eq!(
             completed.usage.as_ref().unwrap().extra.get("futureUsage"),
             Some(&json!("retained"))
+        );
+        // A known field (`sessionId`) alongside an unknown one (`future`) on
+        // the same payload: neither displaces the other.
+        assert_eq!(completed.session_id, Some("session-local-7".to_owned()));
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap()["sessionId"],
+            json!("session-local-7")
         );
     }
 
@@ -2128,6 +2159,7 @@ mod tests {
             payload: AgentCompletedPayload {
                 stage: Some("finish".to_owned()),
                 turns: Some(3),
+                session_id: None,
                 cost_usd: Some(1.25),
                 model: Some("gpt-5".to_owned()),
                 usage: Some(RunUsage {
@@ -2170,6 +2202,50 @@ mod tests {
     }
 
     #[test]
+    fn agent_completed_session_id_matches_the_typescript_pinned_bytes() {
+        let completed = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: "agent.completed".to_owned(),
+            run_id: "run-agent".to_owned(),
+            seq: 7,
+            ts: "2026-09-07T01:00:07.000Z".to_owned(),
+            payload: AgentCompletedPayload {
+                stage: Some("finish".to_owned()),
+                turns: Some(5),
+                session_id: Some("session-local-7".to_owned()),
+                cost_usd: Some(2.5),
+                model: Some("gpt-5".to_owned()),
+                usage: Some(RunUsage {
+                    input_tokens: Some(50),
+                    output_tokens: Some(75),
+                    cache_read_tokens: Some(5),
+                    cache_creation_tokens: Some(15),
+                    unit: Some("weighted-tokens".to_owned()),
+                    extra: PayloadExtension::new(),
+                }),
+                duration_ms: Some(3200),
+                estimated: Some(false),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(
+            serialise_event(&completed).unwrap(),
+            AGENT_COMPLETED_WITH_SESSION_WIRE
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_non_string_session_id_on_agent_completed() {
+        let error = validate(AGENT_COMPLETED, &json!({ "sessionId": 7 })).unwrap_err();
+        assert!(
+            error.to_string().contains("expected a string"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
     fn absent_optional_agent_payload_fields_are_omitted_instead_of_null() {
         let started = AgentStartedPayload {
             stage: None,
@@ -2181,6 +2257,7 @@ mod tests {
         let completed = AgentCompletedPayload {
             stage: None,
             turns: None,
+            session_id: None,
             cost_usd: None,
             model: None,
             usage: None,

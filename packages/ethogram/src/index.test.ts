@@ -75,6 +75,14 @@ const AGENT_COMPLETED_WIRE =
 const AGENT_WARNING_WIRE =
   '{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}';
 
+// Cross-SDK byte identity for `agent.completed.sessionId` (issue #6 on
+// umwelt#22). This exact literal is also hand-built in the Rust suite
+// (`lib.rs`'s `agent_completed_session_id_matches_the_typescript_pinned_bytes`)
+// and asserted there against the same string, proving both SDKs agree on the
+// new field's bytes without touching a single existing fixture.
+const AGENT_COMPLETED_WITH_SESSION_WIRE =
+  '{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}';
+
 const PERMITTED_RUN_KINDS = [
   "loop",
   "handoff",
@@ -586,6 +594,7 @@ describe("agent payload parsing", () => {
       [
         "agent.completed",
         {
+          sessionId: "session-local-7",
           future: { value: 1 },
           usage: { inputTokens: 2, futureUsage: "retained" },
         },
@@ -605,6 +614,9 @@ describe("agent payload parsing", () => {
           futureUsage: "retained",
           inputTokens: 2,
         });
+        // A known field (`sessionId`) alongside an unknown one (`future`):
+        // neither displaces the other.
+        assert.equal(forwarded.payload.sessionId, "session-local-7");
       }
     }
   });
@@ -624,6 +636,13 @@ describe("validate", () => {
 
   test("leaves unknown event types open and unvalidated", () => {
     assert.doesNotThrow(() => validate("future.happened", "not-an-object"));
+  });
+
+  test("rejects a non-string sessionId on agent.completed", () => {
+    assert.throws(
+      () => validate(AGENT_COMPLETED, { sessionId: 7 }),
+      /AgentCompletedPayload\.sessionId must be a string when present/,
+    );
   });
 
   test("reports every capture bound with the field, actual count, and maximum", () => {
@@ -1187,6 +1206,34 @@ describe("serialiseEvent payload key sorting", () => {
       AGENT_COMPLETED_WIRE,
       AGENT_WARNING_WIRE,
     ]);
+  });
+
+  test("pins byte-identical agent.completed sessionId with Rust", () => {
+    const completed: Event<EventPayloadMap> = {
+      v: 1,
+      type: "agent.completed",
+      runId: "run-agent",
+      seq: 7,
+      ts: "2026-09-07T01:00:07.000Z",
+      payload: {
+        stage: "finish",
+        turns: 5,
+        sessionId: "session-local-7",
+        costUsd: 2.5,
+        model: "gpt-5",
+        usage: {
+          inputTokens: 50,
+          outputTokens: 75,
+          cacheReadTokens: 5,
+          cacheCreationTokens: 15,
+          unit: "weighted-tokens",
+        },
+        durationMs: 3200,
+        estimated: false,
+      },
+    };
+
+    assert.equal(serialiseEvent(completed), AGENT_COMPLETED_WITH_SESSION_WIRE);
   });
 
   test("sorts all amended run usage fields", () => {
