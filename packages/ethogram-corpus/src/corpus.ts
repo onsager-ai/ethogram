@@ -49,4 +49,20 @@ export const V1_FIXTURES = [
     name: "agent-warning.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.warning\",\n  \"runId\": \"run-claude-error-shapes\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-07T09:30:06.000Z\",\n  \"payload\": {\n    \"message\": \"claude result subtype \\\"error_max_turns\\\"\",\n    \"stage\": \"generate\"\n  }\n}\n",
   },
+  {
+    name: "control-applied-interrupt.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.applied\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 5,\n  \"ts\": \"2026-09-07T07:45:05.000Z\",\n  \"payload\": {\n    \"controlId\": \"capture-interrupt-1\",\n    \"landedIn\": \"toolu_01BG5x9iuSVKzZhYg7qmM5PJ\",\n    \"ok\": true\n  }\n}\n",
+  },
+  {
+    name: "control-applied-not-live.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.applied\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-07T07:45:06.000Z\",\n  \"payload\": {\n    \"controlId\": \"capture-steer-1\",\n    \"ok\": false,\n    \"reason\": \"not-live\"\n  }\n}\n",
+  },
+  {
+    name: "control-requested-interrupt.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.requested\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 4,\n  \"ts\": \"2026-09-07T07:45:04.000Z\",\n  \"payload\": {\n    \"by\": \"capture-driver\",\n    \"controlId\": \"capture-interrupt-1\",\n    \"kind\": \"interrupt\"\n  }\n}\n",
+  },
+  {
+    name: "control-requested-steer.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.requested\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 3,\n  \"ts\": \"2026-09-07T07:45:03.000Z\",\n  \"payload\": {\n    \"by\": \"capture-driver\",\n    \"controlId\": \"capture-steer-1\",\n    \"kind\": \"steer\",\n    \"text\": \"Continue with a short summary on the next turn.\",\n    \"truncated\": false\n  }\n}\n",
+  },
 ] as const;

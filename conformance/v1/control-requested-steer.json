@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "control.requested",
+  "runId": "run-claude-control-interrupt",
+  "seq": 3,
+  "ts": "2026-09-07T07:45:03.000Z",
+  "payload": {
+    "by": "capture-driver",
+    "controlId": "capture-steer-1",
+    "kind": "steer",
+    "text": "Continue with a short summary on the next turn.",
+    "truncated": false
+  }
+}
