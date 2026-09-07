@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   AGENT_COMPLETED,
@@ -20,6 +23,7 @@ import {
   InMemorySink,
   KNOWN_TYPES,
   MAX_EXCERPT_SCALARS,
+  MAX_PAYLOAD_BYTES,
   MAX_TEXT_SCALARS,
   RUN_FINISHED,
   RUN_KINDS,
@@ -278,6 +282,82 @@ describe("Event parsing", () => {
       () => parseEvent({ ...completeEvent(), capturedAt: null }),
       /capturedAt must be a string/,
     );
+  });
+
+  // Ruled from hub#146: an optional field is absent or has a value; an
+  // explicit `null` is a parse error, because it cannot populate an optional
+  // field faithfully. This is a representability question, not a `validate`
+  // policy. The capturedAt test just above already covers the envelope's own
+  // optional field; the three tests below cover one payload field of each
+  // optional shape this SDK has (string, safe integer, boolean), and the
+  // final test pairs with all three to show the same fields parse cleanly
+  // when merely absent.
+
+  test("rejects null for the optional run.started.parentRunId string field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "subagent",
+            actor: "builder",
+            harness: "codex",
+            parentRunId: null,
+          },
+        }),
+      /RunStartedPayload\.parentRunId must be a string when present/,
+    );
+  });
+
+  test("rejects null for the optional agent.completed.turns integer field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "agent.completed",
+          payload: { turns: null },
+        }),
+      /AgentCompletedPayload\.turns must be a non-negative safe integer when present/,
+    );
+  });
+
+  test("rejects null for the optional agent.text.truncated boolean field", () => {
+    assert.throws(
+      () =>
+        parseEvent({
+          ...completeEvent(),
+          type: "agent.text",
+          payload: { text: "hello", truncated: null },
+        }),
+      /AgentTextPayload\.truncated must be a boolean when present/,
+    );
+  });
+
+  test("accepts the same optional payload fields when merely absent, not null", () => {
+    const started = parseEvent({
+      ...completeEvent(),
+      type: "run.started",
+      payload: { kind: "subagent", actor: "builder", harness: "codex" },
+    });
+    assert.equal(
+      Object.hasOwn(started.payload as object, "parentRunId"),
+      false,
+    );
+
+    const completed = parseEvent({
+      ...completeEvent(),
+      type: "agent.completed",
+      payload: {},
+    });
+    assert.equal(Object.hasOwn(completed.payload as object, "turns"), false);
+
+    const text = parseEvent({
+      ...completeEvent(),
+      type: "agent.text",
+      payload: { text: "hello" },
+    });
+    assert.equal(Object.hasOwn(text.payload as object, "truncated"), false);
   });
 
   test("accepts an integral payload number at the safe bound", () => {
@@ -1501,7 +1581,11 @@ describe("validate", () => {
     );
   });
 
-  test("leaves unknown event types open and unvalidated", () => {
+  test("leaves unknown event types open to anything within the universal bounds", () => {
+    // No per-field or closed-union checks apply to an unrecognised type
+    // (there is no typed shape to check against), but it is not fully
+    // unvalidated any more: the universal bounds (issue #28) still run. This
+    // payload sits comfortably under both, so it validates cleanly.
     assert.doesNotThrow(() => validate("future.happened", "not-an-object"));
   });
 
@@ -1514,10 +1598,21 @@ describe("validate", () => {
 
   test("reports every capture bound with the field, actual count, and maximum", () => {
     const cases: readonly [string, unknown, string, number][] = [
+      // `agent.text`'s own bound is `MAX_TEXT_SCALARS` — the same value as
+      // the universal text-scalar floor (issue #28), which runs first in
+      // `validate` and so is what actually reports this case; the
+      // field-specific `AgentTextPayload.text` check below it is never
+      // reached for an over-bound `text`, since nothing over the universal
+      // bound can also be under it.
+      //
+      // That shadowing is a fact about the two constants being equal, not a
+      // loosened assertion. If `MAX_TEXT_SCALARS` ever rises above
+      // `agent.text`'s own field bound, the field-specific message returns
+      // and this expectation must change back to `AgentTextPayload.text`.
       [
         AGENT_TEXT,
         { text: "😀".repeat(MAX_TEXT_SCALARS + 1) },
-        "AgentTextPayload.text",
+        "payload.text",
         MAX_TEXT_SCALARS,
       ],
       [
@@ -1603,12 +1698,214 @@ describe("validate", () => {
     };
 
     assert.doesNotThrow(() => parseEvent(event));
+    // Reported by the universal text-scalar bound (issue #28), which runs
+    // before the eventType switch and shares `agent.text`'s own bound value,
+    // so it is what actually reports this case. If `MAX_TEXT_SCALARS` ever
+    // rises above `agent.text`'s field bound, the field-specific
+    // `AgentTextPayload.text` message returns and this expectation must
+    // change back.
     assert.throws(
       () => validate(event.type, event.payload),
       new TypeError(
-        "AgentTextPayload.text has 20000 Unicode scalar values; maximum is 16384",
+        "payload.text has 20000 Unicode scalar values; maximum is 16384",
       ),
     );
+  });
+});
+
+describe("universal validate bounds (issue #28)", () => {
+  /**
+   * Builds a JSON payload of plain ASCII text spread across ten short,
+   * equal-length keys — each nowhere near `MAX_TEXT_SCALARS` on its own —
+   * whose canonical serialised form (the same bytes `validate`'s size bound
+   * measures) is exactly `target` UTF-8 bytes. Used to hit the
+   * `MAX_PAYLOAD_BYTES` boundary exactly, without any single string leaf
+   * tripping the scalar bound instead: ASCII `"a"` never needs escaping, so
+   * appending one character to any field's string always adds exactly one
+   * byte to the total.
+   */
+  function payloadOfExactByteSize(target: number): Record<string, string> {
+    const fields = 10;
+    const empty: Record<string, string> = {};
+    for (let index = 0; index < fields; index += 1) {
+      empty[`p${index}`] = "";
+    }
+    const base = Buffer.byteLength(JSON.stringify(empty), "utf8");
+    assert.ok(
+      target >= base,
+      `target ${target} is below the minimal payload size ${base} for this scheme`,
+    );
+    const remaining = target - base;
+    const perField = Math.floor(remaining / fields);
+    const leftover = remaining % fields;
+    assert.ok(
+      perField + 1 <= MAX_TEXT_SCALARS,
+      `target ${target} needs a field longer than MAX_TEXT_SCALARS; raise fields`,
+    );
+
+    const payload: Record<string, string> = {};
+    for (let index = 0; index < fields; index += 1) {
+      const length = perField + (index < leftover ? 1 : 0);
+      payload[`p${index}`] = "a".repeat(length);
+    }
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(payload), "utf8"),
+      target,
+      "payloadOfExactByteSize construction is wrong",
+    );
+    return payload;
+  }
+
+  test("rejects an unknown event type with an over-long string leaf", () => {
+    assert.throws(
+      () =>
+        validate("future.happened", {
+          note: "x".repeat(MAX_TEXT_SCALARS + 1),
+        }),
+      new TypeError(
+        `payload.note has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+  });
+
+  test("rejects an unknown event type with an over-large serialised payload", () => {
+    const payload = payloadOfExactByteSize(MAX_PAYLOAD_BYTES + 1);
+    assert.throws(
+      () => validate("future.happened", payload),
+      new TypeError(
+        `payload has ${MAX_PAYLOAD_BYTES + 1} bytes; maximum is ${MAX_PAYLOAD_BYTES}`,
+      ),
+    );
+  });
+
+  test("rejects an over-long string in a known type's retained unknown field", () => {
+    assert.throws(
+      () =>
+        validate(AGENT_TEXT, {
+          text: "ok",
+          note: "x".repeat(MAX_TEXT_SCALARS + 1),
+        }),
+      new TypeError(
+        `payload.note has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+  });
+
+  test("locates an over-long string nested in an object, an array, and an object inside an array", () => {
+    assert.throws(
+      () =>
+        validate("future.happened", {
+          nested: { note: "x".repeat(MAX_TEXT_SCALARS + 1) },
+        }),
+      new TypeError(
+        `payload.nested.note has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+    assert.throws(
+      () =>
+        validate("future.happened", {
+          items: ["x".repeat(MAX_TEXT_SCALARS + 1)],
+        }),
+      new TypeError(
+        `payload.items[0] has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+    assert.throws(
+      () =>
+        validate("future.happened", {
+          items: [{ note: "x".repeat(MAX_TEXT_SCALARS + 1) }],
+        }),
+      new TypeError(
+        `payload.items[0].note has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+  });
+
+  test("accepts a string at exactly MAX_TEXT_SCALARS and rejects one scalar more", () => {
+    // Multi-byte characters prove the count is scalars, not bytes.
+    assert.doesNotThrow(() =>
+      validate("future.happened", { note: "漢".repeat(MAX_TEXT_SCALARS) }),
+    );
+    assert.throws(
+      () =>
+        validate("future.happened", {
+          note: "漢".repeat(MAX_TEXT_SCALARS + 1),
+        }),
+      new TypeError(
+        `payload.note has ${MAX_TEXT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      ),
+    );
+  });
+
+  test("accepts a payload at exactly MAX_PAYLOAD_BYTES and rejects one byte more", () => {
+    const atBound = payloadOfExactByteSize(MAX_PAYLOAD_BYTES);
+    assert.doesNotThrow(() => validate("future.happened", atBound));
+
+    const overBound = payloadOfExactByteSize(MAX_PAYLOAD_BYTES + 1);
+    assert.throws(
+      () => validate("future.happened", overBound),
+      new TypeError(
+        `payload has ${MAX_PAYLOAD_BYTES + 1} bytes; maximum is ${MAX_PAYLOAD_BYTES}`,
+      ),
+    );
+  });
+
+  // Pinned so a future narrowing of MAX_PAYLOAD_BYTES fails loudly: an
+  // agent.text at exactly MAX_TEXT_SCALARS composed entirely of astral-plane
+  // characters is 16,384 * 4 = 65,536 bytes of text alone, which the
+  // originally proposed 65,536-byte bound would have rejected. See
+  // MAX_PAYLOAD_BYTES's doc comment for why the constant is 131,072 instead.
+  test("an agent.text of exactly MAX_TEXT_SCALARS astral-plane characters validates cleanly", () => {
+    assert.doesNotThrow(() =>
+      validate(AGENT_TEXT, { text: "😀".repeat(MAX_TEXT_SCALARS) }),
+    );
+  });
+
+  test("parseEvent accepts both new over-bound grounds that validate rejects", () => {
+    const overText = {
+      ...completeEvent(),
+      type: "future.happened",
+      payload: { note: "x".repeat(MAX_TEXT_SCALARS + 1) },
+    };
+    assert.doesNotThrow(() => parseEvent(overText));
+    assert.throws(() => validate(overText.type, overText.payload));
+
+    const overSize = {
+      ...completeEvent(),
+      type: "future.happened",
+      payload: payloadOfExactByteSize(MAX_PAYLOAD_BYTES + 1),
+    };
+    assert.doesNotThrow(() => parseEvent(overSize));
+    assert.throws(() => validate(overSize.type, overSize.payload));
+  });
+});
+
+describe("conformance corpus validates cleanly (issue #28)", () => {
+  test("every conformance/v1 fixture parses and validates without error", async () => {
+    const repositoryRoot = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../..",
+    );
+    const corpusDirectory = join(repositoryRoot, "conformance", "v1");
+    const fixtureNames = (
+      await readdir(corpusDirectory, { withFileTypes: true })
+    )
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name);
+
+    assert.ok(
+      fixtureNames.length > 0,
+      "expected at least one fixture in conformance/v1",
+    );
+
+    for (const name of fixtureNames) {
+      const source = await readFile(join(corpusDirectory, name), "utf8");
+      const event = parseEvent(JSON.parse(source) as unknown);
+      assert.doesNotThrow(
+        () => validate(event.type, event.payload),
+        `fixture ${name} failed validate`,
+      );
+    }
   });
 });
 

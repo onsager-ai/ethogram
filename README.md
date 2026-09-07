@@ -98,6 +98,17 @@ from another, it preserves `seq` and `ts` and rejects a gap rather than
 renumbering it. This assumes each producer submits drafts to exactly one sink
 per run; concurrent sinks would require `seq` to gain a partition.
 
+**An optional field is either absent or has a value; an explicit `null` is a
+parse error (hub#146).** Absence is the only spelling of absence. The likeliest
+source of a stray `null` is a JavaScript producer: `JSON.stringify` omits an
+`undefined` field but preserves a `null` one, so a producer that initialises a
+field to `null` rather than leaving it unset would put a value meaning "no
+value" on the wire — a second spelling of absence that both SDKs would then
+have to agree about. Refusing it at parse keeps one spelling. This is a
+**parse** rule, not a `validate` policy like the bounds below: an explicit
+`null` cannot populate an `Option<T>`/optional field faithfully, so it is a
+representability question rather than a producer-conduct one.
+
 A *run* is one harness session, or one process that observes them. Loops,
 handoffs, and relays are kinds of run, not separate concepts.
 
@@ -171,6 +182,22 @@ narration away from anything that decides** — a classification, a gate, a
 verdict. This repository defines the transport and cannot enforce that; a
 consumer that renders narration and also acts on it has broken a constraint
 this format assumes.
+
+**Two bounds apply universally, under the per-field ones above (issue #28).**
+The named bounds just described exist only for the types this SDK knows;
+without a floor beneath them, an unrecognised `type` — the one shape neither
+per-field check above ever runs against — could carry an unbounded payload
+and still validate cleanly. `validate` therefore also enforces, for every
+event regardless of whether its `type` is recognised: every string leaf
+anywhere in the payload, at any depth, is at most 16,384 Unicode scalar
+values (`MAX_TEXT_SCALARS`), and the payload's serialised size is at most
+131,072 bytes / 128 KiB (`MAX_PAYLOAD_BYTES`) — the payload alone, never the
+envelope. The byte bound is doubled past the naive 64 KiB one might expect
+from `16,384 × 4`-byte astral scalars, specifically so it never collides with
+the scalar bound on an `agent.text` built correctly from emoji-heavy input.
+Both are validation policy, not parsing policy, exactly like the per-field
+bounds: `parseEvent`/`parse_event` still carry a payload that exceeds either,
+because a forwarder must still be able to relay it.
 
 ## Control
 
