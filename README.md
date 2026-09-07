@@ -13,10 +13,11 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Run lifecycle and agent observation implemented.** The version 1 envelope,
-its `run.*` lifecycle, and the six `agent.*` observations exist in both SDKs.
-The conformance corpus remains empty until the first real capture lands,
-because an invented fixture would become an immutable guess.
+**Run lifecycle, agent observation, and control implemented.** The version 1
+envelope, its `run.*` lifecycle, the six `agent.*` observations, and the two
+`control.*` events exist in both SDKs. The conformance corpus remains empty
+until the first real capture lands, because an invented fixture would become
+an immutable guess.
 
 ## Why it is a separate repository
 
@@ -158,15 +159,37 @@ invalid event. Unknown event `type`s remain open, as they always were.
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is
 16,384 Unicode scalar values for `agent.text` and 4,096 for tool input and
-result excerpts, finish reasons, and warning messages. Excerpting counts code
-points, not UTF-8 bytes or UTF-16 code units, and cuts only on a code point
-boundary; it may still divide a grapheme cluster such as a combining sequence
-or joined emoji. The other limit adopted with these bounds is not expressible
-here: **consumers are expected to keep
+result excerpts, finish reasons, warning messages, and control text and
+reason. Excerpting counts code points, not UTF-8 bytes or UTF-16 code units,
+and cuts only on a code point boundary; it may still divide a grapheme
+cluster such as a combining sequence or joined emoji. The other limit adopted
+with these bounds is not expressible here: **consumers are expected to keep
 narration away from anything that decides** — a classification, a gate, a
 verdict. This repository defines the transport and cannot enforce that; a
 consumer that renders narration and also acts on it has broken a constraint
 this format assumes.
+
+## Control
+
+| type | required payload | optional payload | meaning |
+|---|---|---|---|
+| `control.requested` | `controlId`, `kind`, `by` | `text`, `truncated` | Records a request to interrupt or steer the run, naming the requesting principal. |
+| `control.applied` | `controlId`, `ok` | `reason`, `truncated`, `landedIn` | Records whether the runtime honoured the request, and where a hard kill landed. |
+
+`kind` is one of `interrupt` or `steer`, closed at validation and open and
+retaining at parse like `run.*`'s own closed unions. There is deliberately no
+`pause` member: no harness the operator uses can pause headlessly, and a verb
+the runtime cannot honour is a lie in a type.
+
+`steer` is **between turns**. Mid-turn injection is not available headlessly
+on Claude Code or Codex, and the protocol does not pretend otherwise; a
+runtime honours `steer` by resuming the session with `text` as the next user
+turn. `interrupt` is a process-group termination with grace; the runtime
+emits `run.finished` with `outcome: "interrupted"` **after** `control.applied`,
+never before. Both `control.*` events are emitted by **the run's runtime,
+never by the console** — a console that shows a run as interrupted before
+`control.applied` arrives has misread the protocol. `landedIn` records the
+`toolUseId` a hard kill landed inside, when there was one.
 
 ## Decisions before the first extraction
 

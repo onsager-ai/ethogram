@@ -29,13 +29,17 @@ pub const AGENT_TOOL_RESULT: &str = "agent.tool_result";
 pub const AGENT_COMPLETED: &str = "agent.completed";
 /// The wire string for an `agent.warning` event's `type` field.
 pub const AGENT_WARNING: &str = "agent.warning";
+/// The wire string for a `control.requested` event's `type` field.
+pub const CONTROL_REQUESTED: &str = "control.requested";
+/// The wire string for a `control.applied` event's `type` field.
+pub const CONTROL_APPLIED: &str = "control.applied";
 
 /// Every event `type` this SDK has a typed payload for. This is not a closed
 /// vocabulary: `parse_event` still accepts a type it has never heard of (see
 /// `check_known_payload_representation`'s fallthrough), and a consumer may
 /// still match a literal for vocabulary this SDK has not learned. A constant
 /// is a name for a string, not a gate.
-pub const KNOWN_TYPES: [&str; 8] = [
+pub const KNOWN_TYPES: [&str; 10] = [
     RUN_STARTED,
     RUN_FINISHED,
     AGENT_STARTED,
@@ -44,6 +48,8 @@ pub const KNOWN_TYPES: [&str; 8] = [
     AGENT_TOOL_RESULT,
     AGENT_COMPLETED,
     AGENT_WARNING,
+    CONTROL_REQUESTED,
+    CONTROL_APPLIED,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +205,62 @@ impl<'de> Deserialize<'de> for RunOutcome {
             "permission-denied" => Self::PermissionDenied,
             "canceled" => Self::Canceled,
             "capped" => Self::Capped,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
+/// A control kind this SDK knows, or an unfamiliar wire string retained
+/// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
+/// never map it onto a known kind.
+///
+/// There is deliberately no `Pause` member: no harness the operator uses can
+/// pause headlessly, and a verb the runtime cannot honour is a lie in a type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlKind {
+    /// A process-group termination with grace. The runtime emits
+    /// `run.finished` with `outcome: "interrupted"` after `control.applied`.
+    Interrupt,
+    /// Queues the request's `text` as the run's next user turn. This is
+    /// between turns: mid-turn injection is not available headlessly on
+    /// Claude Code or Codex, and the protocol does not pretend otherwise. A
+    /// runtime honours `steer` by resuming the session with `text` as the
+    /// next user turn.
+    Steer,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
+}
+
+impl ControlKind {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::Steer => "steer",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for ControlKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "interrupt" => Self::Interrupt,
+            "steer" => Self::Steer,
             _ => Self::Unknown(value),
         })
     }
@@ -652,6 +714,68 @@ pub struct AgentWarningPayload {
     pub extra: PayloadExtension,
 }
 
+/// Requests that the run's runtime interrupt or steer the run. Emitted by the
+/// run's runtime, never by the console: a console that shows a run as
+/// interrupted before the corresponding `control.applied` arrives has
+/// misread the protocol.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlRequestedPayload {
+    pub control_id: String,
+    pub kind: ControlKind,
+    /// For `steer`, the message queued for the run's next turn. Bounded at
+    /// capture to `MAX_EXCERPT_SCALARS`, per `truncated` below.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub text: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    /// The principal identity that made the request.
+    pub by: String,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+/// Records whether a `control.requested` request was honoured. Emitted by
+/// the run's runtime, never by the console. For an `interrupt`, `run.finished`
+/// with `outcome: "interrupted"` is emitted after this event, not before.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlAppliedPayload {
+    pub control_id: String,
+    pub ok: bool,
+    /// When `ok` is false: `not-live`, `unsupported`, or a harness message.
+    /// Bounded at capture, per `truncated` below.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reason: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    /// For an `interrupt`, the `toolUseId` the kill landed inside, if any.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub landed_in: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventDraft<P = Value> {
@@ -800,6 +924,25 @@ where
             "AgentWarningPayload.message",
             MAX_EXCERPT_SCALARS,
         )?;
+    } else if event_type == CONTROL_REQUESTED {
+        let requested = serde_json::from_value::<ControlRequestedPayload>(payload)?;
+        if let ControlKind::Unknown(value) = requested.kind {
+            return Err(de::Error::custom(format_args!(
+                "ControlRequestedPayload.kind has unknown value: {value}"
+            )));
+        }
+        validate_scalar_bound(
+            requested.text.as_deref(),
+            "ControlRequestedPayload.text",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    } else if event_type == CONTROL_APPLIED {
+        let applied = serde_json::from_value::<ControlAppliedPayload>(payload)?;
+        validate_scalar_bound(
+            applied.reason.as_deref(),
+            "ControlAppliedPayload.reason",
+            MAX_EXCERPT_SCALARS,
+        )?;
     }
 
     Ok(())
@@ -857,6 +1000,10 @@ fn check_known_payload_representation(event_type: &str, payload: &Value) -> serd
         serde_json::from_value::<AgentCompletedPayload>(payload.clone()).map(drop)
     } else if event_type == AGENT_WARNING {
         serde_json::from_value::<AgentWarningPayload>(payload.clone()).map(drop)
+    } else if event_type == CONTROL_REQUESTED {
+        serde_json::from_value::<ControlRequestedPayload>(payload.clone()).map(drop)
+    } else if event_type == CONTROL_APPLIED {
+        serde_json::from_value::<ControlAppliedPayload>(payload.clone()).map(drop)
     } else {
         Ok(())
     }
@@ -1455,6 +1602,19 @@ mod tests {
     // touching a single existing fixture.
     const AGENT_COMPLETED_WITH_SESSION_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}"#;
 
+    // Cross-SDK byte identity for both `control.*` events (spec #8). These
+    // exact literals are pasted into the TypeScript suite and asserted there
+    // against events built from TypeScript's correlated payload union.
+    const CONTROL_REQUESTED_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-control","seq":1,"ts":"2026-09-07T05:00:00.000Z","payload":{"by":"operator","controlId":"control-1","kind":"steer","text":"take point on the next turn","truncated":false}}"#;
+    const CONTROL_APPLIED_FAILED_WIRE: &str = r#"{"v":1,"type":"control.applied","runId":"run-control","seq":2,"ts":"2026-09-07T05:00:01.000Z","payload":{"controlId":"control-1","ok":false,"reason":"not-live"}}"#;
+    const CONTROL_APPLIED_INTERRUPT_WIRE: &str = r#"{"v":1,"type":"control.applied","runId":"run-control","seq":3,"ts":"2026-09-07T05:00:02.000Z","payload":{"controlId":"control-2","landedIn":"tool-9","ok":true}}"#;
+
+    // This value is intentionally one neither SDK will ever know, matching
+    // issue #12's own example. Keeping the same literal in both suites proves
+    // an older relay retaining an unfamiliar member emits exactly the bytes a
+    // future vocabulary-aware SDK would emit.
+    const UNKNOWN_CONTROL_KIND_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}"#;
+
     fn complete_event() -> Event {
         Event {
             v: EVENT_SCHEMA_VERSION,
@@ -1725,6 +1885,27 @@ mod tests {
                 AGENT_WARNING,
                 json!({ "message": "😀".repeat(MAX_EXCERPT_SCALARS + 1) }),
                 "AgentWarningPayload.message",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                CONTROL_REQUESTED,
+                json!({
+                    "controlId": "control-1",
+                    "kind": "steer",
+                    "by": "operator",
+                    "text": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "ControlRequestedPayload.text",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                CONTROL_APPLIED,
+                json!({
+                    "controlId": "control-1",
+                    "ok": false,
+                    "reason": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "ControlAppliedPayload.reason",
                 MAX_EXCERPT_SCALARS,
             ),
         ];
@@ -2319,6 +2500,202 @@ mod tests {
         assert_eq!(
             serialise_event(&finished).unwrap(),
             r#"{"v":1,"type":"run.finished","runId":"run-root","seq":2,"ts":"2026-09-06T00:00:01.000Z","payload":{"durationMs":1000,"outcome":"no-op"}}"#
+        );
+    }
+
+    // -- control.* (spec #8) ---------------------------------------------
+
+    #[test]
+    fn accepts_every_permitted_control_kind() {
+        for kind in ["interrupt", "steer"] {
+            let payload = json!({ "controlId": "control-1", "kind": kind, "by": "operator" });
+            let input = lifecycle_event_input("control.requested", payload.clone());
+            parse_event(&input).unwrap();
+            validate(CONTROL_REQUESTED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn parses_an_unknown_control_kind_verbatim_and_validate_reports_it() {
+        // "teleport" is a value neither SDK will ever know, matching issue
+        // #12's own example. There is deliberately no `pause` member either
+        // (see `ControlKind`'s doc comment), but that is a closed-vocabulary
+        // fact, not an unknown-string one, so it is not exercised here.
+        let input = lifecycle_event_input(
+            "control.requested",
+            json!({ "controlId": "control-3", "kind": "teleport", "by": "operator" }),
+        );
+
+        let event = parse_event(&input).unwrap();
+        let parsed: ControlRequestedPayload =
+            serde_json::from_value(event.payload.clone()).unwrap();
+        assert_eq!(parsed.kind, ControlKind::Unknown("teleport".to_owned()));
+
+        let error = validate(CONTROL_REQUESTED, &event.payload).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ControlRequestedPayload.kind has unknown value: teleport"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn unknown_control_kind_keeps_cross_version_byte_identity_with_typescript_and_input() {
+        let event = parse_event(UNKNOWN_CONTROL_KIND_WIRE).unwrap();
+        let parsed: ControlRequestedPayload =
+            serde_json::from_value(event.payload.clone()).unwrap();
+
+        assert_eq!(parsed.kind, ControlKind::Unknown("teleport".to_owned()));
+        assert_eq!(serialise_event(&event).unwrap(), UNKNOWN_CONTROL_KIND_WIRE);
+    }
+
+    #[test]
+    fn rejects_each_missing_required_control_requested_field() {
+        for field in ["controlId", "kind", "by"] {
+            let mut payload =
+                json!({ "controlId": "control-1", "kind": "steer", "by": "operator" });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input("control.requested", payload);
+
+            let error = parse_event(&input).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_control_applied_field() {
+        for field in ["controlId", "ok"] {
+            let mut payload = json!({ "controlId": "control-1", "ok": true });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input("control.applied", payload);
+
+            let error = parse_event(&input).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {field} was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_control_payload_retains_unknown_fields() {
+        let requested: ControlRequestedPayload = serde_json::from_value(json!({
+            "controlId": "control-1",
+            "kind": "steer",
+            "by": "operator",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+        let applied: ControlAppliedPayload = serde_json::from_value(json!({
+            "controlId": "control-1",
+            "ok": true,
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+
+        for extra in [&requested.extra, &applied.extra] {
+            assert_eq!(extra.get("future"), Some(&json!({ "value": 1 })));
+        }
+        for re_emitted in [
+            serde_json::to_value(&requested).unwrap(),
+            serde_json::to_value(&applied).unwrap(),
+        ] {
+            assert_eq!(re_emitted["future"], json!({ "value": 1 }));
+        }
+    }
+
+    #[test]
+    fn absent_optional_control_payload_fields_are_omitted_instead_of_null() {
+        let requested = ControlRequestedPayload {
+            control_id: "control-1".to_owned(),
+            kind: ControlKind::Interrupt,
+            text: None,
+            truncated: None,
+            by: "operator".to_owned(),
+            extra: PayloadExtension::new(),
+        };
+        let applied = ControlAppliedPayload {
+            control_id: "control-1".to_owned(),
+            ok: true,
+            reason: None,
+            truncated: None,
+            landed_in: None,
+            extra: PayloadExtension::new(),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&requested).unwrap(),
+            r#"{"controlId":"control-1","kind":"interrupt","by":"operator"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&applied).unwrap(),
+            r#"{"controlId":"control-1","ok":true}"#
+        );
+    }
+
+    #[test]
+    fn control_events_match_the_typescript_pinned_bytes() {
+        let requested = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CONTROL_REQUESTED.to_owned(),
+            run_id: "run-control".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T05:00:00.000Z".to_owned(),
+            payload: ControlRequestedPayload {
+                control_id: "control-1".to_owned(),
+                kind: ControlKind::Steer,
+                text: Some("take point on the next turn".to_owned()),
+                truncated: Some(false),
+                by: "operator".to_owned(),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let applied_failed = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CONTROL_APPLIED.to_owned(),
+            run_id: "run-control".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T05:00:01.000Z".to_owned(),
+            payload: ControlAppliedPayload {
+                control_id: "control-1".to_owned(),
+                ok: false,
+                reason: Some("not-live".to_owned()),
+                truncated: None,
+                landed_in: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let applied_interrupt = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CONTROL_APPLIED.to_owned(),
+            run_id: "run-control".to_owned(),
+            seq: 3,
+            ts: "2026-09-07T05:00:02.000Z".to_owned(),
+            payload: ControlAppliedPayload {
+                control_id: "control-2".to_owned(),
+                ok: true,
+                reason: None,
+                truncated: None,
+                landed_in: Some("tool-9".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(serialise_event(&requested).unwrap(), CONTROL_REQUESTED_WIRE);
+        assert_eq!(
+            serialise_event(&applied_failed).unwrap(),
+            CONTROL_APPLIED_FAILED_WIRE
+        );
+        assert_eq!(
+            serialise_event(&applied_interrupt).unwrap(),
+            CONTROL_APPLIED_INTERRUPT_WIRE
         );
     }
 
@@ -3299,11 +3676,25 @@ mod tests {
             round_tripped_type(AGENT_WARNING, json!({ "message": "warning" })),
             AGENT_WARNING
         );
+        assert_eq!(
+            round_tripped_type(
+                CONTROL_REQUESTED,
+                json!({ "controlId": "control-1", "kind": "steer", "by": "operator" }),
+            ),
+            CONTROL_REQUESTED
+        );
+        assert_eq!(
+            round_tripped_type(
+                CONTROL_APPLIED,
+                json!({ "controlId": "control-1", "ok": true }),
+            ),
+            CONTROL_APPLIED
+        );
     }
 
     #[test]
-    fn known_types_holds_exactly_the_eight_recognised_types_with_no_duplicates() {
-        assert_eq!(KNOWN_TYPES.len(), 8);
+    fn known_types_holds_exactly_the_ten_recognised_types_with_no_duplicates() {
+        assert_eq!(KNOWN_TYPES.len(), 10);
 
         let unique: std::collections::HashSet<&str> = KNOWN_TYPES.iter().copied().collect();
         assert_eq!(
@@ -3322,6 +3713,8 @@ mod tests {
                 AGENT_TOOL_RESULT,
                 AGENT_COMPLETED,
                 AGENT_WARNING,
+                CONTROL_REQUESTED,
+                CONTROL_APPLIED,
             ])
         );
     }

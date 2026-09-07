@@ -256,6 +256,61 @@ export interface AgentWarningPayload {
   message: string;
 }
 
+export const CONTROL_KINDS = ["interrupt", "steer"] as const;
+
+export type KnownControlKind = (typeof CONTROL_KINDS)[number];
+
+/**
+ * A control kind this SDK knows, or an unfamiliar wire string retained
+ * verbatim for a newer vocabulary. Consumers must handle the unfamiliar-string
+ * case explicitly and must never map it onto a known kind.
+ *
+ * There is deliberately no `"pause"` member: no harness the operator uses can
+ * pause headlessly, and a verb the runtime cannot honour is a lie in a type.
+ */
+export type ControlKind = KnownControlKind | (string & {});
+
+/**
+ * Requests that the run's runtime interrupt or steer the run. Emitted by the
+ * run's runtime, never by the console: a console that shows a run as
+ * interrupted before the corresponding `control.applied` arrives has misread
+ * the protocol.
+ */
+export interface ControlRequestedPayload {
+  controlId: string;
+  kind: ControlKind;
+  /**
+   * For `steer`, the message queued for the run's next turn. Bounded at
+   * capture to `MAX_EXCERPT_SCALARS`, per `truncated` below. `steer` is
+   * between turns: mid-turn injection is not available headlessly on Claude
+   * Code or Codex, and the protocol does not pretend otherwise. A runtime
+   * honours `steer` by resuming the session with this text as the next user
+   * turn.
+   */
+  text?: string;
+  truncated?: boolean;
+  /** The principal identity that made the request. */
+  by: string;
+}
+
+/**
+ * Records whether a `control.requested` request was honoured. Emitted by the
+ * run's runtime, never by the console. For an `interrupt`, `run.finished`
+ * with `outcome: "interrupted"` is emitted after this event, not before.
+ */
+export interface ControlAppliedPayload {
+  controlId: string;
+  ok: boolean;
+  /**
+   * When `ok` is false: `not-live`, `unsupported`, or a harness message.
+   * Bounded at capture, per `truncated` below.
+   */
+  reason?: string;
+  truncated?: boolean;
+  /** For an `interrupt`, the `toolUseId` the kill landed inside, if any. */
+  landedIn?: string;
+}
+
 /** The wire string for a `run.started` event's `type` field. */
 export const RUN_STARTED = "run.started" as const;
 /** The wire string for a `run.finished` event's `type` field. */
@@ -272,6 +327,10 @@ export const AGENT_TOOL_RESULT = "agent.tool_result" as const;
 export const AGENT_COMPLETED = "agent.completed" as const;
 /** The wire string for an `agent.warning` event's `type` field. */
 export const AGENT_WARNING = "agent.warning" as const;
+/** The wire string for a `control.requested` event's `type` field. */
+export const CONTROL_REQUESTED = "control.requested" as const;
+/** The wire string for a `control.applied` event's `type` field. */
+export const CONTROL_APPLIED = "control.applied" as const;
 
 /**
  * Every event `type` this SDK has a typed payload for. This is not a closed
@@ -289,6 +348,8 @@ export const KNOWN_TYPES = [
   AGENT_TOOL_RESULT,
   AGENT_COMPLETED,
   AGENT_WARNING,
+  CONTROL_REQUESTED,
+  CONTROL_APPLIED,
 ] as const;
 
 export type KnownType = (typeof KNOWN_TYPES)[number];
@@ -307,6 +368,8 @@ export interface EventPayloadMap {
   [AGENT_TOOL_RESULT]: AgentToolResultPayload;
   [AGENT_COMPLETED]: AgentCompletedPayload;
   [AGENT_WARNING]: AgentWarningPayload;
+  [CONTROL_REQUESTED]: ControlRequestedPayload;
+  [CONTROL_APPLIED]: ControlAppliedPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -392,6 +455,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
+const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
 const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
 
 const RUN_STARTED_FIELDS = new Set<string>([
@@ -478,6 +542,22 @@ const AGENT_COMPLETED_FIELDS = new Set<string>([
 ]);
 
 const AGENT_WARNING_FIELDS = new Set<string>(["stage", "message"]);
+
+const CONTROL_REQUESTED_FIELDS = new Set<string>([
+  "controlId",
+  "kind",
+  "text",
+  "truncated",
+  "by",
+]);
+
+const CONTROL_APPLIED_FIELDS = new Set<string>([
+  "controlId",
+  "ok",
+  "reason",
+  "truncated",
+  "landedIn",
+]);
 
 /**
  * Returns the entries of `value` whose keys are not in `fields`, to be
@@ -616,6 +696,21 @@ function optionalBoolean(
   const fieldValue = value[field];
   if (typeof fieldValue !== "boolean") {
     throw new TypeError(`${name}.${field} must be a boolean when present`);
+  }
+  return fieldValue;
+}
+
+function requiredBoolean(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): boolean {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "boolean") {
+    throw new TypeError(`${name}.${field} must be a boolean`);
   }
   return fieldValue;
 }
@@ -879,6 +974,54 @@ export function parseAgentWarningPayload(value: unknown): AgentWarningPayload {
   };
 }
 
+/** Parse a `control.requested` payload, retaining unknown fields. */
+export function parseControlRequestedPayload(
+  value: unknown,
+): ControlRequestedPayload {
+  const name = "ControlRequestedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const controlId = requiredString(value, "controlId", name);
+  const kind = requiredString(value, "kind", name);
+  const text = optionalString(value, "text", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const by = requiredString(value, "by", name);
+  return {
+    controlId,
+    kind: kind as ControlKind,
+    ...(text === undefined ? {} : { text }),
+    ...(truncated === undefined ? {} : { truncated }),
+    by,
+    ...extractUnknownFields(value, CONTROL_REQUESTED_FIELDS),
+  };
+}
+
+/** Parse a `control.applied` payload, retaining unknown fields. */
+export function parseControlAppliedPayload(
+  value: unknown,
+): ControlAppliedPayload {
+  const name = "ControlAppliedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const controlId = requiredString(value, "controlId", name);
+  const ok = requiredBoolean(value, "ok", name);
+  const reason = optionalString(value, "reason", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  const landedIn = optionalString(value, "landedIn", name);
+  return {
+    controlId,
+    ok,
+    ...(reason === undefined ? {} : { reason }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...(landedIn === undefined ? {} : { landedIn }),
+    ...extractUnknownFields(value, CONTROL_APPLIED_FIELDS),
+  };
+}
+
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
     case RUN_STARTED:
@@ -897,6 +1040,10 @@ function parseKnownPayload(eventType: string, payload: unknown): unknown {
       return parseAgentCompletedPayload(payload);
     case AGENT_WARNING:
       return parseAgentWarningPayload(payload);
+    case CONTROL_REQUESTED:
+      return parseControlRequestedPayload(payload);
+    case CONTROL_APPLIED:
+      return parseControlAppliedPayload(payload);
     default:
       return payload;
   }
@@ -1035,6 +1182,29 @@ export function validate(eventType: string, payload: unknown): void {
       validateScalarBound(
         warning.message,
         "AgentWarningPayload.message",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case CONTROL_REQUESTED: {
+      const requested = parsed as ControlRequestedPayload;
+      if (!CONTROL_KIND_VALUES.has(requested.kind)) {
+        throw new TypeError(
+          `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
+        );
+      }
+      validateScalarBound(
+        requested.text,
+        "ControlRequestedPayload.text",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case CONTROL_APPLIED: {
+      const applied = parsed as ControlAppliedPayload;
+      validateScalarBound(
+        applied.reason,
+        "ControlAppliedPayload.reason",
         MAX_EXCERPT_SCALARS,
       );
       return;
