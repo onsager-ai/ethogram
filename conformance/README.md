@@ -87,7 +87,15 @@ Number formatting is also not a free variable (issue #9):
   the one that moves: it re-lays the digits `serde_json` already produced
   according to the ECMA-262 `Number::toString` rule — plain decimal when the
   value's decimal exponent falls in `[-6, 21)`, exponential otherwise —
-  rather than recomputing them, since the digits themselves already agree.
+  rather than recomputing them, since the digits themselves already agree. That last clause holds only because the
+  Rust SDK enables `serde_json`'s `float_roundtrip` feature. Without it,
+  `serde_json`'s default float parser is correctly rounded for most inputs but
+  not all: it reads `0.09765190000000001` — a real `costUsd` from the first
+  captured fixture — as the f64 one ULP below the one JavaScript parses, and
+  then faithfully re-emits that different value as `0.0976519`. The digits then
+  disagree because the *numbers* disagree, which no amount of re-laying the
+  notation can repair. The feature is a correctness requirement here, not a
+  performance trade.
   This applies uniformly to every number the 2^53 rule below leaves as a
   float, including an integral value at or beyond that bound: such a value
   no longer keeps the trailing `.0` `serde_json` would otherwise append,
