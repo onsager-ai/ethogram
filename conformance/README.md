@@ -119,6 +119,18 @@ Number formatting is also not a free variable (issue #9):
   their magnitude. A value that needs more precision than the safe-integer
   range allows must be carried as a string instead of a number.
 
+Unlike that safe-integer bound, two further bounds are policy rather than
+representability (issue #28), so they belong to `validate` and not to
+`parseEvent`/`parse_event`: every string leaf anywhere in a payload, at any
+depth, is at most 16,384 Unicode scalar values (`MAX_TEXT_SCALARS`), and the
+payload's own canonical serialisation is at most 131,072 bytes / 128 KiB
+(`MAX_PAYLOAD_BYTES`), measured the same way this document's canonical form
+is measured. Both apply regardless of whether `validate` recognises the
+event's `type`, which is why a fixture in this corpus is never used to prove
+either one — they hold no matter what a fixture's payload shape is, rather
+than being one more thing two implementations could disagree about how to
+serialise.
+
 This is sound precisely because the ruling assumes no payload ever needs to
 distinguish `1` from `1.0`, and that any integer a payload cannot afford to
 lose precision on either fits the safe-integer range or is carried as a

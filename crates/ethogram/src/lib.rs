@@ -13,6 +13,29 @@ pub const MAX_TEXT_SCALARS: usize = 16_384;
 /// Maximum scalars carried by any excerpted field other than `agent.text`.
 pub const MAX_EXCERPT_SCALARS: usize = 4_096;
 
+/// Maximum serialised size, in UTF-8 bytes, of a payload **alone** — the
+/// payload only, never the envelope around it — measured on the same
+/// canonical compact serialisation `serialise_event` produces for it (issue
+/// #28). [`validate`] enforces this for every event, including one whose
+/// `type` it does not recognise, as a floor under [`MAX_TEXT_SCALARS`] and
+/// [`MAX_EXCERPT_SCALARS`]: those bound named fields on types this SDK
+/// knows, and have nothing to say about an unrecognised type's payload.
+/// [`parse_event`] leaves this bound unenforced, exactly as it leaves the
+/// scalar bounds unenforced: an over-large payload is still perfectly
+/// representable, and a forwarder must still be able to relay it.
+///
+/// 131,072 (128 KiB), not the 65,536 (64 KiB) first proposed for it. A
+/// scalar value is at most four UTF-8 bytes, so a text at exactly
+/// `MAX_TEXT_SCALARS` composed of astral-plane characters is
+/// 16,384 × 4 = 65,536 bytes on its own — the entire 64 KiB budget, with
+/// nothing left over for the rest of the payload. A producer using
+/// [`excerpt()`] exactly as specified on emoji-heavy text would then emit an
+/// `agent.text` this bound rejects. Doubling the budget keeps the scalar
+/// bound binding first for text, which is the intended relationship: this
+/// byte bound is a backstop against an unbounded *unknown* payload, not a
+/// second opinion about text.
+pub const MAX_PAYLOAD_BYTES: usize = 131_072;
+
 /// The wire string for a `run.started` event's `type` field.
 pub const RUN_STARTED: &str = "run.started";
 /// The wire string for a `run.finished` event's `type` field.
@@ -1182,23 +1205,42 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 }
 
 /// Validates whether a producer should emit `payload` for `event_type`.
+///
+/// Two universal bounds (issue #28) are checked first, for **every** event
+/// regardless of whether `event_type` is recognised: every string leaf
+/// anywhere in the payload — nested objects at any depth, strings inside
+/// arrays, strings inside objects nested inside arrays, and a known type's
+/// own retained unknown fields alike — is at most [`MAX_TEXT_SCALARS`]
+/// Unicode scalar values, and the payload's canonical compact serialisation
+/// is at most [`MAX_PAYLOAD_BYTES`] bytes. Without these, a producer emitting
+/// an unrecognised `type` carrying an unbounded payload validated cleanly,
+/// because an unrecognised type otherwise has no bound applied to it at all
+/// — this is the hole closed here.
+///
 /// Required fields, known closed-union membership, safe-integer bounds, and
-/// capture bounds are enforced for known event types; unknown event types stay
-/// open and unvalidated.
+/// the tighter per-field capture bounds are enforced only for known event
+/// types; an unrecognised type is checked against the two universal bounds
+/// above and nothing else.
 ///
 /// `parse_event` answers "can both SDKs carry this?"; `validate` answers
 /// "should a producer have emitted this?" `parse_event` therefore does not
-/// call this function: a representable over-bound event must remain
-/// forwardable.
+/// call this function, nor either universal bound directly: a representable
+/// over-bound event must remain forwardable.
 pub fn validate<P>(event_type: &str, payload: &P) -> serde_json::Result<()>
 where
     P: Serialize + ?Sized,
 {
+    let payload = serde_json::to_value(payload)?;
+
+    // Universal bounds: run before the known-type branch below, and for
+    // every event including one of an unrecognised type (issue #28).
+    validate_payload_text_scalars(&payload, "payload").map_err(de::Error::custom)?;
+    validate_payload_size(&payload).map_err(de::Error::custom)?;
+
     if !KNOWN_TYPES.contains(&event_type) {
         return Ok(());
     }
 
-    let payload = serde_json::to_value(payload)?;
     validate_payload_numbers(&payload, "payload").map_err(de::Error::custom)?;
 
     if event_type == RUN_STARTED {
@@ -1588,6 +1630,83 @@ fn number_exceeds_safe_integer_magnitude(number: &serde_json::Number) -> bool {
         return value.fract() == 0.0 && value.abs() > MAX_SAFE_INTEGER_MAGNITUDE as f64;
     }
     false
+}
+
+/// Recursively validates that every string leaf in `value` is at most
+/// [`MAX_TEXT_SCALARS`] Unicode scalar values (issue #28), naming the
+/// offending path (for example `payload.nested.note` or
+/// `payload.items[2].note`) when the check fails. Mirrors
+/// [`validate_payload_numbers`] exactly, walking nested objects at any depth,
+/// strings inside arrays, and strings inside objects nested inside arrays —
+/// and, because it walks the raw [`Value`] before any known-type struct is
+/// deserialised out of it, a known type's own retained unknown fields (its
+/// `extra: PayloadExtension`) are covered by the same walk rather than
+/// needing a separate pass.
+///
+/// [`validate`] calls this unconditionally, before branching on whether
+/// `event_type` is recognised, so an unrecognised type is covered by the
+/// same floor as a known one instead of going unchecked.
+fn validate_payload_text_scalars(value: &Value, path: &str) -> Result<(), String> {
+    match value {
+        Value::Object(fields) => {
+            for (key, child) in fields {
+                validate_payload_text_scalars(child, &format!("{path}.{key}"))?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_payload_text_scalars(item, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        Value::String(text) => {
+            let actual = text.chars().count();
+            if actual > MAX_TEXT_SCALARS {
+                Err(format!(
+                    "{path} has {actual} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Serialises `payload` alone — never wrapped in an envelope — into the same
+/// canonical compact form [`serialise_event`] would produce for it: sorted
+/// object keys and ECMAScript-notation numbers via [`EcmaScriptFormatter`],
+/// after passing through [`canonicalise_numbers`]. Shared by
+/// [`validate_payload_size`] so the bytes it measures match what a producer
+/// would actually put on the wire for this payload.
+fn serialise_payload_canonical(payload: &Value) -> serde_json::Result<Vec<u8>> {
+    let canonical = canonicalise_numbers(payload.clone());
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, EcmaScriptFormatter);
+    serde::Serialize::serialize(&canonical, &mut serializer)?;
+    Ok(bytes)
+}
+
+/// Validates that `payload` alone — not the envelope around it — serialises
+/// to at most [`MAX_PAYLOAD_BYTES`] UTF-8 bytes in its canonical compact form
+/// (issue #28). See [`MAX_PAYLOAD_BYTES`]'s own doc comment for why this
+/// bound and [`MAX_TEXT_SCALARS`] do not collide.
+///
+/// [`validate`] calls this unconditionally, before branching on whether
+/// `event_type` is recognised, so an unrecognised type is covered by the
+/// same floor as a known one instead of going unchecked.
+fn validate_payload_size(payload: &Value) -> Result<(), String> {
+    let bytes = serialise_payload_canonical(payload)
+        .map_err(|error| format!("payload could not be serialised to measure its size: {error}"))?;
+    let actual = bytes.len();
+    if actual > MAX_PAYLOAD_BYTES {
+        Err(format!(
+            "payload has {actual} bytes; maximum is {MAX_PAYLOAD_BYTES}"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// The largest magnitude at which every integer is exactly representable as
@@ -2336,17 +2455,27 @@ mod tests {
     }
 
     #[test]
-    fn validate_leaves_unknown_event_types_open_and_unvalidated() {
+    fn validate_leaves_unknown_event_types_open_to_anything_within_the_universal_bounds() {
+        // No per-field or closed-union checks apply to an unrecognised type
+        // (there is no typed struct to check against), but it is not fully
+        // unvalidated any more: the universal bounds (issue #28) still run.
+        // This payload sits comfortably under both, so it validates cleanly.
         assert!(validate("future.happened", &json!("not-an-object")).is_ok());
     }
 
     #[test]
     fn validate_reports_every_capture_bound_with_field_actual_and_maximum() {
         let cases = [
+            // `agent.text`'s own bound is `MAX_TEXT_SCALARS` — the same value
+            // as the universal text-scalar floor (issue #28), which runs
+            // first in `validate` and so is what actually reports this case;
+            // the field-specific `AgentTextPayload.text` check below it is
+            // never reached for an over-bound `text`, since nothing over the
+            // universal bound can also be under it.
             (
                 AGENT_TEXT,
                 json!({ "text": "😀".repeat(MAX_TEXT_SCALARS + 1) }),
-                "AgentTextPayload.text",
+                "payload.text",
                 MAX_TEXT_SCALARS,
             ),
             (
@@ -2434,9 +2563,220 @@ mod tests {
         let event = parse_event(&input).unwrap();
         let error = validate(&event.event_type, &event.payload).unwrap_err();
 
+        // Reported by the universal text-scalar bound (issue #28), which
+        // runs before the known-type branch and shares `agent.text`'s own
+        // bound value, so it is what actually reports this case.
         assert_eq!(
             error.to_string(),
-            "AgentTextPayload.text has 20000 Unicode scalar values; maximum is 16384"
+            "payload.text has 20000 Unicode scalar values; maximum is 16384"
+        );
+    }
+
+    /// Builds a JSON payload of plain ASCII text spread across ten short,
+    /// equal-length keys — each nowhere near [`MAX_TEXT_SCALARS`] on its own
+    /// — whose canonical serialisation ([`serialise_payload_canonical`]) is
+    /// exactly `target` bytes. Used to hit the [`MAX_PAYLOAD_BYTES`] boundary
+    /// exactly, without any single string leaf tripping the scalar bound
+    /// instead: ASCII `'a'` never needs escaping, so appending one character
+    /// to any field's string always adds exactly one byte to the total.
+    fn payload_of_exact_byte_size(target: usize) -> Value {
+        const FIELDS: usize = 10;
+        let empty = json!({
+            "p0": "", "p1": "", "p2": "", "p3": "", "p4": "",
+            "p5": "", "p6": "", "p7": "", "p8": "", "p9": "",
+        });
+        let base = serialise_payload_canonical(&empty).unwrap().len();
+        assert!(
+            target >= base,
+            "target {target} is below the minimal payload size {base} for this scheme"
+        );
+        let remaining = target - base;
+        let per_field = remaining / FIELDS;
+        let leftover = remaining % FIELDS;
+        assert!(
+            per_field < MAX_TEXT_SCALARS,
+            "target {target} needs a field longer than MAX_TEXT_SCALARS; raise FIELDS"
+        );
+
+        let mut fields = serde_json::Map::new();
+        for index in 0..FIELDS {
+            let length = per_field + usize::from(index < leftover);
+            fields.insert(format!("p{index}"), Value::String("a".repeat(length)));
+        }
+        let payload = Value::Object(fields);
+        assert_eq!(
+            serialise_payload_canonical(&payload).unwrap().len(),
+            target,
+            "payload_of_exact_byte_size construction is wrong"
+        );
+        payload
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_type_with_an_over_long_string_leaf() {
+        let payload = json!({ "note": "x".repeat(MAX_TEXT_SCALARS + 1) });
+        let error = validate("future.happened", &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "payload.note has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_type_with_an_over_large_serialised_payload() {
+        let payload = payload_of_exact_byte_size(MAX_PAYLOAD_BYTES + 1);
+        let error = validate("future.happened", &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "payload has {} bytes; maximum is {MAX_PAYLOAD_BYTES}",
+                MAX_PAYLOAD_BYTES + 1
+            )
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_over_long_string_in_a_known_types_retained_unknown_field() {
+        let payload = json!({
+            "text": "ok",
+            "note": "x".repeat(MAX_TEXT_SCALARS + 1),
+        });
+        let error = validate(AGENT_TEXT, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "payload.note has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+    }
+
+    #[test]
+    fn validate_locates_an_over_long_string_nested_in_an_object_an_array_and_both() {
+        let nested_in_object = json!({ "nested": { "note": "x".repeat(MAX_TEXT_SCALARS + 1) } });
+        assert_eq!(
+            validate("future.happened", &nested_in_object)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "payload.nested.note has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+
+        let nested_in_array = json!({ "items": ["x".repeat(MAX_TEXT_SCALARS + 1)] });
+        assert_eq!(
+            validate("future.happened", &nested_in_array)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "payload.items[0] has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+
+        let nested_in_object_in_array =
+            json!({ "items": [{ "note": "x".repeat(MAX_TEXT_SCALARS + 1) }] });
+        assert_eq!(
+            validate("future.happened", &nested_in_object_in_array)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "payload.items[0].note has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_string_at_exactly_max_text_scalars_and_rejects_one_more() {
+        // Multi-byte characters prove the count is scalars, not bytes.
+        let at_bound = json!({ "note": "漢".repeat(MAX_TEXT_SCALARS) });
+        assert!(validate("future.happened", &at_bound).is_ok());
+
+        let over_bound = json!({ "note": "漢".repeat(MAX_TEXT_SCALARS + 1) });
+        assert_eq!(
+            validate("future.happened", &over_bound)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "payload.note has {} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}",
+                MAX_TEXT_SCALARS + 1
+            )
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_payload_at_exactly_max_payload_bytes_and_rejects_one_byte_more() {
+        let at_bound = payload_of_exact_byte_size(MAX_PAYLOAD_BYTES);
+        assert!(validate("future.happened", &at_bound).is_ok());
+
+        let over_bound = payload_of_exact_byte_size(MAX_PAYLOAD_BYTES + 1);
+        assert_eq!(
+            validate("future.happened", &over_bound)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "payload has {} bytes; maximum is {MAX_PAYLOAD_BYTES}",
+                MAX_PAYLOAD_BYTES + 1
+            )
+        );
+    }
+
+    /// Pinned so a future narrowing of [`MAX_PAYLOAD_BYTES`] fails loudly: an
+    /// `agent.text` at exactly [`MAX_TEXT_SCALARS`] composed entirely of
+    /// astral-plane characters is 16,384 × 4 = 65,536 bytes of text alone,
+    /// which the originally proposed 65,536-byte bound would have rejected.
+    /// See [`MAX_PAYLOAD_BYTES`]'s doc comment for why the constant is
+    /// 131,072 instead.
+    #[test]
+    fn agent_text_of_exactly_max_text_scalars_astral_plane_characters_validates_cleanly() {
+        let payload = json!({ "text": "😀".repeat(MAX_TEXT_SCALARS) });
+        assert!(validate(AGENT_TEXT, &payload).is_ok());
+    }
+
+    #[test]
+    fn parse_event_carries_both_new_over_bound_grounds_that_validate_refuses() {
+        let input = lifecycle_event_input(
+            "future.happened",
+            json!({ "note": "x".repeat(MAX_TEXT_SCALARS + 1) }),
+        );
+        let event = parse_event(&input).unwrap();
+        assert!(validate(&event.event_type, &event.payload).is_err());
+
+        let over_size_payload = payload_of_exact_byte_size(MAX_PAYLOAD_BYTES + 1);
+        let input = lifecycle_event_input("future.happened", over_size_payload);
+        let event = parse_event(&input).unwrap();
+        assert!(validate(&event.event_type, &event.payload).is_err());
+    }
+
+    #[test]
+    fn every_conformance_v1_fixture_validates_cleanly() {
+        let corpus_directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance/v1");
+        let mut fixture_count = 0usize;
+        for entry in std::fs::read_dir(&corpus_directory).expect("conformance/v1 must exist") {
+            let entry = entry.expect("directory entry must be readable");
+            let path = entry.path();
+            if !path.is_file() || !path.extension().is_some_and(|value| value == "json") {
+                continue;
+            }
+            fixture_count += 1;
+            let source = std::fs::read_to_string(&path).expect("fixture must be readable");
+            let event = parse_event(&source).expect("fixture must parse");
+            if let Err(error) = validate(&event.event_type, &event.payload) {
+                panic!(
+                    "fixture {:?} failed validate: {error}",
+                    path.file_name().expect("fixture path has a file name")
+                );
+            }
+        }
+        assert!(
+            fixture_count > 0,
+            "expected at least one fixture in conformance/v1"
         );
     }
 

@@ -7,6 +7,30 @@ export const MAX_TEXT_SCALARS = 16_384 as const;
 export const MAX_EXCERPT_SCALARS = 4_096 as const;
 
 /**
+ * Maximum serialised size, in UTF-8 bytes, of a payload **alone** — the
+ * payload only, never the envelope around it — measured on the same
+ * canonical compact serialisation `serialiseEvent` produces for it (issue
+ * #28). `validate` enforces this for every event, including one whose
+ * `eventType` it does not recognise, as a floor under `MAX_TEXT_SCALARS` and
+ * `MAX_EXCERPT_SCALARS`: those bound named fields on types this SDK knows,
+ * and have nothing to say about an unrecognised type's payload. `parseEvent`
+ * leaves this bound unenforced, exactly as it leaves the scalar bounds
+ * unenforced: an over-large payload is still perfectly representable, and a
+ * forwarder must still be able to relay it.
+ *
+ * 131,072 (128 KiB), not the 65,536 (64 KiB) first proposed for it. A scalar
+ * value is at most four UTF-8 bytes, so a text at exactly `MAX_TEXT_SCALARS`
+ * composed of astral-plane characters is 16,384 × 4 = 65,536 bytes on its
+ * own — the entire 64 KiB budget, with nothing left over for the rest of the
+ * payload. A producer using `excerpt()` exactly as specified on emoji-heavy
+ * text would then emit an `agent.text` this bound rejects. Doubling the
+ * budget keeps the scalar bound binding first for text, which is the
+ * intended relationship: this byte bound is a backstop against an unbounded
+ * *unknown* payload, not a second opinion about text.
+ */
+export const MAX_PAYLOAD_BYTES = 131_072 as const;
+
+/**
  * The result of `excerpt`: the kept text, and whether a bound applied.
  *
  * On the wire the corresponding payload field is optional, and **its absence
@@ -1486,16 +1510,105 @@ function validateScalarBound(
 }
 
 /**
- * Validate whether a producer should emit `payload` for `eventType`. Required
- * fields, known closed-union membership, safe-integer bounds, and capture
- * bounds are enforced for known event types; unknown event types stay open
- * and unvalidated.
+ * Recursively validates that every string leaf in `value` is at most
+ * `MAX_TEXT_SCALARS` Unicode scalar values (issue #28), naming the offending
+ * path (for example `payload.nested.note` or `payload.items[2].note`) when
+ * the check fails. Mirrors `validatePayloadNumbers` exactly, walking nested
+ * objects at any depth, strings inside arrays, and strings inside objects
+ * nested inside arrays — and, because it walks the raw decoded JSON value
+ * rather than a parsed typed payload, a known type's own retained unknown
+ * fields are covered by the same walk rather than needing a separate pass.
+ *
+ * `validate` calls this unconditionally, before switching on whether
+ * `eventType` is recognised, so an unrecognised type is covered by the same
+ * floor as a known one instead of going unchecked.
+ */
+function validatePayloadTextScalars(value: unknown, path: string): void {
+  if (typeof value === "string") {
+    const actual = Array.from(value).length;
+    if (actual > MAX_TEXT_SCALARS) {
+      throw new TypeError(
+        `${path} has ${actual} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      validatePayloadTextScalars(item, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (isRecord(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      validatePayloadTextScalars(child, `${path}.${key}`);
+    }
+  }
+}
+
+/**
+ * Serialises `payload` alone — never wrapped in an envelope — into the same
+ * canonical compact form `serialiseEvent` would produce for it: keys sorted
+ * recursively by UTF-8 byte order via `sortObjectKeysByUtf8Bytes`, then
+ * `JSON.stringify`, which already lays out numbers in the ECMAScript
+ * notation this protocol's canonical form uses. Shared by
+ * `validatePayloadSize` so the bytes it measures match what a producer would
+ * actually put on the wire for this payload.
+ */
+function serialisePayloadCanonical(payload: unknown): string {
+  return JSON.stringify(sortObjectKeysByUtf8Bytes(payload));
+}
+
+/**
+ * Validates that `payload` alone — not the envelope around it — serialises
+ * to at most `MAX_PAYLOAD_BYTES` **UTF-8** bytes in its canonical compact
+ * form (issue #28). See `MAX_PAYLOAD_BYTES`'s own doc comment for why this
+ * bound and `MAX_TEXT_SCALARS` do not collide.
+ *
+ * `validate` calls this unconditionally, before switching on whether
+ * `eventType` is recognised, so an unrecognised type is covered by the same
+ * floor as a known one instead of going unchecked.
+ */
+function validatePayloadSize(payload: unknown): void {
+  const serialised = serialisePayloadCanonical(payload);
+  const actual = Buffer.byteLength(serialised, "utf8");
+  if (actual > MAX_PAYLOAD_BYTES) {
+    throw new TypeError(
+      `payload has ${actual} bytes; maximum is ${MAX_PAYLOAD_BYTES}`,
+    );
+  }
+}
+
+/**
+ * Validate whether a producer should emit `payload` for `eventType`.
+ *
+ * Two universal bounds (issue #28) are checked first, for **every** event
+ * regardless of whether `eventType` is recognised: every string leaf
+ * anywhere in the payload — nested objects at any depth, strings inside
+ * arrays, strings inside objects nested inside arrays, and a known type's
+ * own retained unknown fields alike — is at most `MAX_TEXT_SCALARS` Unicode
+ * scalar values, and the payload's canonical compact serialisation is at
+ * most `MAX_PAYLOAD_BYTES` bytes. Without these, a producer emitting an
+ * unrecognised type carrying an unbounded payload validated cleanly, because
+ * an unrecognised type otherwise has no bound applied to it at all — this is
+ * the hole closed here.
+ *
+ * Required fields, known closed-union membership, safe-integer bounds, and
+ * the tighter per-field capture bounds are enforced only for known event
+ * types; an unrecognised type is checked against the two universal bounds
+ * above and nothing else.
  *
  * `parse_event` answers "can both SDKs carry this?"; `validate` answers
  * "should a producer have emitted this?" `parseEvent` therefore does not call
- * this function: a representable over-bound event must remain forwardable.
+ * this function, nor either universal bound directly: a representable
+ * over-bound event must remain forwardable.
  */
 export function validate(eventType: string, payload: unknown): void {
+  // Universal bounds: run before the switch below, and for every event
+  // including one of an unrecognised type (issue #28).
+  validatePayloadTextScalars(payload, "payload");
+  validatePayloadSize(payload);
+
   if (!KNOWN_TYPE_VALUES.has(eventType)) {
     return;
   }
