@@ -2,12 +2,21 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  AGENT_COMPLETED,
+  AGENT_STARTED,
+  AGENT_TEXT,
+  AGENT_TOOL_RESULT,
+  AGENT_TOOL_USE,
+  AGENT_WARNING,
   EVENT_SCHEMA_VERSION,
   InMemorySink,
+  KNOWN_TYPES,
   MAX_EXCERPT_SCALARS,
   MAX_TEXT_SCALARS,
+  RUN_FINISHED,
   RUN_KINDS,
   RUN_OUTCOMES,
+  RUN_STARTED,
   excerpt,
   foldRun,
   parseAgentCompletedPayload,
@@ -1221,5 +1230,92 @@ describe("foldRun", () => {
       durationMs: 1000,
       open: false,
     });
+  });
+});
+
+describe("known event type constants (issue #4)", () => {
+  const sink = new InMemorySink(() => "2026-09-07T03:00:00.000Z");
+
+  // Builds an event of `type` from `payload`, stamps it, serialises it, and
+  // parses the `type` field back out. This is deliberately not
+  // `assert.equal(RUN_STARTED, "run.started")`: that proves only that
+  // someone typed the same string twice. Going through the wire fails if the
+  // exported constant and what a real event of that type actually produces
+  // ever part company.
+  const roundTrippedType = (type: string, payload: unknown): string => {
+    const stamped = sink.appendDraft("run-known-types", {
+      type,
+      payload,
+    } as EventDraft);
+    const wire = serialiseEvent(stamped);
+    return parseEvent(JSON.parse(wire) as unknown).type;
+  };
+
+  test("each exported constant equals the type field its own round-trip produces", () => {
+    assert.equal(
+      roundTrippedType(RUN_STARTED, {
+        kind: "loop",
+        actor: "builder",
+        harness: "codex",
+      }),
+      RUN_STARTED,
+    );
+    assert.equal(
+      roundTrippedType(RUN_FINISHED, { outcome: "completed", durationMs: 1250 }),
+      RUN_FINISHED,
+    );
+    assert.equal(roundTrippedType(AGENT_STARTED, {}), AGENT_STARTED);
+    assert.equal(roundTrippedType(AGENT_TEXT, { text: "hello" }), AGENT_TEXT);
+    assert.equal(
+      roundTrippedType(AGENT_TOOL_USE, { tool: "read" }),
+      AGENT_TOOL_USE,
+    );
+    assert.equal(
+      roundTrippedType(AGENT_TOOL_RESULT, { tool: "read" }),
+      AGENT_TOOL_RESULT,
+    );
+    assert.equal(roundTrippedType(AGENT_COMPLETED, {}), AGENT_COMPLETED);
+    assert.equal(
+      roundTrippedType(AGENT_WARNING, { message: "warning" }),
+      AGENT_WARNING,
+    );
+  });
+
+  test("KNOWN_TYPES holds exactly the eight recognised types, with no duplicates", () => {
+    assert.equal(KNOWN_TYPES.length, 8);
+    assert.equal(new Set(KNOWN_TYPES).size, 8);
+    assert.deepEqual(
+      new Set(KNOWN_TYPES),
+      new Set([
+        RUN_STARTED,
+        RUN_FINISHED,
+        AGENT_STARTED,
+        AGENT_TEXT,
+        AGENT_TOOL_USE,
+        AGENT_TOOL_RESULT,
+        AGENT_COMPLETED,
+        AGENT_WARNING,
+      ]),
+    );
+  });
+
+  test("every KNOWN_TYPES entry is recognised by the validation path, and an unrecognised type is not", () => {
+    // A string payload fails `isRecord` in every known payload parser, so
+    // this distinguishes "validated against a typed payload" from the
+    // untouched pass-through an unrecognised type gets.
+    const malformedPayload = "not-an-object";
+    for (const type of KNOWN_TYPES) {
+      assert.throws(
+        () => parseEvent({ ...completeEvent(), type, payload: malformedPayload }),
+        `${type} should be validated against its typed payload`,
+      );
+    }
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        type: "future.happened",
+        payload: malformedPayload,
+      }),
+    );
   });
 });
