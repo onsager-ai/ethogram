@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "agent.tool_result",
+  "runId": "run-claude-error-shapes",
+  "seq": 4,
+  "ts": "2026-09-07T09:30:04.000Z",
+  "payload": {
+    "isError": true,
+    "resultExcerpt": "Exit code 1\ncat: /nonexistent-file-xyz: No such file or directory",
+    "stage": "generate",
+    "tool": "Bash",
+    "toolUseId": "toolu_01VL7aVtfw8YsTXwszEqRDbW"
+  }
+}

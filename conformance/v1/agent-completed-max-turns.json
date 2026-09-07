@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "type": "agent.completed",
+  "runId": "run-claude-error-shapes",
+  "seq": 5,
+  "ts": "2026-09-07T09:30:05.000Z",
+  "payload": {
+    "costUsd": 0.0223935,
+    "durationMs": 3380,
+    "model": "claude-haiku-4-5-20251001",
+    "stage": "generate",
+    "turns": 2,
+    "usage": {
+      "cacheCreationTokens": 9517,
+      "cacheReadTokens": 13615,
+      "inputTokens": 9,
+      "outputTokens": 193
+    }
+  }
+}
