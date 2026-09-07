@@ -10,7 +10,13 @@ repository = "https://github.com/onsager-ai/ethogram"
 
 [workspace.dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
+# `float_roundtrip` is REQUIRED, not an optimisation. Without it serde_json's
+# fast float parser is correctly rounded only for most inputs: it reads
+# 0.09765190000000001 (a real captured costUsd) as 0x1.8ffb704e46b4fp-4,
+# one ULP below the value JavaScript parses, and then faithfully re-emits
+# the WRONG number as 0.0976519. That is a silent cross-SDK disagreement on
+# a money field, and it is invisible until a fixture carries such a value.
+serde_json = { version = "=1.0.149", features = ["float_roundtrip"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

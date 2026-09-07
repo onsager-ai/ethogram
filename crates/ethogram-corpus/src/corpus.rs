@@ -2,4 +2,41 @@
 
 use crate::Fixture;
 
-pub(crate) static V1_FIXTURES: &[Fixture] = &[];
+pub(crate) static V1_FIXTURES: &[Fixture] = &[
+    Fixture {
+        name: "agent-completed-repeated-terminal.json",
+        raw_json: include_str!("../../../conformance/v1/agent-completed-repeated-terminal.json"),
+    },
+    Fixture {
+        name: "agent-completed.json",
+        raw_json: include_str!("../../../conformance/v1/agent-completed.json"),
+    },
+    Fixture {
+        name: "agent-started.json",
+        raw_json: include_str!("../../../conformance/v1/agent-started.json"),
+    },
+    Fixture {
+        name: "agent-text-truncated.json",
+        raw_json: include_str!("../../../conformance/v1/agent-text-truncated.json"),
+    },
+    Fixture {
+        name: "agent-text.json",
+        raw_json: include_str!("../../../conformance/v1/agent-text.json"),
+    },
+    Fixture {
+        name: "agent-tool-result-subagent.json",
+        raw_json: include_str!("../../../conformance/v1/agent-tool-result-subagent.json"),
+    },
+    Fixture {
+        name: "agent-tool-result.json",
+        raw_json: include_str!("../../../conformance/v1/agent-tool-result.json"),
+    },
+    Fixture {
+        name: "agent-tool-use-subagent.json",
+        raw_json: include_str!("../../../conformance/v1/agent-tool-use-subagent.json"),
+    },
+    Fixture {
+        name: "agent-tool-use.json",
+        raw_json: include_str!("../../../conformance/v1/agent-tool-use.json"),
+    },
+];

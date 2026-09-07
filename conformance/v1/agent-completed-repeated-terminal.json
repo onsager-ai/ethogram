@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "type": "agent.completed",
+  "runId": "run-claude-subagent",
+  "seq": 14,
+  "ts": "2026-09-07T05:12:14.000Z",
+  "payload": {
+    "costUsd": 0.09765190000000001,
+    "durationMs": 1664,
+    "model": "claude-haiku-4-5-20251001",
+    "stage": "generate",
+    "turns": 1,
+    "usage": {
+      "cacheCreationTokens": 559,
+      "cacheReadTokens": 26784,
+      "inputTokens": 10,
+      "outputTokens": 58
+    }
+  }
+}

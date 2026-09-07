@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "agent.started",
+  "runId": "run-claude-subagent",
+  "seq": 1,
+  "ts": "2026-09-07T05:12:01.000Z",
+  "payload": {
+    "model": "claude-haiku-4-5-20251001",
+    "sessionId": "1a425592-726e-4137-9dee-13ec62709123",
+    "stage": "generate"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "agent.tool_result",
+  "runId": "run-claude-subagent",
+  "seq": 9,
+  "ts": "2026-09-07T05:12:09.000Z",
+  "payload": {
+    "parentToolUseId": "toolu_01N4UBnESypVtuFSMQMNGTG8",
+    "resultExcerpt": "capture-subagent-ok",
+    "stage": "generate",
+    "tool": "Bash",
+    "toolUseId": "toolu_01GvYvaZZx61VzJyHo1mkUpk"
+  }
+}
