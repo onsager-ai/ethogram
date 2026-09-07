@@ -676,7 +676,13 @@ describe("agent payload parsing", () => {
 });
 
 describe("control payload parsing (spec #8)", () => {
-  test("accepts every permitted control kind", () => {
+  test("parseEvent accepts every permitted control kind without text", () => {
+    // parseEvent answers "can both SDKs carry this?", not "should a
+    // producer have emitted this?" A steer naming no text is perfectly
+    // representable -- validate (below) rejects it as a producer error, but
+    // a forwarder must still be able to relay it. This is the test that
+    // would fail if someone later "helpfully" moved the steer-needs-text
+    // rule into the parser.
     assert.deepEqual(CONTROL_KINDS, PERMITTED_CONTROL_KINDS);
     for (const kind of PERMITTED_CONTROL_KINDS) {
       const payload = { controlId: "control-1", kind, by: "operator" };
@@ -687,8 +693,49 @@ describe("control payload parsing (spec #8)", () => {
           payload,
         }),
       );
-      assert.doesNotThrow(() => validate(CONTROL_REQUESTED, payload));
     }
+  });
+
+  test("validate accepts an interrupt with no text", () => {
+    // An interrupt has nothing to say by design.
+    const payload = { controlId: "control-1", kind: "interrupt", by: "operator" };
+    assert.doesNotThrow(() => validate(CONTROL_REQUESTED, payload));
+  });
+
+  test("validate accepts a steer with text", () => {
+    const payload = {
+      controlId: "control-1",
+      kind: "steer",
+      by: "operator",
+      text: "take point on the next turn",
+    };
+    assert.doesNotThrow(() => validate(CONTROL_REQUESTED, payload));
+  });
+
+  test("validate rejects a steer with absent text", () => {
+    const payload = { controlId: "control-1", kind: "steer", by: "operator" };
+    assert.throws(
+      () => validate(CONTROL_REQUESTED, payload),
+      new TypeError(
+        'ControlRequestedPayload.text is required and must not be empty when kind is "steer": a steer with nothing to say is a producer error',
+      ),
+    );
+  });
+
+  test("validate rejects a steer with empty text", () => {
+    // A zero-length instruction is the same defect as an absent one.
+    const payload = {
+      controlId: "control-1",
+      kind: "steer",
+      by: "operator",
+      text: "",
+    };
+    assert.throws(
+      () => validate(CONTROL_REQUESTED, payload),
+      new TypeError(
+        'ControlRequestedPayload.text is required and must not be empty when kind is "steer": a steer with nothing to say is a producer error',
+      ),
+    );
   });
 
   test("parses an unknown control kind verbatim and validate reports it", () => {
@@ -1754,6 +1801,118 @@ describe("serialiseEvent payload key sorting", () => {
       serialiseEvent(finished),
       '{"v":1,"type":"run.finished","runId":"run-root","seq":2,"ts":"2026-09-06T00:00:01.000Z","payload":{"durationMs":1000,"outcome":"no-op"}}',
     );
+  });
+});
+
+describe("ULP-neighbour differential test (short decimals)", () => {
+  test("ulp neighbours of short decimals match measured JavaScript output", () => {
+    // The class-4 canonicalisation on the Rust side was diff-tested against
+    // real JavaScript over 200,000 randomly sampled f64 values plus an
+    // exponent sweep, byte-identical, zero differences -- and it still
+    // missed a real defect, because uniform random sampling over the bit
+    // space almost always produces values with full-length mantissas. The
+    // shape that failed was a *short decimal perturbed by about one ULP*
+    // (`0.0976519` nudged by a hair), which is vanishingly rare under random
+    // sampling and extremely common in real money and telemetry, since it
+    // is what summing a handful of prices produces. The specific bug is
+    // fixed on the Rust side (see its own guard test); this covers the
+    // sampling gap that let it through, on both SDKs, independently of
+    // whether that particular bug ever recurs.
+    //
+    // Each base below is a short, money-/telemetry-shaped decimal. For each,
+    // the neighbouring doubles one and two ULPs above and below are
+    // generated here via a DataView/BigUint64Array bit-pattern round trip,
+    // mirroring the Rust suite's `f64::from_bits(base.to_bits() ± n)`
+    // equivalent. The *expected* strings were computed once with a
+    // throwaway Node script (`JSON.stringify` of each bit-shifted double)
+    // and are hard-coded here and in the Rust suite, since the two suites
+    // cannot share a live process to compare against a running Node. Every
+    // one of the 40 values agreed between this table and what
+    // `JSON.stringify` produces when the table was generated -- had any
+    // disagreed, that would have been a live class-4 divergence, not a
+    // table update.
+    const bases = [0.0976519, 0.1, 0.3, 1.25, 12.34, 0.001, 99.99, 1234.5678];
+
+    // [index into bases, signed ULP offset from that base, expected
+    // JSON.stringify output for the resulting double]
+    const expected: Array<[number, number, string]> = [
+      [0, -2, "0.09765189999999997"],
+      [0, -1, "0.09765189999999999"],
+      [0, 0, "0.0976519"],
+      [0, 1, "0.09765190000000001"],
+      [0, 2, "0.09765190000000003"],
+      [1, -2, "0.09999999999999998"],
+      [1, -1, "0.09999999999999999"],
+      [1, 0, "0.1"],
+      [1, 1, "0.10000000000000002"],
+      [1, 2, "0.10000000000000003"],
+      [2, -2, "0.2999999999999999"],
+      [2, -1, "0.29999999999999993"],
+      [2, 0, "0.3"],
+      [2, 1, "0.30000000000000004"],
+      [2, 2, "0.3000000000000001"],
+      [3, -2, "1.2499999999999996"],
+      [3, -1, "1.2499999999999998"],
+      [3, 0, "1.25"],
+      [3, 1, "1.2500000000000002"],
+      [3, 2, "1.2500000000000004"],
+      [4, -2, "12.339999999999996"],
+      [4, -1, "12.339999999999998"],
+      [4, 0, "12.34"],
+      [4, 1, "12.340000000000002"],
+      [4, 2, "12.340000000000003"],
+      [5, -2, "0.0009999999999999996"],
+      [5, -1, "0.0009999999999999998"],
+      [5, 0, "0.001"],
+      [5, 1, "0.0010000000000000002"],
+      [5, 2, "0.0010000000000000005"],
+      [6, -2, "99.98999999999997"],
+      [6, -1, "99.98999999999998"],
+      [6, 0, "99.99"],
+      [6, 1, "99.99000000000001"],
+      [6, 2, "99.99000000000002"],
+      [7, -2, "1234.5677999999996"],
+      [7, -1, "1234.5677999999998"],
+      [7, 0, "1234.5678"],
+      [7, 1, "1234.5678000000003"],
+      [7, 2, "1234.5678000000005"],
+    ];
+
+    assert.equal(
+      expected.length,
+      bases.length * 5,
+      "table covers every base at ULP offsets -2, -1, 0, 1, 2",
+    );
+
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+
+    function bitsOf(value: number): bigint {
+      view.setFloat64(0, value, false);
+      return view.getBigUint64(0, false);
+    }
+
+    function fromBits(bits: bigint): number {
+      view.setBigUint64(0, bits, false);
+      return view.getFloat64(0, false);
+    }
+
+    for (const [baseIndex, offset, expectedString] of expected) {
+      const base = bases[baseIndex]!;
+      const bits = bitsOf(base) + BigInt(offset);
+      const value = fromBits(bits);
+
+      const event: Event = {
+        ...completeEvent(),
+        payload: { value },
+      };
+
+      assert.equal(
+        serialiseEvent(event),
+        `{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"value":${expectedString}}}`,
+        `base ${base} (index ${baseIndex}) offset ${offset} expected ${expectedString}`,
+      );
+    }
   });
 });
 

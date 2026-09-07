@@ -1306,6 +1306,18 @@ export function validate(eventType: string, payload: unknown): void {
           `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
         );
       }
+      // A `steer` is an instruction queued for the run's next turn; one
+      // carrying nothing to say is a producer error. This is policy, not
+      // representability, so it lives here and not in `parseEvent` (see its
+      // doc comment): a steer with no text is perfectly representable, and a
+      // forwarder must still be able to relay it. An absent `text` and a
+      // present-but-empty one are the same defect, so both are rejected
+      // identically.
+      if (requested.kind === "steer" && !requested.text) {
+        throw new TypeError(
+          'ControlRequestedPayload.text is required and must not be empty when kind is "steer": a steer with nothing to say is a producer error',
+        );
+      }
       validateScalarBound(
         requested.text,
         "ControlRequestedPayload.text",

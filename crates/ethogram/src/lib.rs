@@ -1069,6 +1069,20 @@ where
                 "ControlRequestedPayload.kind has unknown value: {value}"
             )));
         }
+        // A `steer` is an instruction queued for the run's next turn; one
+        // carrying nothing to say is a producer error. This is policy, not
+        // representability, so it lives here and not in `parse_event` (see
+        // that function's doc comment): a steer with no text is perfectly
+        // representable, and a forwarder must still be able to relay it.
+        // An absent `text` and a present-but-empty one are the same defect,
+        // so both are rejected identically.
+        if requested.kind == ControlKind::Steer
+            && requested.text.as_deref().unwrap_or("").is_empty()
+        {
+            return Err(de::Error::custom(
+                "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error",
+            ));
+        }
         validate_scalar_bound(
             requested.text.as_deref(),
             "ControlRequestedPayload.text",
@@ -2679,13 +2693,62 @@ mod tests {
     // -- control.* (spec #8) ---------------------------------------------
 
     #[test]
-    fn accepts_every_permitted_control_kind() {
+    fn parse_event_accepts_every_permitted_control_kind_without_text() {
+        // `parse_event` answers "can both SDKs carry this?", not "should a
+        // producer have emitted this?" A `steer` naming no `text` is
+        // perfectly representable — `validate` below rejects it as a
+        // producer error, but a forwarder must still be able to relay it.
+        // This is the test that would fail if someone later "helpfully"
+        // moved the steer-needs-text rule into the parser.
         for kind in ["interrupt", "steer"] {
             let payload = json!({ "controlId": "control-1", "kind": kind, "by": "operator" });
-            let input = lifecycle_event_input("control.requested", payload.clone());
+            let input = lifecycle_event_input("control.requested", payload);
             parse_event(&input).unwrap();
-            validate(CONTROL_REQUESTED, &payload).unwrap();
         }
+    }
+
+    #[test]
+    fn validate_accepts_interrupt_with_no_text() {
+        // An interrupt has nothing to say by design.
+        let payload = json!({ "controlId": "control-1", "kind": "interrupt", "by": "operator" });
+        validate(CONTROL_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_steer_with_text() {
+        let payload = json!({
+            "controlId": "control-1",
+            "kind": "steer",
+            "by": "operator",
+            "text": "take point on the next turn"
+        });
+        validate(CONTROL_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_steer_with_absent_text() {
+        let payload = json!({ "controlId": "control-1", "kind": "steer", "by": "operator" });
+        let error = validate(CONTROL_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_steer_with_empty_text() {
+        // A zero-length instruction is the same defect as an absent one.
+        let payload = json!({
+            "controlId": "control-1",
+            "kind": "steer",
+            "by": "operator",
+            "text": ""
+        });
+        let error = validate(CONTROL_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error"
+        );
     }
 
     #[test]
@@ -3389,6 +3452,107 @@ mod tests {
                     r#"{{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"value":{expected}}}}}"#
                 ),
                 "input {input:?} expected notation {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn ulp_neighbours_of_short_decimals_match_measured_javascript_output() {
+        // The class-4 canonicalisation above was diff-tested against real
+        // JavaScript over 200,000 randomly sampled f64 values plus an
+        // exponent sweep, byte-identical, zero differences -- and it still
+        // missed a real defect, because uniform random sampling over the bit
+        // space almost always produces values with full-length mantissas.
+        // The shape that failed was a *short decimal perturbed by about one
+        // ULP* (`0.0976519` nudged by a hair), which is vanishingly rare
+        // under random sampling and extremely common in real money and
+        // telemetry, since it is what summing a handful of prices produces.
+        // The specific bug is fixed and has its own guard test above
+        // (`serde_json_float_roundtrip_feature_is_required_for_correctly_rounded_costs`);
+        // this covers the sampling gap that let it through, independently of
+        // whether that particular bug ever recurs.
+        //
+        // Each base below is a short, money-/telemetry-shaped decimal. For
+        // each, the neighbouring doubles one and two ULPs above and below
+        // are generated here via `f64::from_bits(base.to_bits() ± n)`,
+        // mirroring the TypeScript suite's `DataView`-based equivalent. The
+        // *expected* strings were computed once with a throwaway Node
+        // script (`JSON.stringify` of each bit-shifted double) and are
+        // hard-coded here and in the TypeScript suite, since the two suites
+        // cannot share a live process to compare against a running Node.
+        // Every one of the 40 values agreed between `serde_json`'s digit
+        // choice (re-laid by `EcmaScriptFormatter`) and V8's `JSON.stringify`
+        // when this table was generated -- had any disagreed, that would
+        // have been a live class-4 divergence, not a table update.
+        const BASES: &[f64] = &[0.0976519, 0.1, 0.3, 1.25, 12.34, 0.001, 99.99, 1234.5678];
+
+        // (index into BASES, signed ULP offset from that base, expected
+        // `JSON.stringify` output for the resulting double)
+        const EXPECTED: &[(usize, i8, &str)] = &[
+            (0, -2, "0.09765189999999997"),
+            (0, -1, "0.09765189999999999"),
+            (0, 0, "0.0976519"),
+            (0, 1, "0.09765190000000001"),
+            (0, 2, "0.09765190000000003"),
+            (1, -2, "0.09999999999999998"),
+            (1, -1, "0.09999999999999999"),
+            (1, 0, "0.1"),
+            (1, 1, "0.10000000000000002"),
+            (1, 2, "0.10000000000000003"),
+            (2, -2, "0.2999999999999999"),
+            (2, -1, "0.29999999999999993"),
+            (2, 0, "0.3"),
+            (2, 1, "0.30000000000000004"),
+            (2, 2, "0.3000000000000001"),
+            (3, -2, "1.2499999999999996"),
+            (3, -1, "1.2499999999999998"),
+            (3, 0, "1.25"),
+            (3, 1, "1.2500000000000002"),
+            (3, 2, "1.2500000000000004"),
+            (4, -2, "12.339999999999996"),
+            (4, -1, "12.339999999999998"),
+            (4, 0, "12.34"),
+            (4, 1, "12.340000000000002"),
+            (4, 2, "12.340000000000003"),
+            (5, -2, "0.0009999999999999996"),
+            (5, -1, "0.0009999999999999998"),
+            (5, 0, "0.001"),
+            (5, 1, "0.0010000000000000002"),
+            (5, 2, "0.0010000000000000005"),
+            (6, -2, "99.98999999999997"),
+            (6, -1, "99.98999999999998"),
+            (6, 0, "99.99"),
+            (6, 1, "99.99000000000001"),
+            (6, 2, "99.99000000000002"),
+            (7, -2, "1234.5677999999996"),
+            (7, -1, "1234.5677999999998"),
+            (7, 0, "1234.5678"),
+            (7, 1, "1234.5678000000003"),
+            (7, 2, "1234.5678000000005"),
+        ];
+
+        assert_eq!(
+            EXPECTED.len(),
+            BASES.len() * 5,
+            "table covers every base at ULP offsets -2, -1, 0, 1, 2"
+        );
+
+        for &(base_index, offset, expected) in EXPECTED {
+            let base = BASES[base_index];
+            let bits = base.to_bits().wrapping_add(offset as i64 as u64);
+            let value = f64::from_bits(bits);
+
+            let event = Event {
+                payload: json!({ "value": value }),
+                ..complete_event()
+            };
+
+            assert_eq!(
+                serialise_event(&event).unwrap(),
+                format!(
+                    r#"{{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"value":{expected}}}}}"#
+                ),
+                "base {base} (index {base_index}) offset {offset} expected {expected}"
             );
         }
     }

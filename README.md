@@ -16,8 +16,9 @@ doing, named once so that two systems mean the same thing by the same word.
 **Run lifecycle, agent observation, control, and capture refusal implemented.**
 The version 1 envelope, its `run.*` lifecycle, the six `agent.*` observations,
 the two `control.*` events, and `capture.refused` exist in both SDKs. The
-conformance corpus remains empty until the first real capture lands, because an
-invented fixture would become an immutable guess.
+conformance corpus (`conformance/v1/`) holds nine fixtures derived from real
+captures. It grows only from real captures, never from an invented example,
+because an invented fixture would become an immutable guess.
 
 ## Why it is a separate repository
 
