@@ -325,11 +325,27 @@ forbid. `requestedRunId` carries the run that emitted the corresponding
 otherwise find the asking run now that the two events routinely live on
 different runs. `by` is a resolvable principal identity rather than a display
 name. `byTimeout` is semantically material: a permission that expired
-unanswered is nobody deciding, not a decision with a long response gap. Each
-SDK exposes a separate cross-event helper that checks matching `decisionId`
-values, the chosen option, and any reversal when both payloads are available;
-it is not part of parsing because the two events remain independent on the
-wire, and it does not check `requestedRunId`.
+unanswered is nobody deciding, not a decision with a long response gap.
+
+`reversal`, when present, names the identifier that would undo this answer,
+in one of two forms (ruled on #7): an offered `options[].id`, or a
+`<verb>:<subject>` **action id** — `revoke:required_checks` undoes
+`excuse:required_checks`, even though `revoke:required_checks` was never
+among the options offered to the human, because those options were about
+whether to excuse, not about how to later revoke. Either form is meaningful
+only because **the producer accepts its own reversal ids as a subsequent
+`optionId` on this decision** — that acceptance is what makes an unoffered id
+legible rather than arbitrary, and it is why `reversal` is not checked against
+the request's options: only the producer knows which action ids it accepts,
+and requiring `options[].id` membership would refuse a legitimate undo the
+producer will honour.
+
+Each SDK exposes a separate cross-event helper that checks matching
+`decisionId` values and the chosen option (an offered option, or the
+request's `onTimeout` value when the answer is by timeout) when both payloads
+are available; it is not part of parsing because the two events remain
+independent on the wire, and it checks neither `requestedRunId` nor
+`reversal`.
 
 ## Decisions before the first extraction
 

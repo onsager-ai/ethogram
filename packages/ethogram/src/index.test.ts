@@ -159,6 +159,14 @@ const DECISION_ANSWERED_TIMEOUT_WIRE =
 const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE =
   '{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}';
 
+// Cross-SDK byte identity for a `<verb>:<subject>` action-id `reversal`
+// (ruled on #7): `revoke:required_checks` undoes `excuse:required_checks`
+// even though it was never among the options offered to the human. This
+// exact literal is pasted into the Rust suite and asserted against an event
+// built through each SDK's typed API.
+const DECISION_ANSWERED_ACTION_REVERSAL_WIRE =
+  '{"v":1,"type":"decision.answered","runId":"run-decision-revoke","seq":1,"ts":"2026-09-07T09:00:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-revoke-1","optionId":"excuse:required_checks","reversal":"revoke:required_checks"}}';
+
 // This value is intentionally one neither SDK will ever know. The kind
 // string and the whole canonical event must survive an older relay exactly.
 const UNKNOWN_DECISION_KIND_WIRE =
@@ -1412,7 +1420,7 @@ describe("decision payload parsing and validation (spec #7)", () => {
     );
   });
 
-  test("the cross-event helper checks option, timeout, reversal, and decision id", () => {
+  test("the cross-event helper checks option, timeout, and decision id, and accepts any reversal", () => {
     const request = consistencyRequest();
     const valid = consistencyAnswer("allow");
     assert.doesNotThrow(() =>
@@ -1443,13 +1451,17 @@ describe("decision payload parsing and validation (spec #7)", () => {
       validateDecisionAnswerAgainstRequest(request, withoutByTimeout),
     );
 
-    assert.throws(
-      () =>
-        validateDecisionAnswerAgainstRequest(request, {
-          ...valid,
-          reversal: "missing",
-        }),
-      /reversal/,
+    // Ruled on #7: a `<verb>:<subject>` action id is a legitimate `reversal`
+    // even though it was never offered as a request option —
+    // `revoke:required_checks` undoes `excuse:required_checks`, an action
+    // the human was never offered as a choice. This deliberately replaces a
+    // prior assertion that such a reversal was rejected: that behaviour is
+    // the constraint being loosened here, not a bug being preserved.
+    assert.doesNotThrow(() =>
+      validateDecisionAnswerAgainstRequest(request, {
+        ...valid,
+        reversal: "revoke:required_checks",
+      }),
     );
     assert.throws(
       () =>
@@ -2736,6 +2748,37 @@ describe("serialiseEvent payload key sorting", () => {
         ),
       ),
       DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE,
+    );
+  });
+
+  test("pins byte-identical decision.answered with an action-id reversal with Rust", () => {
+    // Pins the loosened rule (ruled on #7): a `<verb>:<subject>` action id
+    // is a conforming `reversal` even though it names no option this request
+    // ever offered.
+    const answer: Event<EventPayloadMap> = {
+      v: 1,
+      type: DECISION_ANSWERED,
+      runId: "run-decision-revoke",
+      seq: 1,
+      ts: "2026-09-07T09:00:00.000Z",
+      payload: {
+        decisionId: "decision-revoke-1",
+        optionId: "excuse:required_checks",
+        by: "principal:user:alice",
+        reversal: "revoke:required_checks",
+      },
+    };
+
+    validate(DECISION_ANSWERED, answer.payload);
+    assert.equal(
+      serialiseEvent(answer),
+      DECISION_ANSWERED_ACTION_REVERSAL_WIRE,
+    );
+    assert.equal(
+      serialiseEvent(
+        parseEvent(JSON.parse(DECISION_ANSWERED_ACTION_REVERSAL_WIRE) as unknown),
+      ),
+      DECISION_ANSWERED_ACTION_REVERSAL_WIRE,
     );
   });
 

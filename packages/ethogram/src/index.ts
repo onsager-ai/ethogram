@@ -588,8 +588,9 @@ export interface DecisionRequestedPayload {
  * `optionId: "deny"` is indistinguishable from a permission expiring
  * unanswered with the same option and a runtime principal in `by`. A timeout
  * is not a decision with a long gap; it is nobody deciding. Absence means
- * false. `reversal` is the unbounded option identifier that undoes this
- * answer, not prose.
+ * false. `reversal` names the identifier that would undo this answer; see
+ * its own doc comment below for the two forms it may take and why neither is
+ * checked against the request.
  */
 export interface DecisionAnsweredPayload {
   decisionId: string;
@@ -597,6 +598,26 @@ export interface DecisionAnsweredPayload {
   /** A principal identity a consumer resolves, never a display name. */
   by: string;
   byTimeout?: boolean;
+  /**
+   * The identifier that would undo this answer, if the producer accepts one.
+   * Two forms (ruled on #7):
+   *
+   * - an offered `options[].id`, or
+   * - a `<verb>:<subject>` **action id** — `revoke:required_checks` undoes
+   *   `excuse:required_checks`, even though `revoke:required_checks` was
+   *   never among the options offered to the human, because those options
+   *   were about whether to excuse, not about how to later revoke.
+   *
+   * Either form is meaningful only because **the producer accepts its own
+   * reversal ids as a subsequent `optionId` on this decision** — that
+   * acceptance is what makes an unoffered id legible rather than arbitrary.
+   * It follows that `reversal` is therefore not checkable against the
+   * request: `validateDecisionAnswerAgainstRequest` does not check it. The
+   * alternative — requiring membership in `options[].id` — would refuse a
+   * legitimate undo that the producer will honour, which is worse than not
+   * checking at all. `validate` still only checks that, when present, this
+   * is a string.
+   */
   reversal?: string;
   /**
    * The run that emitted the corresponding `decision.requested`.
@@ -2008,8 +2029,12 @@ function validatePayload(eventType: string, payload: unknown): void {
  * genuine timeout answer against such a request validate correctly instead
  * of being misreported as an unrecognised option.
  *
- * `reversal`, when present, must always be a request option, and the two
- * `decisionId` values must match.
+ * The two `decisionId` values must match. `reversal`, when present, is
+ * **not** checked here (ruled on #7): it may name either an offered option
+ * or a `<verb>:<subject>` action id the producer accepts as a later answer
+ * to this same decision, and only the producer knows which action ids it
+ * accepts — see `DecisionAnsweredPayload.reversal`'s doc comment for why
+ * checking it against `options[].id` would refuse a legitimate undo.
  */
 export function validateDecisionAnswerAgainstRequest(
   request: DecisionRequestedPayload,
@@ -2028,12 +2053,6 @@ export function validateDecisionAnswerAgainstRequest(
   if (!optionExists && !isTimeoutOption) {
     throw new TypeError(
       `DecisionAnsweredPayload.optionId does not name a request option: "${answer.optionId}"`,
-    );
-  }
-
-  if (answer.reversal !== undefined && !optionIds.has(answer.reversal)) {
-    throw new TypeError(
-      `DecisionAnsweredPayload.reversal does not name a request option: "${answer.reversal}"`,
     );
   }
 }
