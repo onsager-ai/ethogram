@@ -356,6 +356,17 @@ pub struct RunUsage {
     pub extra: PayloadExtension,
 }
 
+/// Closes a run and carries the runtime's own computed totals.
+///
+/// `costUsd` and `usage` here are the runtime's own reckoning for the run as
+/// a whole, computed once at the point the run ends — not a sum a consumer
+/// has assembled from every `agent.completed` the run happened to emit along
+/// the way. Recomputing that total client-side by adding up
+/// `agent.completed.costUsd`/`usage` over-counts whenever one harness
+/// session reports `agent.completed` more than once, because those fields
+/// are cumulative per session rather than per invocation (see
+/// [`AgentCompletedPayload`]'s doc comments for why). This payload is the
+/// number to trust for the run.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunFinishedPayload {
@@ -545,13 +556,26 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub stage: Option<String>,
-    /// Number of turns the agent took (the actual, not the ceiling bound).
+    /// Number of turns *this invocation* took (the actual, not the ceiling
+    /// bound in `RunCeilings.turns`). Unlike `cost_usd` and `usage` below,
+    /// this is per invocation rather than cumulative per session, so it is
+    /// safe to sum across every `agent.completed` in a run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
     pub turns: Option<u64>,
+    /// Cumulative for the harness session named by the corresponding
+    /// `agent.started.sessionId`, not per invocation: this is the running
+    /// total as of *this* completion, so a session that reports
+    /// `agent.completed` more than once reports an increasing total each
+    /// time rather than a fresh delta. Summing every `agent.completed.costUsd`
+    /// in a run therefore over-counts whenever a session reports more than
+    /// once — take the maximum observed within each `sessionId` instead, and
+    /// sum only across distinct sessions. `run.finished.costUsd` carries the
+    /// runtime's own computed total for the whole run and is the number to
+    /// trust there.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -564,12 +588,23 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub model: Option<String>,
+    /// Same cumulative-per-`sessionId` caveat as `cost_usd` above: this is
+    /// the session's running usage total as of this completion, not a
+    /// per-invocation delta, so naively summing every
+    /// `agent.completed.usage` in a run over-counts a session that reports
+    /// more than once. Take the maximum within each session and sum across
+    /// sessions; `run.finished.usage` carries the runtime's own computed
+    /// total for the run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
+    /// Wall time *this invocation* took. Like `turns` above and unlike
+    /// `cost_usd`/`usage`, this is per invocation rather than cumulative per
+    /// session, so it is safe to sum across every `agent.completed` in a
+    /// run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
@@ -1200,10 +1235,80 @@ impl Display for SequenceError {
 
 impl Error for SequenceError {}
 
+/// A run has at most one `run.finished`, and a sink that has recorded it
+/// refuses later appends and forwards for that run (issues #5 and #3). This
+/// is refused by [`InMemorySink::append_draft`] or
+/// [`InMemorySink::append_event`] once that run has recorded a terminal
+/// event — including a second `run.finished`, and including any other event
+/// type appended afterwards.
+///
+/// This is a **distinct** failure from [`SequenceError`]: a caller must be
+/// able to tell "you skipped a seq" from "this run is closed", because the
+/// two call for different responses. Refusing via this error, rather than
+/// folding it into `SequenceError`, keeps that distinction visible in the
+/// type rather than only in a message a caller might not inspect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunClosedError {
+    pub run_id: String,
+}
+
+impl Display for RunClosedError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "run {} already recorded a terminal event; no further events are accepted for it",
+            self.run_id
+        )
+    }
+}
+
+impl Error for RunClosedError {}
+
+/// Why [`InMemorySink::append_event`] refused an already-stamped event: a
+/// gap in `seq` ([`SequenceError`]), or an append to a run that already
+/// recorded its terminal event ([`RunClosedError`]). Kept as an enum over
+/// folding the two into one error so a caller can match on which happened —
+/// "you skipped a seq" and "this run is closed" require different
+/// responses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppendError {
+    Sequence(SequenceError),
+    RunClosed(RunClosedError),
+}
+
+impl Display for AppendError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sequence(error) => Display::fmt(error, formatter),
+            Self::RunClosed(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for AppendError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Sequence(error) => Some(error),
+            Self::RunClosed(error) => Some(error),
+        }
+    }
+}
+
 /// A minimal in-memory reference for sequencing rules, not a storage engine.
+///
+/// Tracks, per run, whether a terminal event (`type` equal to
+/// [`RUN_FINISHED`]) has already been appended. Once it has, every further
+/// append for that run is refused via [`RunClosedError`] — both
+/// [`InMemorySink::append_draft`] and [`InMemorySink::append_event`], and
+/// regardless of the later event's own type, so a `run.finished` followed by
+/// an `agent.text` is refused exactly as a second `run.finished` would be.
+/// This makes the assumption issue #5 rests its "simpler to fold and to
+/// prove terminal" argument on — that a run has at most one terminal event —
+/// something this sink actually enforces rather than merely hopes for.
 pub struct InMemorySink<P = Value> {
     clock: Box<dyn FnMut() -> String>,
     runs: HashMap<String, Vec<Event<P>>>,
+    finished_runs: std::collections::HashSet<String>,
 }
 
 impl<P> InMemorySink<P> {
@@ -1211,12 +1316,27 @@ impl<P> InMemorySink<P> {
         Self {
             clock: Box::new(clock),
             runs: HashMap::new(),
+            finished_runs: std::collections::HashSet::new(),
         }
     }
 
-    pub fn append_draft(&mut self, run_id: impl Into<String>, draft: EventDraft<P>) -> &Event<P> {
+    /// Stamps `draft` and appends it for `run_id`, refusing it with
+    /// [`RunClosedError`] if that run already recorded a terminal event. A
+    /// refused draft consumes no `seq`: the check runs before `next_seq` is
+    /// even consulted, so a closed run's sequence counter is left exactly as
+    /// it was.
+    pub fn append_draft(
+        &mut self,
+        run_id: impl Into<String>,
+        draft: EventDraft<P>,
+    ) -> Result<&Event<P>, RunClosedError> {
         let run_id = run_id.into();
+        if self.finished_runs.contains(&run_id) {
+            return Err(RunClosedError { run_id });
+        }
+
         let seq = self.next_seq(&run_id);
+        let is_terminal = draft.event_type == RUN_FINISHED;
         let event = stamp(
             draft,
             StampFields {
@@ -1225,23 +1345,41 @@ impl<P> InMemorySink<P> {
                 ts: (self.clock)(),
             },
         );
+        if is_terminal {
+            self.finished_runs.insert(run_id.clone());
+        }
         let events = self.runs.entry(run_id).or_default();
         events.push(event);
-        events
+        Ok(events
             .last()
-            .expect("the event was inserted immediately before this lookup")
+            .expect("the event was inserted immediately before this lookup"))
     }
 
-    pub fn append_event(&mut self, event: Event<P>) -> Result<&Event<P>, SequenceError> {
+    /// Appends an already-stamped `event`, refusing it via [`AppendError`]
+    /// either for a sequence gap ([`AppendError::Sequence`]) or because the
+    /// run already recorded a terminal event ([`AppendError::RunClosed`]).
+    /// The run-closed check runs before the sequence check and before
+    /// `next_seq` is consulted, so a refused event — for either reason —
+    /// consumes no `seq` and leaves the run's stored events unchanged.
+    pub fn append_event(&mut self, event: Event<P>) -> Result<&Event<P>, AppendError> {
+        if self.finished_runs.contains(&event.run_id) {
+            return Err(AppendError::RunClosed(RunClosedError {
+                run_id: event.run_id,
+            }));
+        }
+
         let expected = self.next_seq(&event.run_id);
         if event.seq != expected {
-            return Err(SequenceError {
+            return Err(AppendError::Sequence(SequenceError {
                 run_id: event.run_id,
                 expected,
                 received: event.seq,
-            });
+            }));
         }
 
+        if event.event_type == RUN_FINISHED {
+            self.finished_runs.insert(event.run_id.clone());
+        }
         let events = self.runs.entry(event.run_id.clone()).or_default();
         events.push(event);
         Ok(events
@@ -2538,23 +2676,27 @@ mod tests {
         ]);
         let mut sink = InMemorySink::new(move || timestamps.pop_front().unwrap());
 
-        let first = sink.append_draft(
-            "run-1",
-            EventDraft {
-                event_type: "test.happened".to_owned(),
-                payload: json!(1),
-                captured_at: None,
-            },
-        );
+        let first = sink
+            .append_draft(
+                "run-1",
+                EventDraft {
+                    event_type: "test.happened".to_owned(),
+                    payload: json!(1),
+                    captured_at: None,
+                },
+            )
+            .unwrap();
         let first_stamp = (first.seq, first.ts.clone());
-        let second = sink.append_draft(
-            "run-1",
-            EventDraft {
-                event_type: "test.happened".to_owned(),
-                payload: json!(2),
-                captured_at: None,
-            },
-        );
+        let second = sink
+            .append_draft(
+                "run-1",
+                EventDraft {
+                    event_type: "test.happened".to_owned(),
+                    payload: json!(2),
+                    captured_at: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(first_stamp, (1, "2026-09-06T00:00:01.000Z".to_owned()));
         assert_eq!(second.seq, 2);
@@ -2575,9 +2717,234 @@ mod tests {
                 ..complete_event()
             })
             .unwrap_err();
-        assert_eq!(error.expected, 2);
-        assert_eq!(error.received, 3);
+        let AppendError::Sequence(sequence_error) = error else {
+            panic!("expected AppendError::Sequence, got {error:?}");
+        };
+        assert_eq!(sequence_error.expected, 2);
+        assert_eq!(sequence_error.received, 3);
         assert_eq!(sink.events("run-1").len(), 1);
+    }
+
+    // -- A run has at most one `run.finished` (issues #5 and #3) --------
+
+    fn run_finished_draft(payload: Value) -> EventDraft {
+        EventDraft {
+            event_type: RUN_FINISHED.to_owned(),
+            payload,
+            captured_at: None,
+        }
+    }
+
+    fn agent_text_draft(text: &str) -> EventDraft {
+        EventDraft {
+            event_type: AGENT_TEXT.to_owned(),
+            payload: json!({ "text": text }),
+            captured_at: None,
+        }
+    }
+
+    #[test]
+    fn append_draft_refuses_a_second_run_finished() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let error = sink
+            .append_draft(
+                "run-1",
+                run_finished_draft(json!({ "outcome": "completed", "durationMs": 2 })),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunClosedError {
+                run_id: "run-1".to_owned()
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "run run-1 already recorded a terminal event; no further events are accepted for it"
+        );
+    }
+
+    #[test]
+    fn append_draft_refuses_agent_text_after_run_finished() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let error = sink
+            .append_draft("run-1", agent_text_draft("too late"))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunClosedError {
+                run_id: "run-1".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn append_event_refuses_a_second_run_finished_distinctly_from_a_gap() {
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        let finished = Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        };
+        sink.append_event(finished.clone()).unwrap();
+
+        // The closed run refuses via `RunClosed`...
+        let closed_error = sink
+            .append_event(Event {
+                event_type: AGENT_TEXT.to_owned(),
+                seq: 3,
+                payload: json!({ "text": "too late" }),
+                ..complete_event()
+            })
+            .unwrap_err();
+        let AppendError::RunClosed(run_closed) = closed_error else {
+            panic!("expected AppendError::RunClosed, got {closed_error:?}");
+        };
+        assert_eq!(run_closed.run_id, "run-1");
+        assert_eq!(
+            run_closed.to_string(),
+            "run run-1 already recorded a terminal event; no further events are accepted for it"
+        );
+
+        // ...while a *still-open* run with the same kind of skipped seq
+        // refuses via `Sequence` instead: the two failure modes stay
+        // distinguishable rather than one swallowing the other.
+        let mut other_sink = InMemorySink::new(|| "unused".to_owned());
+        other_sink.append_event(complete_event()).unwrap();
+        let gap_error = other_sink
+            .append_event(Event {
+                seq: 3,
+                ..complete_event()
+            })
+            .unwrap_err();
+        let AppendError::Sequence(sequence_error) = gap_error else {
+            panic!("expected AppendError::Sequence, got {gap_error:?}");
+        };
+        assert_ne!(
+            sequence_error.to_string(),
+            run_closed.to_string(),
+            "a sequence gap and a closed run must report different messages"
+        );
+    }
+
+    #[test]
+    fn append_event_refuses_a_gap_on_a_closed_run_as_run_closed_not_sequence() {
+        // Once a run is closed, *any* further append is refused as
+        // `RunClosed` — even one that also happens to skip a seq. `RunClosed`
+        // is checked first, so this is not misreported as a gap.
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        sink.append_event(Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        })
+        .unwrap();
+
+        let error = sink
+            .append_event(Event {
+                event_type: AGENT_TEXT.to_owned(),
+                seq: 99,
+                payload: json!({ "text": "too late" }),
+                ..complete_event()
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppendError::RunClosed(_)),
+            "error was: {error:?}"
+        );
+    }
+
+    #[test]
+    fn refused_append_leaves_stored_events_and_seq_unchanged() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let before = sink.events("run-1").to_vec();
+        assert_eq!(before.len(), 1);
+
+        sink.append_draft("run-1", agent_text_draft("too late"))
+            .unwrap_err();
+        sink.append_event(Event {
+            event_type: AGENT_TEXT.to_owned(),
+            seq: 2,
+            payload: json!({ "text": "also too late" }),
+            ..complete_event()
+        })
+        .unwrap_err();
+
+        let after = sink.events("run-1").to_vec();
+        assert_eq!(
+            after, before,
+            "a refused append must not change stored events"
+        );
+        assert_eq!(after.len(), 1, "a refused append must not consume a seq");
+
+        // The seq counter, not just the event count, is unchanged: the next
+        // legitimate draft for a still-open run would take seq 2, so proving
+        // that on a fresh run confirms `next_seq` was never advanced here by
+        // the refused appends above (this run stays closed, so it cannot
+        // accept a "next legitimate" append itself).
+        let mut other_sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        other_sink
+            .append_draft("run-2", agent_text_draft("first"))
+            .unwrap();
+        let second = other_sink
+            .append_draft("run-2", agent_text_draft("second"))
+            .unwrap();
+        assert_eq!(second.seq, 2);
+    }
+
+    #[test]
+    fn closing_one_run_does_not_close_another() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        assert!(
+            sink.append_draft("run-1", agent_text_draft("too late"))
+                .is_err()
+        );
+        assert!(sink.append_draft("run-2", agent_text_draft("fine")).is_ok());
+        assert_eq!(sink.events("run-2").len(), 1);
+    }
+
+    #[test]
+    fn a_run_without_run_finished_keeps_accepting_appends() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft("run-1", agent_text_draft("one")).unwrap();
+        sink.append_draft("run-1", agent_text_draft("two")).unwrap();
+        let third = sink
+            .append_draft("run-1", agent_text_draft("three"))
+            .unwrap();
+
+        assert_eq!(third.seq, 3);
+        assert_eq!(sink.events("run-1").len(), 3);
     }
 
     /// Builds an `Event<RunStartedPayload>` around a hand-written payload

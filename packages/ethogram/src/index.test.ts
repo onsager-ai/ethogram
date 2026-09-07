@@ -17,6 +17,8 @@ import {
   RUN_KINDS,
   RUN_OUTCOMES,
   RUN_STARTED,
+  RunClosedError,
+  SequenceError,
   excerpt,
   foldRun,
   parseAgentCompletedPayload,
@@ -1383,6 +1385,161 @@ describe("InMemorySink", () => {
     );
     assert.equal(sink.events("run-1").length, 1);
   });
+
+  // -- A run has at most one `run.finished` (issues #5 and #3) ----------
+
+  const runFinishedDraft = (): EventDraft => ({
+    type: RUN_FINISHED,
+    payload: { outcome: "completed", durationMs: 1 },
+  });
+
+  const agentTextDraft = (text: string): EventDraft => ({
+    type: AGENT_TEXT,
+    payload: { text },
+  });
+
+  test("appendDraft refuses a second run.finished", () => {
+    const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    sink.appendDraft("run-1", runFinishedDraft());
+
+    assert.throws(
+      () => sink.appendDraft("run-1", runFinishedDraft()),
+      (error: unknown) =>
+        error instanceof RunClosedError &&
+        error.runId === "run-1" &&
+        /already recorded a terminal event/.test(error.message),
+    );
+  });
+
+  test("appendDraft refuses agent.text after run.finished", () => {
+    const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    sink.appendDraft("run-1", runFinishedDraft());
+
+    assert.throws(
+      () => sink.appendDraft("run-1", agentTextDraft("too late")),
+      RunClosedError,
+    );
+  });
+
+  test("appendEvent refuses a second run.finished, distinctly from a sequence gap", () => {
+    const sink = new InMemorySink(() => "unused");
+    sink.appendEvent(completeEvent());
+    sink.appendEvent({
+      ...completeEvent(),
+      type: RUN_FINISHED,
+      seq: 2,
+      payload: { outcome: "completed", durationMs: 1 },
+    });
+
+    let closedError: unknown;
+    try {
+      sink.appendEvent({
+        ...completeEvent(),
+        type: AGENT_TEXT,
+        seq: 3,
+        payload: { text: "too late" },
+      });
+    } catch (error) {
+      closedError = error;
+    }
+    assert.ok(closedError instanceof RunClosedError);
+    assert.equal((closedError as RunClosedError).runId, "run-1");
+
+    // A still-open run with the same kind of skipped seq refuses via
+    // SequenceError instead: the two failure modes stay distinguishable
+    // rather than one swallowing the other.
+    const otherSink = new InMemorySink(() => "unused");
+    otherSink.appendEvent(completeEvent());
+    let gapError: unknown;
+    try {
+      otherSink.appendEvent({ ...completeEvent(), seq: 3 });
+    } catch (error) {
+      gapError = error;
+    }
+    assert.ok(gapError instanceof SequenceError);
+    assert.notEqual(
+      (closedError as Error).message,
+      (gapError as Error).message,
+      "a sequence gap and a closed run must report different messages",
+    );
+  });
+
+  test("appendEvent refuses a gap on a closed run as RunClosedError, not SequenceError", () => {
+    // Once a run is closed, *any* further append is refused as
+    // RunClosedError — even one that also happens to skip a seq. The
+    // closed-run check runs first, so this is not misreported as a gap.
+    const sink = new InMemorySink(() => "unused");
+    sink.appendEvent(completeEvent());
+    sink.appendEvent({
+      ...completeEvent(),
+      type: RUN_FINISHED,
+      seq: 2,
+      payload: { outcome: "completed", durationMs: 1 },
+    });
+
+    assert.throws(
+      () =>
+        sink.appendEvent({
+          ...completeEvent(),
+          type: AGENT_TEXT,
+          seq: 99,
+          payload: { text: "too late" },
+        }),
+      RunClosedError,
+    );
+  });
+
+  test("a refused append leaves stored events and seq unchanged", () => {
+    const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    sink.appendDraft("run-1", runFinishedDraft());
+
+    const before = sink.events("run-1");
+    assert.equal(before.length, 1);
+
+    assert.throws(() => sink.appendDraft("run-1", agentTextDraft("too late")));
+    assert.throws(() =>
+      sink.appendEvent({
+        ...completeEvent(),
+        type: AGENT_TEXT,
+        seq: 2,
+        payload: { text: "also too late" },
+      }),
+    );
+
+    const after = sink.events("run-1");
+    assert.deepEqual(after, before);
+    assert.equal(after.length, 1, "a refused append must not consume a seq");
+
+    // The seq counter, not just the event count, is unchanged: proving that
+    // a fresh run's next draft still takes seq 2 confirms the refused
+    // appends above never advanced any shared counting state (this run
+    // stays closed, so it cannot itself accept a "next legitimate" append).
+    const otherSink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    otherSink.appendDraft("run-2", agentTextDraft("first"));
+    const second = otherSink.appendDraft("run-2", agentTextDraft("second"));
+    assert.equal(second.seq, 2);
+  });
+
+  test("closing one run does not close another", () => {
+    const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    sink.appendDraft("run-1", runFinishedDraft());
+
+    assert.throws(() => sink.appendDraft("run-1", agentTextDraft("too late")));
+    assert.doesNotThrow(() =>
+      sink.appendDraft("run-2", agentTextDraft("fine")),
+    );
+    assert.equal(sink.events("run-2").length, 1);
+  });
+
+  test("a run without run.finished keeps accepting appends normally", () => {
+    const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
+    sink.appendDraft("run-1", agentTextDraft("one"));
+    sink.appendDraft("run-1", agentTextDraft("two"));
+    const third = sink.appendDraft("run-1", agentTextDraft("three"));
+
+    assert.equal(third.seq, 3);
+    assert.equal(sink.events("run-1").length, 3);
+  });
 });
 
 describe("foldRun", () => {
@@ -1441,8 +1598,14 @@ describe("known event type constants (issue #4)", () => {
   // someone typed the same string twice. Going through the wire fails if the
   // exported constant and what a real event of that type actually produces
   // ever part company.
+  //
+  // Each call uses its own run id (rather than sharing "run-known-types"
+  // across every type) because one of these types is RUN_FINISHED itself: a
+  // shared run would close after that call and refuse every following one
+  // (issues #5 and #3), which would make this test about sink refusal rather
+  // than about the round-trip it means to check.
   const roundTrippedType = (type: string, payload: unknown): string => {
-    const stamped = sink.appendDraft("run-known-types", {
+    const stamped = sink.appendDraft(`run-known-types-${type}`, {
       type,
       payload,
     } as EventDraft);

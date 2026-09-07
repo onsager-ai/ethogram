@@ -140,6 +140,19 @@ export interface RunUsage {
   unit?: string;
 }
 
+/**
+ * Closes a run and carries the runtime's own computed totals.
+ *
+ * `costUsd` and `usage` here are the runtime's own reckoning for the run as
+ * a whole, computed once at the point the run ends — not a sum a consumer
+ * has assembled from every `agent.completed` the run happened to emit along
+ * the way. Recomputing that total client-side by adding up
+ * `agent.completed.costUsd`/`usage` over-counts whenever one harness session
+ * reports `agent.completed` more than once, because those fields are
+ * cumulative per session rather than per invocation (see
+ * `AgentCompletedPayload`'s doc comments for why). This payload is the
+ * number to trust for the run.
+ */
 export interface RunFinishedPayload {
   outcome: RunOutcome;
   /** Bounded explanation of a terminal outcome. */
@@ -186,11 +199,40 @@ export interface AgentToolResultPayload {
 
 export interface AgentCompletedPayload {
   stage?: string;
-  /** Number of turns the agent took (the actual, not the ceiling bound). */
+  /**
+   * Number of turns *this invocation* took (the actual, not the ceiling
+   * bound in `RunCeilings.turns`). Unlike `costUsd` and `usage` below, this
+   * is per invocation rather than cumulative per session, so it is safe to
+   * sum across every `agent.completed` in a run.
+   */
   turns?: number;
+  /**
+   * Cumulative for the harness session named by the corresponding
+   * `agent.started.sessionId`, not per invocation: this is the running
+   * total as of *this* completion, so a session that reports
+   * `agent.completed` more than once reports an increasing total each time
+   * rather than a fresh delta. Summing every `agent.completed.costUsd` in a
+   * run therefore over-counts whenever a session reports more than once —
+   * take the maximum observed within each `sessionId` instead, and sum only
+   * across distinct sessions. `run.finished.costUsd` carries the runtime's
+   * own computed total for the whole run and is the number to trust there.
+   */
   costUsd?: number;
   model?: string;
+  /**
+   * Same cumulative-per-`sessionId` caveat as `costUsd` above: this is the
+   * session's running usage total as of this completion, not a
+   * per-invocation delta, so naively summing every `agent.completed.usage`
+   * in a run over-counts a session that reports more than once. Take the
+   * maximum within each session and sum across sessions; `run.finished.usage`
+   * carries the runtime's own computed total for the run.
+   */
   usage?: RunUsage;
+  /**
+   * Wall time *this invocation* took. Like `turns` above and unlike
+   * `costUsd`/`usage`, this is per invocation rather than cumulative per
+   * session, so it is safe to sum across every `agent.completed` in a run.
+   */
   durationMs?: number;
   estimated?: boolean;
 }
@@ -1122,16 +1164,78 @@ export function serialiseEvent(event: Event): string {
 
 export type Clock = () => string;
 
-/** A minimal in-memory reference for sequencing rules, not a storage engine. */
+/**
+ * Thrown by `InMemorySink.appendEvent` when an already-stamped event's `seq`
+ * does not match the next value expected for its run.
+ */
+export class SequenceError extends Error {
+  readonly runId: string;
+  readonly expected: number;
+  readonly received: number;
+
+  constructor(runId: string, expected: number, received: number) {
+    super(
+      `Event sequence for run ${runId} must be ${expected}; received ${received}`,
+    );
+    this.name = "SequenceError";
+    this.runId = runId;
+    this.expected = expected;
+    this.received = received;
+  }
+}
+
+/**
+ * Thrown by `InMemorySink.appendDraft` and `InMemorySink.appendEvent` once a
+ * run has already recorded a terminal event (issues #5 and #3): a run has at
+ * most one `run.finished`, and a sink that has recorded it refuses later
+ * appends and forwards for that run — both the draft-appending path and the
+ * already-stamped forwarding path, and regardless of the later event's own
+ * type, so a `run.finished` followed by an `agent.text` is refused exactly
+ * as a second `run.finished` would be.
+ *
+ * Deliberately a distinct class from `SequenceError` rather than a shared
+ * shape distinguished only by message: a caller must be able to tell "you
+ * skipped a seq" from "this run is closed" via `instanceof`, because the two
+ * call for different responses.
+ */
+export class RunClosedError extends Error {
+  readonly runId: string;
+
+  constructor(runId: string) {
+    super(
+      `run ${runId} already recorded a terminal event; no further events are accepted for it`,
+    );
+    this.name = "RunClosedError";
+    this.runId = runId;
+  }
+}
+
+/**
+ * A minimal in-memory reference for sequencing rules, not a storage engine.
+ *
+ * Tracks, per run, whether a terminal event (`type` equal to `RUN_FINISHED`)
+ * has already been appended. Once it has, every further append for that run
+ * is refused with `RunClosedError` — via either `appendDraft` or
+ * `appendEvent` — before any sequence bookkeeping happens, so a refused
+ * append never consumes a `seq`. This makes the assumption issue #5 rests
+ * its "simpler to fold and to prove terminal" argument on — that a run has
+ * at most one terminal event — something this sink actually enforces rather
+ * than merely hopes for.
+ */
 export class InMemorySink {
   readonly #clock: Clock;
   readonly #runs = new Map<string, Event[]>();
+  readonly #finishedRuns = new Set<string>();
 
   constructor(clock: Clock = () => new Date().toISOString()) {
     this.#clock = clock;
   }
 
   appendDraft(runId: string, draft: EventDraft): Event {
+    if (this.#finishedRuns.has(runId)) {
+      throw new RunClosedError(runId);
+    }
+
     const events = this.#eventsFor(runId);
     const event = stamp(draft, {
       runId,
@@ -1139,19 +1243,27 @@ export class InMemorySink {
       ts: this.#clock(),
     });
     events.push(event);
+    if (event.type === RUN_FINISHED) {
+      this.#finishedRuns.add(runId);
+    }
     return event;
   }
 
   appendEvent(input: Event): Event {
     const event = parseEvent(input);
+    if (this.#finishedRuns.has(event.runId)) {
+      throw new RunClosedError(event.runId);
+    }
+
     const events = this.#eventsFor(event.runId);
     const expected = events.length + 1;
     if (event.seq !== expected) {
-      throw new Error(
-        `Event sequence for run ${event.runId} must be ${expected}; received ${event.seq}`,
-      );
+      throw new SequenceError(event.runId, expected, event.seq);
     }
     events.push(event);
+    if (event.type === RUN_FINISHED) {
+      this.#finishedRuns.add(event.runId);
+    }
     return event;
   }
 
