@@ -47,7 +47,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
       - name: Lint
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
       # Cargo unifies features across a dependency graph, so a consumer that
@@ -74,5 +74,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check generated corpus views
+        run: |
+          pnpm run generate:corpus
+          git diff --exit-code
       - name: Compare SDK serialisation
         run: ./conformance/run.sh
