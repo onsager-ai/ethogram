@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "control.requested",
+  "runId": "run-claude-control-interrupt",
+  "seq": 4,
+  "ts": "2026-09-07T07:45:04.000Z",
+  "payload": {
+    "by": "capture-driver",
+    "controlId": "capture-interrupt-1",
+    "kind": "interrupt"
+  }
+}

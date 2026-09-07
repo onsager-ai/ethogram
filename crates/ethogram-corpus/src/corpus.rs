@@ -51,4 +51,20 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         name: "agent-warning.json",
         raw_json: include_str!("../../../conformance/v1/agent-warning.json"),
     },
+    Fixture {
+        name: "control-applied-interrupt.json",
+        raw_json: include_str!("../../../conformance/v1/control-applied-interrupt.json"),
+    },
+    Fixture {
+        name: "control-applied-not-live.json",
+        raw_json: include_str!("../../../conformance/v1/control-applied-not-live.json"),
+    },
+    Fixture {
+        name: "control-requested-interrupt.json",
+        raw_json: include_str!("../../../conformance/v1/control-requested-interrupt.json"),
+    },
+    Fixture {
+        name: "control-requested-steer.json",
+        raw_json: include_str!("../../../conformance/v1/control-requested-steer.json"),
+    },
 ];

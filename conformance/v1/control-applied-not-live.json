@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "control.applied",
+  "runId": "run-claude-control-interrupt",
+  "seq": 6,
+  "ts": "2026-09-07T07:45:06.000Z",
+  "payload": {
+    "controlId": "capture-steer-1",
+    "ok": false,
+    "reason": "not-live"
+  }
+}

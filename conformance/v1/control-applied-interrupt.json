@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "control.applied",
+  "runId": "run-claude-control-interrupt",
+  "seq": 5,
+  "ts": "2026-09-07T07:45:05.000Z",
+  "payload": {
+    "controlId": "capture-interrupt-1",
+    "landedIn": "toolu_01BG5x9iuSVKzZhYg7qmM5PJ",
+    "ok": true
+  }
+}
