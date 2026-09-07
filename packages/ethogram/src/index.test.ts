@@ -24,6 +24,7 @@ import {
   parseEvent,
   serialiseEvent,
   stamp,
+  validate,
   type Event,
   type EventDraft,
   type EventPayloadMap,
@@ -34,6 +35,20 @@ const RUN_STARTED_WIRE =
 
 const RUN_FINISHED_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}';
+
+// Cross-SDK byte identity for the new vocabulary and all five ceilings. These
+// exact literals are pasted into the Rust suite and asserted against events
+// hand-built through each SDK's typed API.
+const RELAY_CEILINGS_WIRE =
+  '{"v":1,"type":"run.started","runId":"run-batch","seq":1,"ts":"2026-09-07T04:00:00.000Z","payload":{"actor":"observer","ceilings":{"costUsd":2.5,"idleMs":30000,"tokens":4000,"turns":12,"wallMs":60000},"harness":"relay-harness","kind":"relay"}}';
+const CAPPED_OUTCOME_WIRE =
+  '{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}';
+
+// This value is intentionally one neither SDK will ever know. Keeping the
+// same literal in both suites proves an older relay retaining an unfamiliar
+// member emits exactly the bytes a future vocabulary-aware SDK would emit.
+const UNKNOWN_OUTCOME_WIRE =
+  '{"v":1,"type":"run.finished","runId":"run-cross-version","seq":1,"ts":"2026-09-07T04:00:02.000Z","payload":{"durationMs":1250,"outcome":"not-a-real-outcome"}}';
 
 // Cross-SDK byte identity for an event with an unknown payload field (issue
 // #12). This exact literal is also hand-built in the Rust suite
@@ -64,6 +79,7 @@ const PERMITTED_RUN_KINDS = [
   "subagent",
   "session",
   "judgment",
+  "relay",
 ] as const;
 
 const PERMITTED_RUN_OUTCOMES = [
@@ -74,6 +90,7 @@ const PERMITTED_RUN_OUTCOMES = [
   "interrupted",
   "permission-denied",
   "canceled",
+  "capped",
 ] as const;
 
 const completeEvent = (): Event => ({
@@ -252,27 +269,36 @@ describe("run lifecycle payload parsing", () => {
   test("accepts every permitted run kind", () => {
     assert.deepEqual(RUN_KINDS, PERMITTED_RUN_KINDS);
     for (const kind of PERMITTED_RUN_KINDS) {
+      const payload = { kind, actor: "builder", harness: "codex" };
       assert.doesNotThrow(() =>
         parseEvent({
           ...completeEvent(),
           type: "run.started",
-          payload: { kind, actor: "builder", harness: "codex" },
+          payload,
         }),
       );
+      assert.doesNotThrow(() => validate(RUN_STARTED, payload));
     }
   });
 
-  test("rejects an unknown run kind", () => {
+  test("parses an unknown run kind verbatim and validate reports it", () => {
+    const event = parseEvent({
+      ...completeEvent(),
+      type: "run.started",
+      payload: {
+        kind: "pipeline",
+        actor: "builder",
+        harness: "codex",
+      },
+    });
+
+    assert.equal((event.payload as { kind: string }).kind, "pipeline");
     assert.throws(
       () =>
-        parseEvent({
-          ...completeEvent(),
-          type: "run.started",
-          payload: {
-            kind: "pipeline",
-            actor: "builder",
-            harness: "codex",
-          },
+        validate("run.started", {
+          kind: "pipeline",
+          actor: "builder",
+          harness: "codex",
         }),
       /kind has unknown value: pipeline/,
     );
@@ -281,23 +307,31 @@ describe("run lifecycle payload parsing", () => {
   test("accepts every permitted run outcome", () => {
     assert.deepEqual(RUN_OUTCOMES, PERMITTED_RUN_OUTCOMES);
     for (const outcome of PERMITTED_RUN_OUTCOMES) {
+      const payload = { outcome, durationMs: 1250 };
       assert.doesNotThrow(() =>
         parseEvent({
           ...completeEvent(),
           type: "run.finished",
-          payload: { outcome, durationMs: 1250 },
+          payload,
         }),
       );
+      assert.doesNotThrow(() => validate(RUN_FINISHED, payload));
     }
   });
 
-  test("rejects an unknown run outcome", () => {
+  test("parses an unknown run outcome verbatim and validate reports it", () => {
+    const event = parseEvent({
+      ...completeEvent(),
+      type: "run.finished",
+      payload: { outcome: "succeeded", durationMs: 1250 },
+    });
+
+    assert.equal((event.payload as { outcome: string }).outcome, "succeeded");
     assert.throws(
       () =>
-        parseEvent({
-          ...completeEvent(),
-          type: "run.finished",
-          payload: { outcome: "succeeded", durationMs: 1250 },
+        validate("run.finished", {
+          outcome: "succeeded",
+          durationMs: 1250,
         }),
       /outcome has unknown value: succeeded/,
     );
@@ -390,6 +424,39 @@ describe("run lifecycle payload parsing", () => {
         }),
       /ceilings\.wallMs must be a non-negative safe integer/,
     );
+  });
+
+  test("applies the safe-integer rule to idle and turn ceilings", () => {
+    for (const field of ["idleMs", "turns"] as const) {
+      for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(
+          () =>
+            parseEvent({
+              ...completeEvent(),
+              type: "run.started",
+              payload: {
+                kind: "loop",
+                actor: "builder",
+                harness: "codex",
+                ceilings: { [field]: invalid },
+              },
+            }),
+          new RegExp(`${field}.*safe integer`),
+        );
+      }
+      assert.doesNotThrow(() =>
+        parseEvent({
+          ...completeEvent(),
+          type: "run.started",
+          payload: {
+            kind: "loop",
+            actor: "builder",
+            harness: "codex",
+            ceilings: { [field]: Number.MAX_SAFE_INTEGER },
+          },
+        }),
+      );
+    }
   });
 
   test("rejects a negative usage token count", () => {
@@ -538,6 +605,91 @@ describe("agent payload parsing", () => {
         });
       }
     }
+  });
+});
+
+describe("validate", () => {
+  test("enforces required fields and integer bounds for known types", () => {
+    assert.throws(() => validate(RUN_STARTED, {}), /required field: kind/);
+    assert.throws(
+      () =>
+        validate(AGENT_COMPLETED, {
+          nested: { turns: Number.MAX_SAFE_INTEGER + 1 },
+        }),
+      /payload\.nested\.turns is an integral number whose magnitude exceeds the safe integer bound: actual 9007199254740992; maximum 9007199254740991/,
+    );
+  });
+
+  test("leaves unknown event types open and unvalidated", () => {
+    assert.doesNotThrow(() => validate("future.happened", "not-an-object"));
+  });
+
+  test("reports every capture bound with the field, actual count, and maximum", () => {
+    const cases: readonly [string, unknown, string, number][] = [
+      [
+        AGENT_TEXT,
+        { text: "😀".repeat(MAX_TEXT_SCALARS + 1) },
+        "AgentTextPayload.text",
+        MAX_TEXT_SCALARS,
+      ],
+      [
+        AGENT_TOOL_USE,
+        { tool: "read", inputExcerpt: "😀".repeat(MAX_EXCERPT_SCALARS + 1) },
+        "AgentToolUsePayload.inputExcerpt",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        AGENT_TOOL_RESULT,
+        {
+          tool: "read",
+          resultExcerpt: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+        },
+        "AgentToolResultPayload.resultExcerpt",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        RUN_FINISHED,
+        {
+          outcome: "completed",
+          durationMs: 1,
+          reason: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+        },
+        "RunFinishedPayload.reason",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        AGENT_WARNING,
+        { message: "😀".repeat(MAX_EXCERPT_SCALARS + 1) },
+        "AgentWarningPayload.message",
+        MAX_EXCERPT_SCALARS,
+      ],
+    ];
+
+    for (const [type, payload, field, maximum] of cases) {
+      assert.throws(
+        () => validate(type, payload),
+        new RegExp(
+          `${field.replaceAll(".", "\\.")} has ${maximum + 1} Unicode scalar values; maximum is ${maximum}`,
+        ),
+      );
+    }
+  });
+
+  test("parseEvent carries an over-bound event that validate refuses", () => {
+    const payload = { text: "x".repeat(20_000) };
+    const event = {
+      ...completeEvent(),
+      type: AGENT_TEXT,
+      payload,
+    };
+
+    assert.doesNotThrow(() => parseEvent(event));
+    assert.throws(
+      () => validate(event.type, event.payload),
+      new TypeError(
+        "AgentTextPayload.text has 20000 Unicode scalar values; maximum is 16384",
+      ),
+    );
   });
 });
 
@@ -884,6 +1036,53 @@ describe("serialiseEvent payload key sorting", () => {
     assert.equal(serialiseEvent(finished), RUN_FINISHED_WIRE);
   });
 
+  test("pins relay, capped, and all five ceilings byte-identically with Rust", () => {
+    const started: Event<EventPayloadMap> = {
+      v: 1,
+      type: RUN_STARTED,
+      runId: "run-batch",
+      seq: 1,
+      ts: "2026-09-07T04:00:00.000Z",
+      payload: {
+        kind: "relay",
+        actor: "observer",
+        harness: "relay-harness",
+        ceilings: {
+          costUsd: 2.5,
+          tokens: 4000,
+          wallMs: 60000,
+          idleMs: 30000,
+          turns: 12,
+        },
+      },
+    };
+    const finished: Event<EventPayloadMap> = {
+      v: 1,
+      type: RUN_FINISHED,
+      runId: "run-batch",
+      seq: 2,
+      ts: "2026-09-07T04:00:01.000Z",
+      payload: {
+        outcome: "capped",
+        reason: "turns",
+        durationMs: 1000,
+      },
+    };
+
+    assert.equal(serialiseEvent(started), RELAY_CEILINGS_WIRE);
+    assert.equal(serialiseEvent(finished), CAPPED_OUTCOME_WIRE);
+  });
+
+  test("unknown outcome keeps cross-version byte identity with Rust and the input", () => {
+    const parsed = parseEvent(JSON.parse(UNKNOWN_OUTCOME_WIRE) as unknown);
+
+    assert.equal(
+      (parsed.payload as { outcome: string }).outcome,
+      "not-a-real-outcome",
+    );
+    assert.equal(serialiseEvent(parsed), UNKNOWN_OUTCOME_WIRE);
+  });
+
   test("pins byte-identical agent events with Rust", () => {
     const events: Event<EventPayloadMap>[] = [
       {
@@ -1030,9 +1229,9 @@ describe("payload tolerance (issue #12)", () => {
   // Payloads are tolerant at read and retaining on forward: an unknown
   // payload field is never rejected and never dropped, so a forwarder that
   // parses a newer producer's event does not lose data silently at exactly
-  // the boundary this protocol exists to cross. What stays strict is the
-  // envelope, the closed unions (`kind`, `outcome`), and required fields of
-  // a known type — all covered elsewhere in this file.
+  // the boundary this protocol exists to cross. The envelope and required
+  // fields stay strict at parse; `validate` closes the `kind` and `outcome`
+  // unions — all covered elsewhere in this file.
 
   test("an unknown payload field round-trips across the sort boundary", () => {
     // "0alpha" sorts before the known key "actor"; "zzzTail" sorts after
@@ -1299,15 +1498,15 @@ describe("known event type constants (issue #4)", () => {
     );
   });
 
-  test("every KNOWN_TYPES entry is recognised by the validation path, and an unrecognised type is not", () => {
+  test("every KNOWN_TYPES entry uses the parsing path, and an unrecognised type does not", () => {
     // A string payload fails `isRecord` in every known payload parser, so
-    // this distinguishes "validated against a typed payload" from the
+    // this distinguishes "parsed through a typed payload" from the
     // untouched pass-through an unrecognised type gets.
     const malformedPayload = "not-an-object";
     for (const type of KNOWN_TYPES) {
       assert.throws(
         () => parseEvent({ ...completeEvent(), type, payload: malformedPayload }),
-        `${type} should be validated against its typed payload`,
+        `${type} should be parsed through its typed payload`,
       );
     }
     assert.doesNotThrow(() =>

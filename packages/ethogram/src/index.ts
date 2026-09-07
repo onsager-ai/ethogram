@@ -3,7 +3,7 @@ export const EVENT_SCHEMA_VERSION = 1 as const;
 /** Maximum number of Unicode scalar values carried by an `agent.text`. */
 export const MAX_TEXT_SCALARS = 16_384 as const;
 
-/** Maximum number of Unicode scalar values carried by a tool excerpt. */
+/** Maximum scalars carried by any excerpted field other than `agent.text`. */
 export const MAX_EXCERPT_SCALARS = 4_096 as const;
 
 export interface Excerpt {
@@ -69,9 +69,17 @@ export const RUN_KINDS = [
   "subagent",
   "session",
   "judgment",
+  "relay",
 ] as const;
 
-export type RunKind = (typeof RUN_KINDS)[number];
+export type KnownRunKind = (typeof RUN_KINDS)[number];
+
+/**
+ * A run kind this SDK knows, or an unfamiliar wire string retained verbatim
+ * for a newer vocabulary. Consumers must handle the unfamiliar-string case
+ * explicitly and must never map it onto a known kind.
+ */
+export type RunKind = KnownRunKind | (string & {});
 
 export const RUN_OUTCOMES = [
   "completed",
@@ -81,14 +89,34 @@ export const RUN_OUTCOMES = [
   "interrupted",
   "permission-denied",
   "canceled",
+  "capped",
 ] as const;
 
-export type RunOutcome = (typeof RUN_OUTCOMES)[number];
+export type KnownRunOutcome = (typeof RUN_OUTCOMES)[number];
 
+/**
+ * A run outcome this SDK knows, or an unfamiliar wire string retained
+ * verbatim for a newer vocabulary. Consumers acting on an outcome must treat
+ * an unfamiliar string as "not this", never as one of the known outcomes.
+ */
+export type RunOutcome = KnownRunOutcome | (string & {});
+
+/**
+ * Enforced limits declared by the runtime. An absent ceiling means unbounded
+ * and unenforced, not defaulted; consumers must not substitute a default.
+ */
 export interface RunCeilings {
   costUsd?: number;
   tokens?: number;
+  /** Wall-clock bound; reaching it ends the run as `timed-out`. */
   wallMs?: number;
+  /**
+   * Idle-time bound; reaching it ends the run as `timed-out`. It is suspended
+   * during an in-flight tool call. A harness that cannot enforce it omits it.
+   */
+  idleMs?: number;
+  /** Maximum number of turns the run may take (the bound, not the actual). */
+  turns?: number;
 }
 
 export interface RunStartedPayload {
@@ -114,6 +142,7 @@ export interface RunUsage {
 
 export interface RunFinishedPayload {
   outcome: RunOutcome;
+  /** Bounded explanation of a terminal outcome. */
   reason?: string;
   truncated?: boolean;
   costUsd?: number;
@@ -157,6 +186,7 @@ export interface AgentToolResultPayload {
 
 export interface AgentCompletedPayload {
   stage?: string;
+  /** Number of turns the agent took (the actual, not the ceiling bound). */
   turns?: number;
   costUsd?: number;
   model?: string;
@@ -167,6 +197,7 @@ export interface AgentCompletedPayload {
 
 export interface AgentWarningPayload {
   stage?: string;
+  /** Bounded non-terminal warning text. */
   message: string;
 }
 
@@ -306,6 +337,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
+const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
 
 const RUN_STARTED_FIELDS = new Set<string>([
   "kind",
@@ -324,6 +356,8 @@ const RUN_CEILING_FIELDS = new Set<string>([
   "costUsd",
   "tokens",
   "wallMs",
+  "idleMs",
+  "turns",
 ]);
 
 const RUN_FINISHED_FIELDS = new Set<string>([
@@ -394,9 +428,10 @@ const AGENT_WARNING_FIELDS = new Set<string>(["stage", "message"]);
  * carried forward as an opaque extension rather than rejected or dropped
  * (issue #12): a sink that forwards an event it does not fully understand
  * must be byte-preserving, or the stream loses data silently at exactly the
- * boundary this protocol exists to cross. Only the **envelope** and the
- * closed unions (`kind`, `outcome`) stay strict; an unknown payload field is
- * tolerated at read and retained on forward.
+ * boundary this protocol exists to cross. The **envelope** and required
+ * fields stay strict; an unknown payload field or union member is tolerated
+ * at read and retained on forward, with union membership checked by
+ * `validate` instead.
  */
 function extractUnknownFields(
   value: Record<string, unknown>,
@@ -538,10 +573,14 @@ function parseRunCeilings(value: unknown): RunCeilings {
   const costUsd = optionalNumber(value, "costUsd", name);
   const tokens = optionalSafeInteger(value, "tokens", name);
   const wallMs = optionalSafeInteger(value, "wallMs", name);
+  const idleMs = optionalSafeInteger(value, "idleMs", name);
+  const turns = optionalSafeInteger(value, "turns", name);
   return {
     ...(costUsd === undefined ? {} : { costUsd }),
     ...(tokens === undefined ? {} : { tokens }),
     ...(wallMs === undefined ? {} : { wallMs }),
+    ...(idleMs === undefined ? {} : { idleMs }),
+    ...(turns === undefined ? {} : { turns }),
     ...extractUnknownFields(value, RUN_CEILING_FIELDS),
   };
 }
@@ -571,11 +610,9 @@ function parseRunUsage(value: unknown, name: string): RunUsage {
 }
 
 /**
- * Parse and validate a `run.started` payload. Unknown fields are tolerated
- * and retained (issue #12): required fields and the closed `kind` union stay
- * strict, but a field this SDK does not recognise survives parsing and is
- * re-emitted on serialisation rather than being rejected or silently
- * dropped by the object literal below.
+ * Parse a representable `run.started` payload. Unknown fields and unfamiliar
+ * `kind` strings are tolerated and retained (issue #12), while required
+ * fields stay strict.
  */
 export function parseRunStartedPayload(value: unknown): RunStartedPayload {
   const name = "RunStartedPayload";
@@ -584,9 +621,6 @@ export function parseRunStartedPayload(value: unknown): RunStartedPayload {
   }
 
   const kind = requiredString(value, "kind", name);
-  if (!RUN_KIND_VALUES.has(kind)) {
-    throw new TypeError(`${name}.kind has unknown value: ${kind}`);
-  }
   const actor = requiredString(value, "actor", name);
   const harness = requiredString(value, "harness", name);
   const model = optionalString(value, "model", name);
@@ -615,11 +649,9 @@ export function parseRunStartedPayload(value: unknown): RunStartedPayload {
 }
 
 /**
- * Parse and validate a `run.finished` payload. Unknown fields are tolerated
- * and retained (issue #12): required fields and the closed `outcome` union
- * stay strict, but a field this SDK does not recognise survives parsing and
- * is re-emitted on serialisation rather than being rejected or silently
- * dropped by the object literal below.
+ * Parse a representable `run.finished` payload. Unknown fields and unfamiliar
+ * `outcome` strings are tolerated and retained (issue #12), while required
+ * fields stay strict.
  */
 export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   const name = "RunFinishedPayload";
@@ -628,9 +660,6 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   }
 
   const outcome = requiredString(value, "outcome", name);
-  if (!RUN_OUTCOME_VALUES.has(outcome)) {
-    throw new TypeError(`${name}.outcome has unknown value: ${outcome}`);
-  }
   const reason = optionalString(value, "reason", name);
   const truncated = optionalBoolean(value, "truncated", name);
   const costUsd = optionalNumber(value, "costUsd", name);
@@ -652,7 +681,7 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   };
 }
 
-/** Parse and validate an `agent.started` payload, retaining unknown fields. */
+/** Parse an `agent.started` payload, retaining unknown fields. */
 export function parseAgentStartedPayload(value: unknown): AgentStartedPayload {
   const name = "AgentStartedPayload";
   if (!isRecord(value)) {
@@ -672,7 +701,7 @@ export function parseAgentStartedPayload(value: unknown): AgentStartedPayload {
   };
 }
 
-/** Parse and validate an `agent.text` payload, retaining unknown fields. */
+/** Parse an `agent.text` payload, retaining unknown fields. */
 export function parseAgentTextPayload(value: unknown): AgentTextPayload {
   const name = "AgentTextPayload";
   if (!isRecord(value)) {
@@ -692,7 +721,7 @@ export function parseAgentTextPayload(value: unknown): AgentTextPayload {
   };
 }
 
-/** Parse and validate an `agent.tool_use` payload, retaining unknown fields. */
+/** Parse an `agent.tool_use` payload, retaining unknown fields. */
 export function parseAgentToolUsePayload(value: unknown): AgentToolUsePayload {
   const name = "AgentToolUsePayload";
   if (!isRecord(value)) {
@@ -717,7 +746,7 @@ export function parseAgentToolUsePayload(value: unknown): AgentToolUsePayload {
 }
 
 /**
- * Parse and validate an `agent.tool_result` payload, retaining unknown fields.
+ * Parse an `agent.tool_result` payload, retaining unknown fields.
  */
 export function parseAgentToolResultPayload(
   value: unknown,
@@ -746,7 +775,7 @@ export function parseAgentToolResultPayload(
   };
 }
 
-/** Parse and validate an `agent.completed` payload, retaining unknown fields. */
+/** Parse an `agent.completed` payload, retaining unknown fields. */
 export function parseAgentCompletedPayload(
   value: unknown,
 ): AgentCompletedPayload {
@@ -776,7 +805,7 @@ export function parseAgentCompletedPayload(
   };
 }
 
-/** Parse and validate an `agent.warning` payload, retaining unknown fields. */
+/** Parse an `agent.warning` payload, retaining unknown fields. */
 export function parseAgentWarningPayload(value: unknown): AgentWarningPayload {
   const name = "AgentWarningPayload";
   if (!isRecord(value)) {
@@ -840,7 +869,7 @@ function validatePayloadNumbers(value: unknown, path: string): void {
   if (typeof value === "number") {
     if (Number.isInteger(value) && Math.abs(value) > MAX_SAFE_INTEGER_MAGNITUDE) {
       throw new TypeError(
-        `${path} is an integral number whose magnitude exceeds the safe integer bound of ${MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string`,
+        `${path} is an integral number whose magnitude exceeds the safe integer bound: actual ${String(value)}; maximum ${MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string`,
       );
     }
     return;
@@ -855,6 +884,105 @@ function validatePayloadNumbers(value: unknown, path: string): void {
     for (const [key, child] of Object.entries(value)) {
       validatePayloadNumbers(child, `${path}.${key}`);
     }
+  }
+}
+
+function validateScalarBound(
+  value: string | undefined,
+  field: string,
+  maximum: number,
+): void {
+  if (value === undefined) {
+    return;
+  }
+  const actual = Array.from(value).length;
+  if (actual > maximum) {
+    throw new TypeError(
+      `${field} has ${actual} Unicode scalar values; maximum is ${maximum}`,
+    );
+  }
+}
+
+/**
+ * Validate whether a producer should emit `payload` for `eventType`. Required
+ * fields, known closed-union membership, safe-integer bounds, and capture
+ * bounds are enforced for known event types; unknown event types stay open
+ * and unvalidated.
+ *
+ * `parse_event` answers "can both SDKs carry this?"; `validate` answers
+ * "should a producer have emitted this?" `parseEvent` therefore does not call
+ * this function: a representable over-bound event must remain forwardable.
+ */
+export function validate(eventType: string, payload: unknown): void {
+  if (!KNOWN_TYPE_VALUES.has(eventType)) {
+    return;
+  }
+
+  validatePayloadNumbers(payload, "payload");
+  const parsed = parseKnownPayload(eventType, payload);
+
+  switch (eventType) {
+    case RUN_STARTED: {
+      const started = parsed as RunStartedPayload;
+      if (!RUN_KIND_VALUES.has(started.kind)) {
+        throw new TypeError(
+          `RunStartedPayload.kind has unknown value: ${started.kind}`,
+        );
+      }
+      return;
+    }
+    case RUN_FINISHED: {
+      const finished = parsed as RunFinishedPayload;
+      if (!RUN_OUTCOME_VALUES.has(finished.outcome)) {
+        throw new TypeError(
+          `RunFinishedPayload.outcome has unknown value: ${finished.outcome}`,
+        );
+      }
+      validateScalarBound(
+        finished.reason,
+        "RunFinishedPayload.reason",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case AGENT_TEXT: {
+      const text = parsed as AgentTextPayload;
+      validateScalarBound(
+        text.text,
+        "AgentTextPayload.text",
+        MAX_TEXT_SCALARS,
+      );
+      return;
+    }
+    case AGENT_TOOL_USE: {
+      const toolUse = parsed as AgentToolUsePayload;
+      validateScalarBound(
+        toolUse.inputExcerpt,
+        "AgentToolUsePayload.inputExcerpt",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case AGENT_TOOL_RESULT: {
+      const toolResult = parsed as AgentToolResultPayload;
+      validateScalarBound(
+        toolResult.resultExcerpt,
+        "AgentToolResultPayload.resultExcerpt",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case AGENT_WARNING: {
+      const warning = parsed as AgentWarningPayload;
+      validateScalarBound(
+        warning.message,
+        "AgentWarningPayload.message",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    default:
+      // The remaining known types have no closed union or captured text.
   }
 }
 
@@ -883,11 +1011,17 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
 }
 
 /**
- * Parse a decoded JSON value as an Event, rejecting envelope drift and invalid
- * payloads for event types this SDK knows. Unknown event types deliberately
- * retain the open payload behaviour: both SDKs validate their recognised
- * `run.*` and `agent.*` vocabulary members here without turning the envelope
- * parser into a closed event-type registry.
+ * Parse a decoded JSON value as an Event, rejecting envelope drift and values
+ * either SDK cannot represent. Unknown event types deliberately retain the
+ * open payload behaviour: both SDKs parse their recognised `run.*` and
+ * `agent.*` vocabulary members here without turning the envelope parser into
+ * a closed event-type registry.
+ *
+ * `parse_event` answers "can both SDKs carry this?"; `validate` answers
+ * "should a producer have emitted this?" This function keeps required fields
+ * and integer bounds strict, but it retains unfamiliar union members and does
+ * not enforce capture bounds. It deliberately does not call `validate`, so a
+ * forwarder can relay an over-bound event faithfully.
  *
  * A payload's *unknown fields* are a separate axis from its *unknown type*
  * and are tolerated rather than rejected (issue #12): every recognised
