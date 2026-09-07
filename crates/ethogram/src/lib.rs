@@ -205,6 +205,15 @@ pub enum RunOutcome {
     Canceled,
     /// A non-time ceiling was reached; `reason` names which ceiling.
     Capped,
+    /// Ended because it may not proceed until something outside the run
+    /// changes; **not an error of the run**. A consumer that colours
+    /// `blocked` as a failure is misreporting, since nothing went wrong
+    /// inside the run.
+    Blocked,
+    /// The run's process never ran; `reason` names why — `disarmed`,
+    /// `spawn`, or a missing binary, excerpted as today. Distinct from
+    /// `Failed`, where the process ran and did not succeed.
+    Unstarted,
     /// An unfamiliar member, retained exactly as it appeared on the wire.
     Unknown(String),
 }
@@ -222,6 +231,8 @@ impl RunOutcome {
             Self::PermissionDenied => "permission-denied",
             Self::Canceled => "canceled",
             Self::Capped => "capped",
+            Self::Blocked => "blocked",
+            Self::Unstarted => "unstarted",
             Self::Unknown(value) => value,
         }
     }
@@ -251,6 +262,8 @@ impl<'de> Deserialize<'de> for RunOutcome {
             "permission-denied" => Self::PermissionDenied,
             "canceled" => Self::Canceled,
             "capped" => Self::Capped,
+            "blocked" => Self::Blocked,
+            "unstarted" => Self::Unstarted,
             _ => Self::Unknown(value),
         })
     }
@@ -2173,6 +2186,13 @@ mod tests {
     const RELAY_CEILINGS_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-batch","seq":1,"ts":"2026-09-07T04:00:00.000Z","payload":{"actor":"observer","ceilings":{"costUsd":2.5,"idleMs":30000,"tokens":4000,"turns":12,"wallMs":60000},"harness":"relay-harness","kind":"relay"}}"#;
     const CAPPED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}"#;
 
+    // Cross-SDK byte identity for the two outcomes added by spec #31
+    // (ostrom-hub#146). These exact literals are pasted into the TypeScript
+    // suite and asserted there against events hand-built through its typed
+    // API.
+    const BLOCKED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-blocked","seq":1,"ts":"2026-09-07T08:00:00.000Z","payload":{"durationMs":500,"outcome":"blocked","reason":"awaiting-upstream-quota"}}"#;
+    const UNSTARTED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-unstarted","seq":1,"ts":"2026-09-07T08:00:01.000Z","payload":{"durationMs":0,"outcome":"unstarted","reason":"spawn"}}"#;
+
     // This value is intentionally one neither SDK will ever know. Keeping the
     // same literal in both suites proves an older relay retaining an unfamiliar
     // member emits exactly the bytes a future vocabulary-aware SDK would emit.
@@ -2294,6 +2314,8 @@ mod tests {
             "permission-denied",
             "canceled",
             "capped",
+            "blocked",
+            "unstarted",
         ] {
             let payload = json!({ "outcome": outcome, "durationMs": 1250 });
             let input = lifecycle_event_input("run.finished", payload.clone());
@@ -2318,6 +2340,31 @@ mod tests {
             error
                 .to_string()
                 .contains("RunFinishedPayload.outcome has unknown value: succeeded"),
+            "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_refuses_the_hub_literal_abandoned() {
+        // ostrom-hub#146: `abandoned` is the hub's own name for `timed-out`
+        // under another spelling, and the hub renames it rather than this
+        // protocol adopting it. It is refused exactly like any other
+        // unrecognised value — this test is what stops someone adding it
+        // later by reflex.
+        let input = lifecycle_event_input(
+            "run.finished",
+            json!({ "outcome": "abandoned", "durationMs": 1250 }),
+        );
+
+        let event = parse_event(&input).unwrap();
+        let parsed: RunFinishedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+        assert_eq!(parsed.outcome, RunOutcome::Unknown("abandoned".to_owned()));
+
+        let error = validate(RUN_FINISHED, &event.payload).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("RunFinishedPayload.outcome has unknown value: abandoned"),
             "error was: {error}"
         );
     }
@@ -3117,6 +3164,57 @@ mod tests {
             serde_json::to_string(&RunOutcome::Capped).unwrap(),
             r#""capped""#
         );
+    }
+
+    #[test]
+    fn blocked_and_unstarted_outcomes_match_the_typescript_pinned_bytes() {
+        let blocked = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: RUN_FINISHED.to_owned(),
+            run_id: "run-blocked".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T08:00:00.000Z".to_owned(),
+            payload: RunFinishedPayload {
+                outcome: RunOutcome::Blocked,
+                reason: Some("awaiting-upstream-quota".to_owned()),
+                truncated: None,
+                cost_usd: None,
+                usage: None,
+                duration_ms: 500,
+                estimated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let unstarted = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: RUN_FINISHED.to_owned(),
+            run_id: "run-unstarted".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T08:00:01.000Z".to_owned(),
+            payload: RunFinishedPayload {
+                outcome: RunOutcome::Unstarted,
+                reason: Some("spawn".to_owned()),
+                truncated: None,
+                cost_usd: None,
+                usage: None,
+                duration_ms: 0,
+                estimated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(serialise_event(&blocked).unwrap(), BLOCKED_OUTCOME_WIRE);
+        assert_eq!(serialise_event(&unstarted).unwrap(), UNSTARTED_OUTCOME_WIRE);
+    }
+
+    #[test]
+    fn blocked_and_unstarted_round_trip_through_parse_and_serialise() {
+        for wire in [BLOCKED_OUTCOME_WIRE, UNSTARTED_OUTCOME_WIRE] {
+            let event = parse_event(wire).unwrap();
+            assert_eq!(serialise_event(&event).unwrap(), wire);
+        }
     }
 
     #[test]

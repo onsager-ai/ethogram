@@ -67,6 +67,14 @@ const RELAY_CEILINGS_WIRE =
 const CAPPED_OUTCOME_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}';
 
+// Cross-SDK byte identity for the two outcomes added by spec #31
+// (ostrom-hub#146). These exact literals are pasted into the Rust suite and
+// asserted there against events hand-built through its typed API.
+const BLOCKED_OUTCOME_WIRE =
+  '{"v":1,"type":"run.finished","runId":"run-blocked","seq":1,"ts":"2026-09-07T08:00:00.000Z","payload":{"durationMs":500,"outcome":"blocked","reason":"awaiting-upstream-quota"}}';
+const UNSTARTED_OUTCOME_WIRE =
+  '{"v":1,"type":"run.finished","runId":"run-unstarted","seq":1,"ts":"2026-09-07T08:00:01.000Z","payload":{"durationMs":0,"outcome":"unstarted","reason":"spawn"}}';
+
 // This value is intentionally one neither SDK will ever know. Keeping the
 // same literal in both suites proves an older relay retaining an unfamiliar
 // member emits exactly the bytes a future vocabulary-aware SDK would emit.
@@ -186,6 +194,8 @@ const PERMITTED_RUN_OUTCOMES = [
   "permission-denied",
   "canceled",
   "capped",
+  "blocked",
+  "unstarted",
 ] as const;
 
 const completeEvent = (): Event => ({
@@ -514,6 +524,29 @@ describe("run lifecycle payload parsing", () => {
           durationMs: 1250,
         }),
       /outcome has unknown value: succeeded/,
+    );
+  });
+
+  test("refuses the hub literal abandoned", () => {
+    // ostrom-hub#146: "abandoned" is the hub's own name for "timed-out"
+    // under another spelling, and the hub renames it rather than this
+    // protocol adopting it. It is refused exactly like any other
+    // unrecognised value — this test is what stops someone adding it later
+    // by reflex.
+    const event = parseEvent({
+      ...completeEvent(),
+      type: "run.finished",
+      payload: { outcome: "abandoned", durationMs: 1250 },
+    });
+
+    assert.equal((event.payload as { outcome: string }).outcome, "abandoned");
+    assert.throws(
+      () =>
+        validate("run.finished", {
+          outcome: "abandoned",
+          durationMs: 1250,
+        }),
+      /outcome has unknown value: abandoned/,
     );
   });
 
@@ -2287,6 +2320,43 @@ describe("serialiseEvent payload key sorting", () => {
 
     assert.equal(serialiseEvent(started), RELAY_CEILINGS_WIRE);
     assert.equal(serialiseEvent(finished), CAPPED_OUTCOME_WIRE);
+  });
+
+  test("pins blocked and unstarted outcomes byte-identically with Rust", () => {
+    const blocked: Event<EventPayloadMap> = {
+      v: 1,
+      type: RUN_FINISHED,
+      runId: "run-blocked",
+      seq: 1,
+      ts: "2026-09-07T08:00:00.000Z",
+      payload: {
+        outcome: "blocked",
+        reason: "awaiting-upstream-quota",
+        durationMs: 500,
+      },
+    };
+    const unstarted: Event<EventPayloadMap> = {
+      v: 1,
+      type: RUN_FINISHED,
+      runId: "run-unstarted",
+      seq: 1,
+      ts: "2026-09-07T08:00:01.000Z",
+      payload: {
+        outcome: "unstarted",
+        reason: "spawn",
+        durationMs: 0,
+      },
+    };
+
+    assert.equal(serialiseEvent(blocked), BLOCKED_OUTCOME_WIRE);
+    assert.equal(serialiseEvent(unstarted), UNSTARTED_OUTCOME_WIRE);
+  });
+
+  test("blocked and unstarted round-trip through parseEvent and serialiseEvent", () => {
+    for (const wire of [BLOCKED_OUTCOME_WIRE, UNSTARTED_OUTCOME_WIRE]) {
+      const event = parseEvent(JSON.parse(wire) as unknown);
+      assert.equal(serialiseEvent(event), wire);
+    }
   });
 
   test("unknown outcome keeps cross-version byte identity with Rust and the input", () => {
