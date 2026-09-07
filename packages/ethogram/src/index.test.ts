@@ -8,6 +8,9 @@ import {
   AGENT_TOOL_RESULT,
   AGENT_TOOL_USE,
   AGENT_WARNING,
+  CONTROL_APPLIED,
+  CONTROL_KINDS,
+  CONTROL_REQUESTED,
   EVENT_SCHEMA_VERSION,
   InMemorySink,
   KNOWN_TYPES,
@@ -23,6 +26,8 @@ import {
   foldRun,
   parseAgentCompletedPayload,
   parseAgentStartedPayload,
+  parseControlAppliedPayload,
+  parseControlRequestedPayload,
   parseEvent,
   serialiseEvent,
   stamp,
@@ -82,6 +87,25 @@ const AGENT_WARNING_WIRE =
 // new field's bytes without touching a single existing fixture.
 const AGENT_COMPLETED_WITH_SESSION_WIRE =
   '{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}';
+
+// Cross-SDK byte identity for both `control.*` events (spec #8). These exact
+// literals are pasted into the Rust suite and asserted there against events
+// built from Rust's typed payload structs rather than parsed fixtures.
+const CONTROL_REQUESTED_WIRE =
+  '{"v":1,"type":"control.requested","runId":"run-control","seq":1,"ts":"2026-09-07T05:00:00.000Z","payload":{"by":"operator","controlId":"control-1","kind":"steer","text":"take point on the next turn","truncated":false}}';
+const CONTROL_APPLIED_FAILED_WIRE =
+  '{"v":1,"type":"control.applied","runId":"run-control","seq":2,"ts":"2026-09-07T05:00:01.000Z","payload":{"controlId":"control-1","ok":false,"reason":"not-live"}}';
+const CONTROL_APPLIED_INTERRUPT_WIRE =
+  '{"v":1,"type":"control.applied","runId":"run-control","seq":3,"ts":"2026-09-07T05:00:02.000Z","payload":{"controlId":"control-2","landedIn":"tool-9","ok":true}}';
+
+// This value is intentionally one neither SDK will ever know, matching issue
+// #12's own example. Keeping the same literal in both suites proves an older
+// relay retaining an unfamiliar member emits exactly the bytes a future
+// vocabulary-aware SDK would emit.
+const UNKNOWN_CONTROL_KIND_WIRE =
+  '{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}';
+
+const PERMITTED_CONTROL_KINDS = ["interrupt", "steer"] as const;
 
 const PERMITTED_RUN_KINDS = [
   "loop",
@@ -622,6 +646,136 @@ describe("agent payload parsing", () => {
   });
 });
 
+describe("control payload parsing (spec #8)", () => {
+  test("accepts every permitted control kind", () => {
+    assert.deepEqual(CONTROL_KINDS, PERMITTED_CONTROL_KINDS);
+    for (const kind of PERMITTED_CONTROL_KINDS) {
+      const payload = { controlId: "control-1", kind, by: "operator" };
+      assert.doesNotThrow(() =>
+        parseEvent({
+          ...completeEvent(),
+          type: "control.requested",
+          payload,
+        }),
+      );
+      assert.doesNotThrow(() => validate(CONTROL_REQUESTED, payload));
+    }
+  });
+
+  test("parses an unknown control kind verbatim and validate reports it", () => {
+    // "teleport" is a value neither SDK will ever know, matching issue #12's
+    // own example. There is deliberately no "pause" member either (see
+    // ControlKind's doc comment), but that is a closed-vocabulary fact, not
+    // an unknown-string one, so it is not exercised here.
+    const event = parseEvent({
+      ...completeEvent(),
+      type: "control.requested",
+      payload: { controlId: "control-3", kind: "teleport", by: "operator" },
+    });
+
+    assert.equal((event.payload as { kind: string }).kind, "teleport");
+    assert.throws(
+      () =>
+        validate("control.requested", {
+          controlId: "control-3",
+          kind: "teleport",
+          by: "operator",
+        }),
+      /kind has unknown value: teleport/,
+    );
+  });
+
+  test("unknown control kind keeps cross-version byte identity with Rust and the input", () => {
+    const parsed = parseEvent(JSON.parse(UNKNOWN_CONTROL_KIND_WIRE) as unknown);
+
+    assert.equal((parsed.payload as { kind: string }).kind, "teleport");
+    assert.equal(serialiseEvent(parsed), UNKNOWN_CONTROL_KIND_WIRE);
+  });
+
+  test("rejects each missing required control.requested field", () => {
+    for (const field of ["controlId", "kind", "by"]) {
+      const payload: Record<string, unknown> = {
+        controlId: "control-1",
+        kind: "steer",
+        by: "operator",
+      };
+      delete payload[field];
+      assert.throws(
+        () =>
+          parseEvent({
+            ...completeEvent(),
+            type: "control.requested",
+            payload,
+          }),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects each missing required control.applied field", () => {
+    for (const field of ["controlId", "ok"]) {
+      const payload: Record<string, unknown> = {
+        controlId: "control-1",
+        ok: true,
+      };
+      delete payload[field];
+      assert.throws(
+        () =>
+          parseEvent({
+            ...completeEvent(),
+            type: "control.applied",
+            payload,
+          }),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("retains unknown fields through both control payload parsers", () => {
+    const cases = [
+      [
+        "control.requested",
+        {
+          controlId: "control-1",
+          kind: "steer",
+          by: "operator",
+          future: { value: 1 },
+        },
+      ],
+      [
+        "control.applied",
+        { controlId: "control-1", ok: true, future: { value: 1 } },
+      ],
+    ] as const;
+
+    for (const [type, payload] of cases) {
+      const forwarded = JSON.parse(
+        serialiseEvent(parseEvent({ ...completeEvent(), type, payload })),
+      ) as { payload: Record<string, unknown> };
+      assert.deepEqual(forwarded.payload.future, { value: 1 });
+    }
+  });
+
+  test("absent optional control payload fields are omitted instead of writing null", () => {
+    assert.equal(
+      JSON.stringify(
+        parseControlRequestedPayload({
+          controlId: "control-1",
+          kind: "interrupt",
+          by: "operator",
+        }),
+      ),
+      '{"controlId":"control-1","kind":"interrupt","by":"operator"}',
+    );
+    assert.equal(
+      JSON.stringify(
+        parseControlAppliedPayload({ controlId: "control-1", ok: true }),
+      ),
+      '{"controlId":"control-1","ok":true}',
+    );
+  });
+});
+
 describe("validate", () => {
   test("enforces required fields and integer bounds for known types", () => {
     assert.throws(() => validate(RUN_STARTED, {}), /required field: kind/);
@@ -682,6 +836,27 @@ describe("validate", () => {
         AGENT_WARNING,
         { message: "😀".repeat(MAX_EXCERPT_SCALARS + 1) },
         "AgentWarningPayload.message",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        CONTROL_REQUESTED,
+        {
+          controlId: "control-1",
+          kind: "steer",
+          by: "operator",
+          text: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+        },
+        "ControlRequestedPayload.text",
+        MAX_EXCERPT_SCALARS,
+      ],
+      [
+        CONTROL_APPLIED,
+        {
+          controlId: "control-1",
+          ok: false,
+          reason: "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+        },
+        "ControlAppliedPayload.reason",
         MAX_EXCERPT_SCALARS,
       ],
     ];
@@ -1236,6 +1411,54 @@ describe("serialiseEvent payload key sorting", () => {
     assert.equal(serialiseEvent(completed), AGENT_COMPLETED_WITH_SESSION_WIRE);
   });
 
+  test("pins byte-identical control events with Rust", () => {
+    const requested: Event<EventPayloadMap> = {
+      v: 1,
+      type: CONTROL_REQUESTED,
+      runId: "run-control",
+      seq: 1,
+      ts: "2026-09-07T05:00:00.000Z",
+      payload: {
+        controlId: "control-1",
+        kind: "steer",
+        text: "take point on the next turn",
+        truncated: false,
+        by: "operator",
+      },
+    };
+    const appliedFailed: Event<EventPayloadMap> = {
+      v: 1,
+      type: CONTROL_APPLIED,
+      runId: "run-control",
+      seq: 2,
+      ts: "2026-09-07T05:00:01.000Z",
+      payload: {
+        controlId: "control-1",
+        ok: false,
+        reason: "not-live",
+      },
+    };
+    const appliedInterrupt: Event<EventPayloadMap> = {
+      v: 1,
+      type: CONTROL_APPLIED,
+      runId: "run-control",
+      seq: 3,
+      ts: "2026-09-07T05:00:02.000Z",
+      payload: {
+        controlId: "control-2",
+        ok: true,
+        landedIn: "tool-9",
+      },
+    };
+
+    assert.equal(serialiseEvent(requested), CONTROL_REQUESTED_WIRE);
+    assert.equal(serialiseEvent(appliedFailed), CONTROL_APPLIED_FAILED_WIRE);
+    assert.equal(
+      serialiseEvent(appliedInterrupt),
+      CONTROL_APPLIED_INTERRUPT_WIRE,
+    );
+  });
+
   test("sorts all amended run usage fields", () => {
     const parsed = parseEvent(JSON.parse(RUN_FINISHED_WIRE) as unknown);
     assert.equal(serialiseEvent(parsed), RUN_FINISHED_WIRE);
@@ -1688,11 +1911,23 @@ describe("known event type constants (issue #4)", () => {
       roundTrippedType(AGENT_WARNING, { message: "warning" }),
       AGENT_WARNING,
     );
+    assert.equal(
+      roundTrippedType(CONTROL_REQUESTED, {
+        controlId: "control-1",
+        kind: "steer",
+        by: "operator",
+      }),
+      CONTROL_REQUESTED,
+    );
+    assert.equal(
+      roundTrippedType(CONTROL_APPLIED, { controlId: "control-1", ok: true }),
+      CONTROL_APPLIED,
+    );
   });
 
-  test("KNOWN_TYPES holds exactly the eight recognised types, with no duplicates", () => {
-    assert.equal(KNOWN_TYPES.length, 8);
-    assert.equal(new Set(KNOWN_TYPES).size, 8);
+  test("KNOWN_TYPES holds exactly the ten recognised types, with no duplicates", () => {
+    assert.equal(KNOWN_TYPES.length, 10);
+    assert.equal(new Set(KNOWN_TYPES).size, 10);
     assert.deepEqual(
       new Set(KNOWN_TYPES),
       new Set([
@@ -1704,6 +1939,8 @@ describe("known event type constants (issue #4)", () => {
         AGENT_TOOL_RESULT,
         AGENT_COMPLETED,
         AGENT_WARNING,
+        CONTROL_REQUESTED,
+        CONTROL_APPLIED,
       ]),
     );
   });
