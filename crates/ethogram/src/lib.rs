@@ -61,6 +61,20 @@ pub const KNOWN_TYPES: [&str; 13] = [
     DECISION_ANSWERED,
 ];
 
+/// The result of [`excerpt`]: the kept text, and whether a bound applied.
+///
+/// On the wire the corresponding payload field is optional, and **its absence
+/// means `false`**. A producer may also emit `false` explicitly, and both
+/// forms are conforming — the protocol says nothing stronger (ruled on #12).
+/// Canonicalisation governs *notation*, not *presence*: it fixes how a value
+/// is spelled once written, and does not decide whether an optional field is
+/// written at all. Requiring omission would have made goldens already derived
+/// from real captures retroactively non-conforming, for no benefit a consumer
+/// can observe, since a reader must handle an absent flag either way.
+///
+/// The corpus therefore carries both forms, which is the useful outcome: it
+/// proves each round-trips, rather than asserting a preference no producer
+/// agreed to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Excerpt {
     pub text: String,
