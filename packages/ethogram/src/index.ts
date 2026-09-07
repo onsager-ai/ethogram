@@ -4,7 +4,14 @@ export type ValidationErrorDetails =
   | { kind: "PayloadTooLarge"; bytes: number; max: number }
   | { kind: "UnknownMember"; path: string; value: string }
   | { kind: "MissingField"; path: string }
-  | { kind: "Policy"; path: string; message: string };
+  // A producer broke a stated rule while sending an otherwise
+  // representable value: the steer-without-text rule, or one of the three
+  // `onTimeout` checks.
+  | { kind: "Policy"; path: string; message: string }
+  // The value sent could not be represented at all: wrong-typed, an
+  // unsafe integer, or not serialisable. Distinct from `Policy`, which is a
+  // stated rule broken by an otherwise representable value.
+  | { kind: "Malformed"; path: string; message: string };
 
 /**
  * A validation failure with structured fields and the original message.
@@ -60,6 +67,10 @@ class PayloadRepresentationError extends TypeError {
 
 function policyError(path: string, message: string): ValidationError {
   return new ValidationError({ kind: "Policy", path, message }, message);
+}
+
+function malformedError(path: string, message: string): ValidationError {
+  return new ValidationError({ kind: "Malformed", path, message }, message);
 }
 
 export const EVENT_SCHEMA_VERSION = 1 as const;
@@ -1735,16 +1746,20 @@ export function validate(eventType: string, payload: unknown): void {
       throw error;
     }
     if (error instanceof PayloadRepresentationError) {
+      // A missing field is its own kind; anything else here is a value that
+      // could not be represented at all (wrong-typed, out of range) rather
+      // than a stated rule broken by an otherwise representable one.
       throw error.missing
         ? new ValidationError(
             { kind: "MissingField", path: error.path },
             error.message,
           )
-        : policyError(error.path, error.message);
+        : malformedError(error.path, error.message);
     }
-    // A non-JSON input can also fail in the canonical serialiser itself.
+    // A non-JSON input can also fail in the canonical serialiser itself —
+    // also a representation failure, not a stated rule.
     if (error instanceof Error) {
-      throw policyError("payload", error.message);
+      throw malformedError("payload", error.message);
     }
     throw error;
   }

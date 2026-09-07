@@ -1,0 +1,10 @@
+{
+  "type": "run.started",
+  "payload": {
+    "kind": "loop",
+    "actor": "a",
+    "harness": "h",
+    "note": 9007199254740992
+  },
+  "expectedKind": "Malformed"
+}

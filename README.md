@@ -254,6 +254,7 @@ refusal may carry an excerpted parser or validation message in `detail`, with
 | `UnknownMember` | `path`, `value` | `malformed`: excerpt the error message into `detail` |
 | `MissingField` | `path` | `malformed`: excerpt the error message into `detail` |
 | `Policy` | `path`, `message` | `malformed`: excerpt `message` into `detail` |
+| `Malformed` | `path`, `message` | `malformed`: excerpt `message` into `detail` |
 
 Paths start at `payload`, such as `payload.dossier.question` or
 `payload.options[0].label`. `count` measures Unicode scalar values for
@@ -271,17 +272,20 @@ to narrow the discriminated union and read its fields; `error.kind` also
 exposes the tag. The class extends `TypeError`, retaining its `name` and
 original `message`, so existing `TypeError` checks and message matches hold.
 
-`Policy` includes steer without nonempty text and all existing `onTimeout`
-checks: permission only, deny only, and membership in the request's options.
-Existing representation failures other than missing fields (wrong types,
-unsafe integers, or an input that cannot be serialised) also carry a `Policy`
-path and their original diagnostic. Parsing still checks representability
-without applying capture bounds or producer policy.
+`Policy` means a producer broke a stated rule: steer without nonempty text,
+and all existing `onTimeout` checks (permission only, deny only, and
+membership in the request's options). `Malformed` means the opposite kind of
+defect — the value sent could not be represented at all, distinct from a
+producer that broke a known rule with an otherwise representable value:
+missing fields aside (their own `MissingField` kind), a wrong-typed value, an
+unsafe integer, or an input that cannot be serialised each carry a
+`Malformed` path and their original diagnostic. Parsing still checks
+representability without applying capture bounds or producer policy.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8
 key ordering and number notation. The compatibility diagnostic is separate
-from those fields, except for `Policy.message`.
+from those fields, except for `Policy.message` and `Malformed.message`.
 
 ## Decisions
 

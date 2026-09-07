@@ -129,7 +129,7 @@ test("Policy reports steer and all three timeout rules", () => {
   }
 });
 
-test("representation failures retain a path and the original diagnostic", () => {
+test("Malformed retains a path and the original diagnostic for representation failures", () => {
   const cases: [string, unknown, string, string][] = [
     [AGENT_COMPLETED, { sessionId: 7 }, "payload.sessionId", "AgentCompletedPayload.sessionId must be a string when present"],
     [AGENT_COMPLETED, { usage: { inputTokens: -1 } }, "payload.usage.inputTokens", "AgentCompletedPayload.usage.inputTokens must be a non-negative safe integer when present"],
@@ -137,11 +137,22 @@ test("representation failures retain a path and the original diagnostic", () => 
     [AGENT_TEXT, false, "payload", "AgentTextPayload must be an object"],
   ];
   for (const [type, payload, path, message] of cases) {
-    assert.deepEqual(failure(type, payload).details, { kind: "Policy", path, message });
+    assert.deepEqual(failure(type, payload).details, { kind: "Malformed", path, message });
   }
   const error = failure("future.happened", { value: 1n });
-  assert.equal(error.kind, "Policy");
+  assert.equal(error.kind, "Malformed");
   assert.equal(error.message, "Do not know how to serialize a BigInt");
+});
+
+test("Policy still reports only the stated rules after the Malformed split", () => {
+  // Pinned in both directions: the previous test asserts the representation
+  // failures that moved to Malformed; this one asserts that the stated-rule
+  // violations stay Policy.
+  const steer = failure(CONTROL_REQUESTED, { controlId: "c", kind: "steer", by: "a" });
+  assert.equal(steer.kind, "Policy");
+
+  const onTimeout = failure(DECISION_REQUESTED, { ...request(), kind: "tripwire", onTimeout: "deny" });
+  assert.equal(onTimeout.kind, "Policy");
 });
 
 test("ValidationError keeps TypeError inheritance and its existing name", () => {

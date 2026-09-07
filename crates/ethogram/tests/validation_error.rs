@@ -321,7 +321,7 @@ fn representation_failures_are_structured_without_changing_the_serde_message() {
         let error = validate(event_type, &payload).unwrap_err();
         assert_eq!(
             error.kind,
-            ValidationErrorKind::Policy {
+            ValidationErrorKind::Malformed {
                 path: path.to_owned(),
                 message: error.to_string()
             }
@@ -333,7 +333,7 @@ fn representation_failures_are_structured_without_changing_the_serde_message() {
     let old = serde_json::from_value::<ethogram::RunStartedPayload>(payload.clone()).unwrap_err();
     let error = validate(RUN_STARTED, &payload).unwrap_err();
     assert_eq!(error.to_string(), old.to_string());
-    assert!(matches!(error.kind, ValidationErrorKind::Policy { .. }));
+    assert!(matches!(error.kind, ValidationErrorKind::Malformed { .. }));
 
     struct Unserialisable;
     impl Serialize for Unserialisable {
@@ -343,11 +343,48 @@ fn representation_failures_are_structured_without_changing_the_serde_message() {
     }
     assert_eq!(
         validate(AGENT_TEXT, &Unserialisable).unwrap_err().kind,
-        ValidationErrorKind::Policy {
+        ValidationErrorKind::Malformed {
             path: "payload".to_owned(),
             message: "cannot serialise".to_owned()
         }
     );
+}
+
+#[test]
+fn malformed_reports_the_expected_path_and_message() {
+    // A wrong-typed value on a known type's field: the value cannot be
+    // represented at all, distinct from a stated rule broken by an
+    // otherwise representable one.
+    let payload =
+        json!({ "kind": "loop", "actor": "a", "harness": "h", "note": 9007199254740992_u64 });
+    let error = validate(RUN_STARTED, &payload).unwrap_err();
+    assert_eq!(
+        error.kind,
+        ValidationErrorKind::Malformed {
+            path: "payload.note".to_owned(),
+            message: "payload.note is an integral number whose magnitude exceeds the safe integer bound: actual 9007199254740992; maximum 9007199254740991; a value that needs more precision must be carried as a string".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn policy_still_reports_the_stated_rules_after_the_malformed_split() {
+    // Pinned in both directions: the previous test asserts the
+    // representation failures that moved to `Malformed`; this one asserts
+    // that the stated-rule violations that stayed `Policy` still do.
+    let steer = json!({ "controlId": "c", "kind": "steer", "by": "a" });
+    assert!(matches!(
+        validate(CONTROL_REQUESTED, &steer).unwrap_err().kind,
+        ValidationErrorKind::Policy { .. }
+    ));
+
+    let mut on_timeout = request();
+    on_timeout["kind"] = json!("tripwire");
+    on_timeout["onTimeout"] = json!("deny");
+    assert!(matches!(
+        validate(DECISION_REQUESTED, &on_timeout).unwrap_err().kind,
+        ValidationErrorKind::Policy { .. }
+    ));
 }
 
 #[test]

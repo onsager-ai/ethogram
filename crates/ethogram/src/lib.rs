@@ -1248,8 +1248,10 @@ pub fn validate<P>(event_type: &str, payload: &P) -> Result<(), ValidationError>
 where
     P: Serialize + ?Sized,
 {
+    // The payload itself failed to serialise: a representation failure, not
+    // a stated rule broken by an otherwise representable value.
     let payload = serde_json::to_value(payload)
-        .map_err(|error| ValidationError::policy("payload", error.to_string()))?;
+        .map_err(|error| ValidationError::malformed("payload", error.to_string()))?;
 
     // Universal bounds: run before the known-type branch below, and for
     // every event including one of an unrecognised type (issue #28).
@@ -1670,7 +1672,9 @@ fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), ValidationE
         }
         Value::Number(number) => {
             if number_exceeds_safe_integer_magnitude(number) {
-                Err(ValidationError::policy(
+                // Out of safe-integer range: a representation failure, not a
+                // stated rule broken by an otherwise representable value.
+                Err(ValidationError::malformed(
                     path,
                     format!(
                         "{path} is an integral number whose magnitude exceeds the safe integer bound: actual {number}; maximum {MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string"
@@ -1776,8 +1780,10 @@ fn serialise_payload_canonical(payload: &Value) -> serde_json::Result<Vec<u8>> {
 /// `event_type` is recognised, so an unrecognised type is covered by the
 /// same floor as a known one instead of going unchecked.
 fn validate_payload_size(payload: &Value) -> Result<(), ValidationError> {
+    // A serialisation failure: a representation failure, not a stated rule
+    // broken by an otherwise representable value.
     let bytes = serialise_payload_canonical(payload).map_err(|error| {
-        ValidationError::policy(
+        ValidationError::malformed(
             "payload",
             format!("payload could not be serialised to measure its size: {error}"),
         )

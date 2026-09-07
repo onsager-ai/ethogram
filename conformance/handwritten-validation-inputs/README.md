@@ -1,6 +1,6 @@
 # Handwritten validation inputs — not captured events
 
-These five JSON files are invalid inputs for `validate`, separate from the
+These six JSON files are invalid inputs for `validate`, separate from the
 immutable real captures in `../v1/`. They are not corpus fixtures and are
 not included in either generated corpus library.
 
@@ -19,3 +19,13 @@ write canonical errors into their existing output directories, where
 - `unknown-member.json`: an unfamiliar run outcome.
 - `missing-field.json`: a dossier missing its required question.
 - `policy.json`: a steer without text.
+- `malformed.json`: a `run.started` carrying an unrecognised extra field whose
+  value is a number one past the safe-integer magnitude bound
+  (`Number.MAX_SAFE_INTEGER + 1`, still exactly representable in both a JS
+  double and a Rust `u64`). This exercises the universal number-magnitude
+  check rather than one of the many per-field "must be a string"-style
+  messages: those are hand-written independently in each SDK and never
+  promised to agree word for word, while the universal check's message is
+  deliberately authored identically in both, so this is the representation
+  failure this harness can compare byte-for-byte without inventing new
+  cross-SDK wording.

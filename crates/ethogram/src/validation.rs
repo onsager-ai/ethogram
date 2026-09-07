@@ -26,7 +26,17 @@ pub enum ValidationErrorKind {
     MissingField {
         path: String,
     },
+    /// A producer broke a stated rule while sending an otherwise
+    /// representable value: the steer-without-text rule, or one of the three
+    /// `onTimeout` checks.
     Policy {
+        path: String,
+        message: String,
+    },
+    /// The value sent could not be represented at all: wrong-typed, an
+    /// unsafe integer, or not serialisable. Distinct from `Policy`, which is
+    /// a stated rule broken by an otherwise representable value.
+    Malformed {
         path: String,
         message: String,
     },
@@ -60,15 +70,34 @@ impl ValidationError {
         )
     }
 
+    pub(crate) fn malformed(path: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new(
+            ValidationErrorKind::Malformed {
+                path: path.into(),
+                message: message.clone(),
+            },
+            message,
+        )
+    }
+
     // Deserialisation attaches the location at the innermost value that
     // fails. Serde supplies missing field names through its typed callback,
     // so neither the kind nor the path is recovered by parsing a message.
+    // `Malformed` needs the same empty-path attachment `Policy` does: both
+    // can originate from `custom()` below, deep inside a nested deserialize
+    // call, with no path known until the enclosing `LocatedValue` unwinds —
+    // a representation failure arriving without a path would be a
+    // regression in diagnostic quality.
     fn at_path(mut self, location: &str) -> Self {
         match &mut self.kind {
             ValidationErrorKind::MissingField { path } if !path.starts_with("payload.") => {
                 *path = format!("{location}.{path}");
             }
             ValidationErrorKind::Policy { path, .. } if path.is_empty() => {
+                *path = location.to_owned();
+            }
+            ValidationErrorKind::Malformed { path, .. } if path.is_empty() => {
                 *path = location.to_owned();
             }
             _ => {}
@@ -98,8 +127,15 @@ impl Serialize for ValidationError {
 }
 
 impl de::Error for ValidationError {
+    // Serde routes every unclassified deserialisation failure through this
+    // generic entry point, including the two overrides below (`invalid_type`,
+    // `invalid_value`) and `deserialize_safe_u64`'s explicit out-of-range
+    // message in `lib.rs`. Every message that reaches here — a wrong-typed
+    // value, an invalid value, or an unsafe integer — describes a value that
+    // could not be represented at all, never a stated rule broken by an
+    // otherwise representable one, so it is `Malformed` rather than `Policy`.
     fn custom<T: Display>(message: T) -> Self {
-        Self::policy("", message.to_string())
+        Self::malformed("", message.to_string())
     }
 
     fn missing_field(field: &'static str) -> Self {
