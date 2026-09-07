@@ -1075,6 +1075,12 @@ pub struct DecisionOption {
 /// restriction in [`validate`] prevents a producer from shipping that mistake
 /// quietly. [`parse_event`] deliberately does not apply this policy, because
 /// a forwarder must retain any representable request.
+///
+/// The corresponding `decision.answered` is not emitted on this request's own
+/// run: it is emitted later by whatever invocation applies the answer, on
+/// that invocation's own run, by which point this run has usually already
+/// finished. The two events are correlated only by `decision_id`, never by
+/// sharing a `run_id`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionRequestedPayload {
@@ -1107,10 +1113,22 @@ pub struct DecisionRequestedPayload {
     pub extra: PayloadExtension,
 }
 
-/// Records an answer only after the run that owns the decision has applied
-/// it. It is emitted by that run, never by the console that collected the
-/// answer; a consumer showing the decision as settled before this event
-/// arrives has misread the protocol.
+/// Records an answer after it has been applied. It is emitted by **the
+/// invocation that applies the answer, on its own run** — not the run that
+/// requested the decision, which has usually already finished by the time a
+/// human responds. The two events are correlated only by `decision_id`, never
+/// by sharing a `run_id`; it is never emitted by a console that merely
+/// collected the answer.
+///
+/// This wording is a correction (ruled on #7). The previous wording said this
+/// event was emitted by the run that owns the decision, but that describes
+/// something the protocol's own rules forbid: a run has at most one
+/// `run.finished`, and a sink refuses every append to a closed run. A
+/// decision a human answers minutes or hours later is answered after the
+/// requesting run has terminated, so an answer emitted "on the owning run"
+/// would be refused by the sink. `requested_run_id`, below, exists because of
+/// this correction: once the two events routinely live on different runs, a
+/// consumer holding only the answer needs a way to find the run that asked.
 ///
 /// `by_timeout` is semantically material. Without it, a human choosing
 /// `option_id: "deny"` is indistinguishable from a permission expiring
@@ -1137,6 +1155,17 @@ pub struct DecisionAnsweredPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub reversal: Option<String>,
+    /// The run that emitted the corresponding `decision.requested`.
+    /// `decision_id` correlates the pair, but a consumer holding only the
+    /// answer cannot find the asking run without this field — and now that
+    /// the two events live on different runs, that lookup is the common case
+    /// rather than an edge one.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub requested_run_id: Option<String>,
     #[serde(flatten)]
     pub extra: PayloadExtension,
 }
@@ -2325,6 +2354,11 @@ mod tests {
     const DECISION_REQUESTED_WIRE: &str = r#"{"v":1,"type":"decision.requested","runId":"run-decision","seq":1,"ts":"2026-09-07T07:00:00.000Z","payload":{"decisionId":"decision-1","dossier":{"blastRadius":"one repository","optionsRuledOut":["auto-proceed","discard the request"],"question":"May the run execute the deployment tool?","recommendedAction":"deny unless the operator confirms the target","truncated":false},"expiresAt":"2026-09-07T07:05:00.000Z","kind":"permission","onTimeout":"deny","options":[{"id":"allow","label":"Allow once"},{"id":"deny","label":"Deny"}],"subject":"deploy"}}"#;
     const DECISION_ANSWERED_HUMAN_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision","seq":2,"ts":"2026-09-07T07:01:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow"}}"#;
     const DECISION_ANSWERED_TIMEOUT_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}"#;
+
+    // Cross-SDK byte identity for `decision.answered.requestedRunId` (spec
+    // #7 correction). This exact literal is pasted into the TypeScript suite
+    // and asserted against an event hand-built through each SDK's typed API.
+    const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}"#;
 
     // This value is intentionally one neither SDK will ever know. The kind's
     // raw bytes and the whole canonical event must survive an older relay.
@@ -4076,6 +4110,7 @@ mod tests {
             by: "principal:user:alice".to_owned(),
             by_timeout: None,
             reversal: None,
+            requested_run_id: None,
             extra: PayloadExtension::new(),
         }
     }
@@ -4460,11 +4495,23 @@ mod tests {
         );
 
         let answer_value = serde_json::to_value(answer).unwrap();
-        for field in ["byTimeout", "reversal"] {
+        for field in ["byTimeout", "reversal", "requestedRunId"] {
             assert!(!answer_value.as_object().unwrap().contains_key(field));
         }
         assert!(!request_value.to_string().contains(":null"));
         assert!(!answer_value.to_string().contains(":null"));
+    }
+
+    #[test]
+    fn decision_answered_serialises_requested_run_id_when_present() {
+        let mut answer = consistency_answer("allow");
+        answer.requested_run_id = Some("run-decision".to_owned());
+
+        let answer_value = serde_json::to_value(&answer).unwrap();
+        assert_eq!(answer_value["requestedRunId"], json!("run-decision"));
+
+        let round_tripped: DecisionAnsweredPayload = serde_json::from_value(answer_value).unwrap();
+        assert_eq!(round_tripped, answer);
     }
 
     #[test]
@@ -4491,6 +4538,7 @@ mod tests {
             "decisionId": "decision-1",
             "optionId": "allow",
             "by": "principal:user:alice",
+            "requestedRunId": "run-decision",
             "futureAnswer": { "value": 4 }
         }))
         .unwrap();
@@ -4511,6 +4559,10 @@ mod tests {
             answer.extra.get("futureAnswer"),
             Some(&json!({ "value": 4 }))
         );
+        // `requestedRunId` is a known field, not an extra: adding it must not
+        // disturb the unknown-field tolerance path exercised above and below.
+        assert_eq!(answer.extra.get("requestedRunId"), None);
+        assert_eq!(answer.requested_run_id.as_deref(), Some("run-decision"));
 
         let re_emitted_request = serde_json::to_value(request).unwrap();
         assert_eq!(re_emitted_request["futureRequest"], json!({ "value": 3 }));
@@ -4522,10 +4574,9 @@ mod tests {
             re_emitted_request["options"][0]["futureOption"],
             json!({ "value": 2 })
         );
-        assert_eq!(
-            serde_json::to_value(answer).unwrap()["futureAnswer"],
-            json!({ "value": 4 })
-        );
+        let re_emitted_answer = serde_json::to_value(answer).unwrap();
+        assert_eq!(re_emitted_answer["futureAnswer"], json!({ "value": 4 }));
+        assert_eq!(re_emitted_answer["requestedRunId"], json!("run-decision"));
     }
 
     #[test]
@@ -4581,6 +4632,7 @@ mod tests {
                 by: "principal:user:alice".to_owned(),
                 by_timeout: None,
                 reversal: None,
+                requested_run_id: None,
                 extra: PayloadExtension::new(),
             },
             captured_at: None,
@@ -4597,6 +4649,7 @@ mod tests {
                 by: "principal:runtime:permission-timeout".to_owned(),
                 by_timeout: Some(true),
                 reversal: Some("allow".to_owned()),
+                requested_run_id: None,
                 extra: PayloadExtension::new(),
             },
             captured_at: None,
@@ -4624,6 +4677,53 @@ mod tests {
             let parsed = parse_event(expected).unwrap();
             assert_eq!(serialise_event(&parsed).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn decision_answered_with_requested_run_id_matches_the_typescript_pinned_bytes() {
+        let answer = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: DECISION_ANSWERED.to_owned(),
+            run_id: "run-decision-answer".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T07:10:00.000Z".to_owned(),
+            payload: DecisionAnsweredPayload {
+                decision_id: "decision-1".to_owned(),
+                option_id: "allow".to_owned(),
+                by: "principal:user:alice".to_owned(),
+                by_timeout: None,
+                reversal: None,
+                requested_run_id: Some("run-decision".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        validate(DECISION_ANSWERED, &answer.payload).unwrap();
+        assert_eq!(
+            serialise_event(&answer).unwrap(),
+            DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE
+        );
+        let parsed = parse_event(DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE).unwrap();
+        assert_eq!(
+            serialise_event(&parsed).unwrap(),
+            DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_non_string_requested_run_id_on_decision_answered() {
+        let payload = json!({
+            "decisionId": "decision-1",
+            "optionId": "allow",
+            "by": "principal:user:alice",
+            "requestedRunId": 7
+        });
+        let error = validate(DECISION_ANSWERED, &payload).unwrap_err();
+        assert!(
+            error.to_string().contains("expected a string"),
+            "error was: {error}"
+        );
     }
 
     #[test]

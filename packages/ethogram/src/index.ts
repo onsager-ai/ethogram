@@ -546,6 +546,12 @@ export interface DecisionOption {
  * restriction in `validate` prevents a producer from shipping that mistake
  * quietly. `parseEvent` deliberately does not apply this policy, because a
  * forwarder must retain any representable request.
+ *
+ * The corresponding `decision.answered` is not emitted on this request's own
+ * run: it is emitted later by whatever invocation applies the answer, on
+ * that invocation's own run, by which point this run has usually already
+ * finished. The two events are correlated only by `decisionId`, never by
+ * sharing a `runId`.
  */
 export interface DecisionRequestedPayload {
   /** Producer-assigned and unique within the run. */
@@ -561,10 +567,22 @@ export interface DecisionRequestedPayload {
 }
 
 /**
- * Records an answer only after the run that owns the decision has applied it.
- * It is emitted by that run, never by the console that collected the answer;
- * a consumer showing the decision as settled before this event arrives has
- * misread the protocol.
+ * Records an answer after it has been applied. It is emitted by **the
+ * invocation that applies the answer, on its own run** — not the run that
+ * requested the decision, which has usually already finished by the time a
+ * human responds. The two events are correlated only by `decisionId`, never
+ * by sharing a `runId`; it is never emitted by a console that merely
+ * collected the answer.
+ *
+ * This wording is a correction (ruled on #7). The previous wording said this
+ * event was emitted by the run that owns the decision, but that describes
+ * something the protocol's own rules forbid: a run has at most one
+ * `run.finished`, and a sink refuses every append to a closed run. A
+ * decision a human answers minutes or hours later is answered after the
+ * requesting run has terminated, so an answer emitted "on the owning run"
+ * would be refused by the sink. `requestedRunId`, below, exists because of
+ * this correction: once the two events routinely live on different runs, a
+ * consumer holding only the answer needs a way to find the run that asked.
  *
  * `byTimeout` is semantically material. Without it, a human choosing
  * `optionId: "deny"` is indistinguishable from a permission expiring
@@ -580,6 +598,14 @@ export interface DecisionAnsweredPayload {
   by: string;
   byTimeout?: boolean;
   reversal?: string;
+  /**
+   * The run that emitted the corresponding `decision.requested`.
+   * `decisionId` correlates the pair, but a consumer holding only the answer
+   * cannot find the asking run without this field — and now that the two
+   * events live on different runs, that lookup is the common case rather
+   * than an edge one.
+   */
+  requestedRunId?: string;
 }
 
 /** The wire string for a `run.started` event's `type` field. */
@@ -882,6 +908,7 @@ const DECISION_ANSWERED_FIELDS = new Set<string>([
   "by",
   "byTimeout",
   "reversal",
+  "requestedRunId",
 ]);
 
 /**
@@ -1538,12 +1565,14 @@ export function parseDecisionAnsweredPayload(
   const by = requiredString(value, "by", name);
   const byTimeout = optionalBoolean(value, "byTimeout", name);
   const reversal = optionalString(value, "reversal", name);
+  const requestedRunId = optionalString(value, "requestedRunId", name);
   return {
     decisionId,
     optionId,
     by,
     ...(byTimeout === undefined ? {} : { byTimeout }),
     ...(reversal === undefined ? {} : { reversal }),
+    ...(requestedRunId === undefined ? {} : { requestedRunId }),
     ...extractUnknownFields(value, DECISION_ANSWERED_FIELDS),
   };
 }
