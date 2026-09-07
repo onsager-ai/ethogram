@@ -82,7 +82,7 @@ optional field on the stored envelope.
 |---|---|---|
 | `v` | sink | schema version, `1` |
 | `type` | producer | dot-namespaced `domain.past_tense`, e.g. `agent.tool_use` |
-| `runId` | sink, from the run the draft was submitted to | one harness session |
+| `runId` | sink, from the run the draft was submitted to | one harness session or observing process |
 | `seq` | sink | gapless per run, from 1 |
 | `ts` | sink | ISO-8601 from the sink's clock at append |
 | `payload` | producer | correlated with `type` |
@@ -95,8 +95,8 @@ from another, it preserves `seq` and `ts` and rejects a gap rather than
 renumbering it. This assumes each producer submits drafts to exactly one sink
 per run; concurrent sinks would require `seq` to gain a partition.
 
-A *run* is one harness session. Loops and handoffs are kinds of run, not
-separate concepts.
+A *run* is one harness session, or one process that observes them. Loops,
+handoffs, and relays are kinds of run, not separate concepts.
 
 ## Run lifecycle
 
@@ -105,15 +105,25 @@ separate concepts.
 | `run.started` | `kind`, `actor`, `harness` | `model`, `parentRunId`, `parentToolUseId`, `schedule`, `repository`, `workOrder`, `ceilings` | Opens one run and records the harness identity and any declared parent or bounds. |
 | `run.finished` | `outcome`, `durationMs` | `reason`, `truncated`, `costUsd`, `usage`, `estimated` | Closes one run; failures use `outcome: "failed"` and `reason` so every run has one terminal event shape. |
 
-`kind` is one of `loop`, `handoff`, `subagent`, `session`, or `judgment`.
+`kind` is one of `loop`, `handoff`, `subagent`, `session`, `judgment`, or
+`relay`; a relay is a long-lived process that observes other runs and emits on
+its own run.
 `outcome` is one of `completed`, `failed`, `no-op`, `timed-out`, `interrupted`,
-`permission-denied`, or `canceled`. These sets are closed because adding a value
-changes what every reader must understand.
+`permission-denied`, `canceled`, or `capped`. `capped` means a non-time ceiling
+such as tokens, cost, or turns was reached, with `reason` naming which;
+`timed-out` remains wall-clock or idle timeout, and `canceled` remains
+operator-only. These sets are closed at validation but open and retaining at
+parse: an unfamiliar member is carried and forwarded as its exact raw string,
+and `validate` reports it as unknown so a sink may refuse it.
 
-`ceilings` may carry `costUsd`, `tokens`, and `wallMs`. `usage` may carry
-`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, and
-`unit`; an absent `unit` means tokens, while a present value prevents consumers
-from summing unlike harness units.
+`ceilings` may carry `costUsd`, `tokens`, `wallMs`, `idleMs`, and `turns`. Every
+declared ceiling is enforced; an absent ceiling means unbounded and unenforced,
+not defaulted. `wallMs` and `idleMs` both end a run as `timed-out`, and the idle
+cap is suspended during an in-flight tool call. `ceilings.turns` is the bound;
+`agent.completed.turns` is the actual. `usage` may carry `inputTokens`,
+`outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, and `unit`; an absent
+`unit` means tokens, while a present value prevents consumers from summing
+unlike harness units.
 
 ## Agent observation
 
@@ -137,20 +147,22 @@ similar declarations.
 unknown payload field is never rejected and never dropped: a sink that
 forwards an event it does not fully understand must be byte-preserving, or the
 stream loses data silently at exactly the boundary this protocol exists to
-cross. What stays strict is the envelope (an unknown envelope field is still
-rejected), the closed unions above (`kind` and `outcome`), and the required
-payload fields in the table — a `run.finished` without `durationMs` is
-malformed no matter what else it carries. Unknown event `type`s remain open,
-as they always were.
+cross. What stays strict at parse is the envelope (an unknown envelope field is
+still rejected), representability, and the required payload fields in the
+table — a `run.finished` without `durationMs` is malformed no matter what else
+it carries. Closed-union membership and capture bounds are enforced by
+`validate`, not parsing, so a forwarder can faithfully carry a producer's
+invalid event. Unknown event `type`s remain open, as they always were.
 
 **On narration.** This protocol carries what an agent said and did — assistant
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is
 16,384 Unicode scalar values for `agent.text` and 4,096 for tool input and
-result excerpts. Excerpting counts code points, not UTF-8 bytes or UTF-16 code
-units, and cuts only on a code point boundary; it may still divide a grapheme
-cluster such as a combining sequence or joined emoji. The other limit adopted
-with these bounds is not expressible here: **consumers are expected to keep
+result excerpts, finish reasons, and warning messages. Excerpting counts code
+points, not UTF-8 bytes or UTF-16 code units, and cuts only on a code point
+boundary; it may still divide a grapheme cluster such as a combining sequence
+or joined emoji. The other limit adopted with these bounds is not expressible
+here: **consumers are expected to keep
 narration away from anything that decides** — a classification, a gate, a
 verdict. This repository defines the transport and cannot enforce that; a
 consumer that renders narration and also acts on it has broken a constraint

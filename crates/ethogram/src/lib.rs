@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
@@ -10,7 +10,7 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 /// Maximum number of Unicode scalar values carried by an `agent.text`.
 pub const MAX_TEXT_SCALARS: usize = 16_384;
 
-/// Maximum number of Unicode scalar values carried by a tool excerpt.
+/// Maximum scalars carried by any excerpted field other than `agent.text`.
 pub const MAX_EXCERPT_SCALARS: usize = 4_096;
 
 /// The wire string for a `run.started` event's `type` field.
@@ -32,9 +32,9 @@ pub const AGENT_WARNING: &str = "agent.warning";
 
 /// Every event `type` this SDK has a typed payload for. This is not a closed
 /// vocabulary: `parse_event` still accepts a type it has never heard of (see
-/// `validate_known_payload`'s fallthrough), and a consumer may still match a
-/// literal for vocabulary this SDK has not learned. A constant is a name for
-/// a string, not a gate.
+/// `check_known_payload_representation`'s fallthrough), and a consumer may
+/// still match a literal for vocabulary this SDK has not learned. A constant
+/// is a name for a string, not a gate.
 pub const KNOWN_TYPES: [&str; 8] = [
     RUN_STARTED,
     RUN_FINISHED,
@@ -80,36 +80,128 @@ pub fn excerpt(text: &str, max: usize) -> Excerpt {
 /// time rather than rounding it.
 const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+/// A run kind this SDK knows, or an unfamiliar wire string retained verbatim
+/// in `Unknown`. Consumers must handle `Unknown` explicitly and must never map
+/// it onto a known kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunKind {
-    #[serde(rename = "loop")]
     Loop,
-    #[serde(rename = "handoff")]
     Handoff,
-    #[serde(rename = "subagent")]
     Subagent,
-    #[serde(rename = "session")]
     Session,
-    #[serde(rename = "judgment")]
     Judgment,
+    /// A long-lived process that observes other runs and emits on its own run.
+    Relay,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+impl RunKind {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Loop => "loop",
+            Self::Handoff => "handoff",
+            Self::Subagent => "subagent",
+            Self::Session => "session",
+            Self::Judgment => "judgment",
+            Self::Relay => "relay",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for RunKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "loop" => Self::Loop,
+            "handoff" => Self::Handoff,
+            "subagent" => Self::Subagent,
+            "session" => Self::Session,
+            "judgment" => Self::Judgment,
+            "relay" => Self::Relay,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
+/// A run outcome this SDK knows, or an unfamiliar wire string retained
+/// verbatim in `Unknown`. Consumers acting on an outcome must treat `Unknown`
+/// as "not this", never as one of the known outcomes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOutcome {
-    #[serde(rename = "completed")]
     Completed,
-    #[serde(rename = "failed")]
     Failed,
-    #[serde(rename = "no-op")]
     NoOp,
-    #[serde(rename = "timed-out")]
     TimedOut,
-    #[serde(rename = "interrupted")]
     Interrupted,
-    #[serde(rename = "permission-denied")]
     PermissionDenied,
-    #[serde(rename = "canceled")]
     Canceled,
+    /// A non-time ceiling was reached; `reason` names which ceiling.
+    Capped,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
+}
+
+impl RunOutcome {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::NoOp => "no-op",
+            Self::TimedOut => "timed-out",
+            Self::Interrupted => "interrupted",
+            Self::PermissionDenied => "permission-denied",
+            Self::Canceled => "canceled",
+            Self::Capped => "capped",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for RunOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunOutcome {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "no-op" => Self::NoOp,
+            "timed-out" => Self::TimedOut,
+            "interrupted" => Self::Interrupted,
+            "permission-denied" => Self::PermissionDenied,
+            "canceled" => Self::Canceled,
+            "capped" => Self::Capped,
+            _ => Self::Unknown(value),
+        })
+    }
 }
 
 /// Unknown fields on a payload are never rejected and never dropped (issue
@@ -131,6 +223,8 @@ pub enum RunOutcome {
 /// fields serialises exactly as it did before this field existed.
 pub type PayloadExtension = serde_json::Map<String, Value>;
 
+/// Enforced limits declared by the runtime. An absent ceiling means unbounded
+/// and unenforced, not defaulted; consumers must not substitute a default.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunCeilings {
@@ -146,12 +240,29 @@ pub struct RunCeilings {
         skip_serializing_if = "Option::is_none"
     )]
     pub tokens: Option<u64>,
+    /// Wall-clock bound; reaching it ends the run as `timed-out`.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
     pub wall_ms: Option<u64>,
+    /// Idle-time bound; reaching it ends the run as `timed-out`. It is
+    /// suspended during an in-flight tool call. A harness that cannot enforce
+    /// it omits it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub idle_ms: Option<u64>,
+    /// Maximum number of turns the run may take (the bound, not the actual).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turns: Option<u64>,
     #[serde(flatten)]
     pub extra: PayloadExtension,
 }
@@ -245,10 +356,22 @@ pub struct RunUsage {
     pub extra: PayloadExtension,
 }
 
+/// Closes a run and carries the runtime's own computed totals.
+///
+/// `costUsd` and `usage` here are the runtime's own reckoning for the run as
+/// a whole, computed once at the point the run ends — not a sum a consumer
+/// has assembled from every `agent.completed` the run happened to emit along
+/// the way. Recomputing that total client-side by adding up
+/// `agent.completed.costUsd`/`usage` over-counts whenever one harness
+/// session reports `agent.completed` more than once, because those fields
+/// are cumulative per session rather than per invocation (see
+/// [`AgentCompletedPayload`]'s doc comments for why). This payload is the
+/// number to trust for the run.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunFinishedPayload {
     pub outcome: RunOutcome,
+    /// Bounded explanation of a terminal outcome.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -433,12 +556,26 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub stage: Option<String>,
+    /// Number of turns *this invocation* took (the actual, not the ceiling
+    /// bound in `RunCeilings.turns`). Unlike `cost_usd` and `usage` below,
+    /// this is per invocation rather than cumulative per session, so it is
+    /// safe to sum across every `agent.completed` in a run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
         skip_serializing_if = "Option::is_none"
     )]
     pub turns: Option<u64>,
+    /// Cumulative for the harness session named by the corresponding
+    /// `agent.started.sessionId`, not per invocation: this is the running
+    /// total as of *this* completion, so a session that reports
+    /// `agent.completed` more than once reports an increasing total each
+    /// time rather than a fresh delta. Summing every `agent.completed.costUsd`
+    /// in a run therefore over-counts whenever a session reports more than
+    /// once — take the maximum observed within each `sessionId` instead, and
+    /// sum only across distinct sessions. `run.finished.costUsd` carries the
+    /// runtime's own computed total for the whole run and is the number to
+    /// trust there.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -451,12 +588,23 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub model: Option<String>,
+    /// Same cumulative-per-`sessionId` caveat as `cost_usd` above: this is
+    /// the session's running usage total as of this completion, not a
+    /// per-invocation delta, so naively summing every
+    /// `agent.completed.usage` in a run over-counts a session that reports
+    /// more than once. Take the maximum within each session and sum across
+    /// sessions; `run.finished.usage` carries the runtime's own computed
+    /// total for the run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
+    /// Wall time *this invocation* took. Like `turns` above and unlike
+    /// `cost_usd`/`usage`, this is per invocation rather than cumulative per
+    /// session, so it is safe to sum across every `agent.completed` in a
+    /// run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
@@ -482,6 +630,7 @@ pub struct AgentWarningPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub stage: Option<String>,
+    /// Bounded non-terminal warning text.
     pub message: String,
     #[serde(flatten)]
     pub extra: PayloadExtension,
@@ -541,15 +690,22 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
     }
 }
 
-/// Parses the open event envelope and validates payloads for event types this
-/// SDK knows. Unknown event types deliberately retain the open `Value` payload:
-/// both SDKs validate their recognised `run.*` and `agent.*` vocabulary members
+/// Parses the open event envelope and rejects values either SDK cannot
+/// represent. Unknown event types deliberately retain the open `Value` payload:
+/// both SDKs parse their recognised `run.*` and `agent.*` vocabulary members
 /// here without turning the envelope parser into a closed event-type registry.
+///
+/// `parse_event` answers "can both SDKs carry this?"; `validate` answers
+/// "should a producer have emitted this?" This function keeps required fields
+/// and integer bounds strict, but it retains unfamiliar union members and does
+/// not enforce capture bounds. It deliberately does not call `validate`, so a
+/// forwarder can relay an over-bound event faithfully.
 ///
 /// A payload's *unknown fields* are a separate axis from its *unknown type*
 /// and are tolerated rather than rejected (issue #12): recognised payloads do
 /// not carry `deny_unknown_fields`, so an unfamiliar field does not fail
-/// validation here, and each payload's `#[serde(flatten)]` extension field
+/// representability checking here, and each payload's `#[serde(flatten)]`
+/// extension field
 /// means a caller who deserialises directly into a typed struct (bypassing this
 /// function's `Value` payload) still gets it back on re-serialisation rather
 /// than silently losing it. Only the envelope stays closed to unknown fields,
@@ -557,12 +713,102 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
 pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     let event: Event = serde_json::from_str(input)?;
     validate_payload_numbers(&event.payload, "payload").map_err(de::Error::custom)?;
-    validate_known_payload(&event.event_type, &event.payload)?;
+    check_known_payload_representation(&event.event_type, &event.payload)?;
     Ok(event)
 }
 
-/// Validates `payload` against the typed struct for `event_type`, if this SDK
-/// has one.
+/// Validates whether a producer should emit `payload` for `event_type`.
+/// Required fields, known closed-union membership, safe-integer bounds, and
+/// capture bounds are enforced for known event types; unknown event types stay
+/// open and unvalidated.
+///
+/// `parse_event` answers "can both SDKs carry this?"; `validate` answers
+/// "should a producer have emitted this?" `parse_event` therefore does not
+/// call this function: a representable over-bound event must remain
+/// forwardable.
+pub fn validate<P>(event_type: &str, payload: &P) -> serde_json::Result<()>
+where
+    P: Serialize + ?Sized,
+{
+    if !KNOWN_TYPES.contains(&event_type) {
+        return Ok(());
+    }
+
+    let payload = serde_json::to_value(payload)?;
+    validate_payload_numbers(&payload, "payload").map_err(de::Error::custom)?;
+
+    if event_type == RUN_STARTED {
+        let started = serde_json::from_value::<RunStartedPayload>(payload)?;
+        if let RunKind::Unknown(value) = started.kind {
+            return Err(de::Error::custom(format_args!(
+                "RunStartedPayload.kind has unknown value: {value}"
+            )));
+        }
+    } else if event_type == RUN_FINISHED {
+        let finished = serde_json::from_value::<RunFinishedPayload>(payload)?;
+        if let RunOutcome::Unknown(value) = finished.outcome {
+            return Err(de::Error::custom(format_args!(
+                "RunFinishedPayload.outcome has unknown value: {value}"
+            )));
+        }
+        validate_scalar_bound(
+            finished.reason.as_deref(),
+            "RunFinishedPayload.reason",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    } else if event_type == AGENT_STARTED {
+        serde_json::from_value::<AgentStartedPayload>(payload).map(drop)?;
+    } else if event_type == AGENT_TEXT {
+        let text = serde_json::from_value::<AgentTextPayload>(payload)?;
+        validate_scalar_bound(Some(&text.text), "AgentTextPayload.text", MAX_TEXT_SCALARS)?;
+    } else if event_type == AGENT_TOOL_USE {
+        let tool_use = serde_json::from_value::<AgentToolUsePayload>(payload)?;
+        validate_scalar_bound(
+            tool_use.input_excerpt.as_deref(),
+            "AgentToolUsePayload.inputExcerpt",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    } else if event_type == AGENT_TOOL_RESULT {
+        let tool_result = serde_json::from_value::<AgentToolResultPayload>(payload)?;
+        validate_scalar_bound(
+            tool_result.result_excerpt.as_deref(),
+            "AgentToolResultPayload.resultExcerpt",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    } else if event_type == AGENT_COMPLETED {
+        serde_json::from_value::<AgentCompletedPayload>(payload).map(drop)?;
+    } else if event_type == AGENT_WARNING {
+        let warning = serde_json::from_value::<AgentWarningPayload>(payload)?;
+        validate_scalar_bound(
+            Some(&warning.message),
+            "AgentWarningPayload.message",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_scalar_bound(
+    value: Option<&str>,
+    field: &str,
+    maximum: usize,
+) -> serde_json::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let actual = value.chars().count();
+    if actual > maximum {
+        Err(de::Error::custom(format_args!(
+            "{field} has {actual} Unicode scalar values; maximum is {maximum}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Checks whether `payload` is representable by the typed struct for
+/// `event_type`, if this SDK has one.
 ///
 /// This is deliberately an `if`/`else if` chain comparing `event_type` with
 /// `==` against the exported constants above, not a `match` on string
@@ -578,7 +824,7 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// constant rather than a second copy of its string, renaming the constant
 /// renames what the arm matches and nothing else is possible — there is no
 /// independent literal left to drift out of step.
-fn validate_known_payload(event_type: &str, payload: &Value) -> serde_json::Result<()> {
+fn check_known_payload_representation(event_type: &str, payload: &Value) -> serde_json::Result<()> {
     if event_type == RUN_STARTED {
         serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop)
     } else if event_type == RUN_FINISHED {
@@ -677,7 +923,7 @@ fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), String> {
         Value::Number(number) => {
             if number_exceeds_safe_integer_magnitude(number) {
                 Err(format!(
-                    "{path} is an integral number whose magnitude exceeds the safe integer bound of {MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string"
+                    "{path} is an integral number whose magnitude exceeds the safe integer bound: actual {number}; maximum {MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string"
                 ))
             } else {
                 Ok(())
@@ -940,11 +1186,12 @@ where
 /// deserialises straight into a typed payload struct, for example
 /// `serde_json::from_str::<Event<RunFinishedPayload>>(...)`, never goes
 /// through `parse_event` and so never runs that check. `RunCeilings.tokens`,
-/// `RunCeilings.wall_ms`, `RunUsage`'s four token-count fields, and agent
-/// `pid` and `turns` are the known *optional* integral fields on that typed
-/// path and are bounded here individually via `deserialize_optional_safe_u64`
-/// below. `RunFinishedPayload.duration_ms` and `AgentCompletedPayload.duration_ms`
-/// are both durations in milliseconds, per the ruling that every count of
+/// `RunCeilings.wall_ms`, `RunCeilings.idle_ms`, `RunCeilings.turns`,
+/// `RunUsage`'s four token-count fields, and agent `pid` and `turns` are the
+/// known *optional* integral fields on that typed path and are bounded here
+/// individually via `deserialize_optional_safe_u64` below.
+/// `RunFinishedPayload.duration_ms` and `AgentCompletedPayload.duration_ms` are
+/// both durations in milliseconds, per the ruling that every count of
 /// milliseconds is a `u64`; the former is required rather than optional, so
 /// it applies this function directly instead of going through the optional
 /// wrapper.
@@ -988,10 +1235,80 @@ impl Display for SequenceError {
 
 impl Error for SequenceError {}
 
+/// A run has at most one `run.finished`, and a sink that has recorded it
+/// refuses later appends and forwards for that run (issues #5 and #3). This
+/// is refused by [`InMemorySink::append_draft`] or
+/// [`InMemorySink::append_event`] once that run has recorded a terminal
+/// event — including a second `run.finished`, and including any other event
+/// type appended afterwards.
+///
+/// This is a **distinct** failure from [`SequenceError`]: a caller must be
+/// able to tell "you skipped a seq" from "this run is closed", because the
+/// two call for different responses. Refusing via this error, rather than
+/// folding it into `SequenceError`, keeps that distinction visible in the
+/// type rather than only in a message a caller might not inspect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunClosedError {
+    pub run_id: String,
+}
+
+impl Display for RunClosedError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "run {} already recorded a terminal event; no further events are accepted for it",
+            self.run_id
+        )
+    }
+}
+
+impl Error for RunClosedError {}
+
+/// Why [`InMemorySink::append_event`] refused an already-stamped event: a
+/// gap in `seq` ([`SequenceError`]), or an append to a run that already
+/// recorded its terminal event ([`RunClosedError`]). Kept as an enum over
+/// folding the two into one error so a caller can match on which happened —
+/// "you skipped a seq" and "this run is closed" require different
+/// responses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppendError {
+    Sequence(SequenceError),
+    RunClosed(RunClosedError),
+}
+
+impl Display for AppendError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sequence(error) => Display::fmt(error, formatter),
+            Self::RunClosed(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for AppendError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Sequence(error) => Some(error),
+            Self::RunClosed(error) => Some(error),
+        }
+    }
+}
+
 /// A minimal in-memory reference for sequencing rules, not a storage engine.
+///
+/// Tracks, per run, whether a terminal event (`type` equal to
+/// [`RUN_FINISHED`]) has already been appended. Once it has, every further
+/// append for that run is refused via [`RunClosedError`] — both
+/// [`InMemorySink::append_draft`] and [`InMemorySink::append_event`], and
+/// regardless of the later event's own type, so a `run.finished` followed by
+/// an `agent.text` is refused exactly as a second `run.finished` would be.
+/// This makes the assumption issue #5 rests its "simpler to fold and to
+/// prove terminal" argument on — that a run has at most one terminal event —
+/// something this sink actually enforces rather than merely hopes for.
 pub struct InMemorySink<P = Value> {
     clock: Box<dyn FnMut() -> String>,
     runs: HashMap<String, Vec<Event<P>>>,
+    finished_runs: std::collections::HashSet<String>,
 }
 
 impl<P> InMemorySink<P> {
@@ -999,12 +1316,27 @@ impl<P> InMemorySink<P> {
         Self {
             clock: Box::new(clock),
             runs: HashMap::new(),
+            finished_runs: std::collections::HashSet::new(),
         }
     }
 
-    pub fn append_draft(&mut self, run_id: impl Into<String>, draft: EventDraft<P>) -> &Event<P> {
+    /// Stamps `draft` and appends it for `run_id`, refusing it with
+    /// [`RunClosedError`] if that run already recorded a terminal event. A
+    /// refused draft consumes no `seq`: the check runs before `next_seq` is
+    /// even consulted, so a closed run's sequence counter is left exactly as
+    /// it was.
+    pub fn append_draft(
+        &mut self,
+        run_id: impl Into<String>,
+        draft: EventDraft<P>,
+    ) -> Result<&Event<P>, RunClosedError> {
         let run_id = run_id.into();
+        if self.finished_runs.contains(&run_id) {
+            return Err(RunClosedError { run_id });
+        }
+
         let seq = self.next_seq(&run_id);
+        let is_terminal = draft.event_type == RUN_FINISHED;
         let event = stamp(
             draft,
             StampFields {
@@ -1013,23 +1345,41 @@ impl<P> InMemorySink<P> {
                 ts: (self.clock)(),
             },
         );
+        if is_terminal {
+            self.finished_runs.insert(run_id.clone());
+        }
         let events = self.runs.entry(run_id).or_default();
         events.push(event);
-        events
+        Ok(events
             .last()
-            .expect("the event was inserted immediately before this lookup")
+            .expect("the event was inserted immediately before this lookup"))
     }
 
-    pub fn append_event(&mut self, event: Event<P>) -> Result<&Event<P>, SequenceError> {
+    /// Appends an already-stamped `event`, refusing it via [`AppendError`]
+    /// either for a sequence gap ([`AppendError::Sequence`]) or because the
+    /// run already recorded a terminal event ([`AppendError::RunClosed`]).
+    /// The run-closed check runs before the sequence check and before
+    /// `next_seq` is consulted, so a refused event — for either reason —
+    /// consumes no `seq` and leaves the run's stored events unchanged.
+    pub fn append_event(&mut self, event: Event<P>) -> Result<&Event<P>, AppendError> {
+        if self.finished_runs.contains(&event.run_id) {
+            return Err(AppendError::RunClosed(RunClosedError {
+                run_id: event.run_id,
+            }));
+        }
+
         let expected = self.next_seq(&event.run_id);
         if event.seq != expected {
-            return Err(SequenceError {
+            return Err(AppendError::Sequence(SequenceError {
                 run_id: event.run_id,
                 expected,
                 received: event.seq,
-            });
+            }));
         }
 
+        if event.event_type == RUN_FINISHED {
+            self.finished_runs.insert(event.run_id.clone());
+        }
         let events = self.runs.entry(event.run_id.clone()).or_default();
         events.push(event);
         Ok(events
@@ -1060,6 +1410,17 @@ mod tests {
     const RUN_STARTED_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-child","seq":1,"ts":"2026-09-06T10:45:01.000Z","payload":{"actor":"builder","ceilings":{"costUsd":2.5,"tokens":4000,"wallMs":60000},"harness":"codex","kind":"subagent","model":"gpt-5","parentRunId":"run-parent","parentToolUseId":"tool-7","repository":"onsager-ai/ethogram","schedule":"builder@2026-09-06T10:45Z","workOrder":"order-5"},"capturedAt":"2026-09-06T10:45:00.000Z"}"#;
 
     const RUN_FINISHED_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-child","seq":2,"ts":"2026-09-06T10:45:02.000Z","payload":{"costUsd":1.25,"durationMs":1250,"estimated":true,"outcome":"completed","reason":"placeholder complete","truncated":false,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
+
+    // Cross-SDK byte identity for the new vocabulary and all five ceilings.
+    // These exact literals are pasted into the TypeScript suite and asserted
+    // against events hand-built through each SDK's typed API.
+    const RELAY_CEILINGS_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-batch","seq":1,"ts":"2026-09-07T04:00:00.000Z","payload":{"actor":"observer","ceilings":{"costUsd":2.5,"idleMs":30000,"tokens":4000,"turns":12,"wallMs":60000},"harness":"relay-harness","kind":"relay"}}"#;
+    const CAPPED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}"#;
+
+    // This value is intentionally one neither SDK will ever know. Keeping the
+    // same literal in both suites proves an older relay retaining an unfamiliar
+    // member emits exactly the bytes a future vocabulary-aware SDK would emit.
+    const UNKNOWN_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-cross-version","seq":1,"ts":"2026-09-07T04:00:02.000Z","payload":{"durationMs":1250,"outcome":"not-a-real-outcome"}}"#;
 
     // Cross-SDK byte identity for all six agent payloads. These exact
     // literals are pasted into the TypeScript suite and asserted there
@@ -1094,25 +1455,32 @@ mod tests {
 
     #[test]
     fn accepts_every_permitted_run_kind() {
-        for kind in ["loop", "handoff", "subagent", "session", "judgment"] {
-            let input = lifecycle_event_input(
-                "run.started",
-                json!({ "kind": kind, "actor": "builder", "harness": "codex" }),
-            );
+        for kind in [
+            "loop", "handoff", "subagent", "session", "judgment", "relay",
+        ] {
+            let payload = json!({ "kind": kind, "actor": "builder", "harness": "codex" });
+            let input = lifecycle_event_input("run.started", payload.clone());
             parse_event(&input).unwrap();
+            validate(RUN_STARTED, &payload).unwrap();
         }
     }
 
     #[test]
-    fn rejects_an_unknown_run_kind() {
+    fn parses_an_unknown_run_kind_verbatim_and_validate_reports_it() {
         let input = lifecycle_event_input(
             "run.started",
             json!({ "kind": "pipeline", "actor": "builder", "harness": "codex" }),
         );
 
-        let error = parse_event(&input).unwrap_err();
+        let event = parse_event(&input).unwrap();
+        let parsed: RunStartedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+        assert_eq!(parsed.kind, RunKind::Unknown("pipeline".to_owned()));
+
+        let error = validate(RUN_STARTED, &event.payload).unwrap_err();
         assert!(
-            error.to_string().contains("unknown variant `pipeline`"),
+            error
+                .to_string()
+                .contains("RunStartedPayload.kind has unknown value: pipeline"),
             "error was: {error}"
         );
     }
@@ -1127,25 +1495,31 @@ mod tests {
             "interrupted",
             "permission-denied",
             "canceled",
+            "capped",
         ] {
-            let input = lifecycle_event_input(
-                "run.finished",
-                json!({ "outcome": outcome, "durationMs": 1250 }),
-            );
+            let payload = json!({ "outcome": outcome, "durationMs": 1250 });
+            let input = lifecycle_event_input("run.finished", payload.clone());
             parse_event(&input).unwrap();
+            validate(RUN_FINISHED, &payload).unwrap();
         }
     }
 
     #[test]
-    fn rejects_an_unknown_run_outcome() {
+    fn parses_an_unknown_run_outcome_verbatim_and_validate_reports_it() {
         let input = lifecycle_event_input(
             "run.finished",
             json!({ "outcome": "succeeded", "durationMs": 1250 }),
         );
 
-        let error = parse_event(&input).unwrap_err();
+        let event = parse_event(&input).unwrap();
+        let parsed: RunFinishedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+        assert_eq!(parsed.outcome, RunOutcome::Unknown("succeeded".to_owned()));
+
+        let error = validate(RUN_FINISHED, &event.payload).unwrap_err();
         assert!(
-            error.to_string().contains("unknown variant `succeeded`"),
+            error
+                .to_string()
+                .contains("RunFinishedPayload.outcome has unknown value: succeeded"),
             "error was: {error}"
         );
     }
@@ -1260,6 +1634,100 @@ mod tests {
                 "error for {event_type}.{field} was: {error}"
             );
         }
+    }
+
+    #[test]
+    fn validate_enforces_required_fields_and_integer_bounds_for_known_types() {
+        let missing = validate(RUN_STARTED, &json!({})).unwrap_err();
+        assert!(missing.to_string().contains("kind"), "error was: {missing}");
+
+        let unsafe_integer = validate(
+            AGENT_COMPLETED,
+            &json!({ "nested": { "turns": MAX_SAFE_INTEGER_MAGNITUDE + 1 } }),
+        )
+        .unwrap_err();
+        assert!(
+            unsafe_integer
+                .to_string()
+                .contains(
+                    "payload.nested.turns is an integral number whose magnitude exceeds the safe integer bound: actual 9007199254740992; maximum 9007199254740991"
+                ),
+            "error was: {unsafe_integer}"
+        );
+    }
+
+    #[test]
+    fn validate_leaves_unknown_event_types_open_and_unvalidated() {
+        assert!(validate("future.happened", &json!("not-an-object")).is_ok());
+    }
+
+    #[test]
+    fn validate_reports_every_capture_bound_with_field_actual_and_maximum() {
+        let cases = [
+            (
+                AGENT_TEXT,
+                json!({ "text": "😀".repeat(MAX_TEXT_SCALARS + 1) }),
+                "AgentTextPayload.text",
+                MAX_TEXT_SCALARS,
+            ),
+            (
+                AGENT_TOOL_USE,
+                json!({
+                    "tool": "read",
+                    "inputExcerpt": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "AgentToolUsePayload.inputExcerpt",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                AGENT_TOOL_RESULT,
+                json!({
+                    "tool": "read",
+                    "resultExcerpt": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "AgentToolResultPayload.resultExcerpt",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                RUN_FINISHED,
+                json!({
+                    "outcome": "completed",
+                    "durationMs": 1,
+                    "reason": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "RunFinishedPayload.reason",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                AGENT_WARNING,
+                json!({ "message": "😀".repeat(MAX_EXCERPT_SCALARS + 1) }),
+                "AgentWarningPayload.message",
+                MAX_EXCERPT_SCALARS,
+            ),
+        ];
+
+        for (event_type, payload, field, maximum) in cases {
+            let error = validate(event_type, &payload).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{field} has {} Unicode scalar values; maximum is {maximum}",
+                    maximum + 1
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn parse_event_carries_an_over_bound_event_that_validate_refuses() {
+        let input = lifecycle_event_input("agent.text", json!({ "text": "x".repeat(20_000) }));
+        let event = parse_event(&input).unwrap();
+        let error = validate(&event.event_type, &event.payload).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "AgentTextPayload.text has 20000 Unicode scalar values; maximum is 16384"
+        );
     }
 
     #[test]
@@ -1466,6 +1934,8 @@ mod tests {
                     cost_usd: Some(2.5),
                     tokens: Some(4000),
                     wall_ms: Some(60000),
+                    idle_ms: None,
+                    turns: None,
                     extra: PayloadExtension::new(),
                 }),
                 extra: PayloadExtension::new(),
@@ -1503,6 +1973,83 @@ mod tests {
         assert!(RUN_FINISHED_WIRE.contains(
             r#""usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}"#
         ));
+    }
+
+    #[test]
+    fn relay_capped_and_all_five_ceilings_match_the_typescript_pinned_bytes() {
+        let started = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: RUN_STARTED.to_owned(),
+            run_id: "run-batch".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T04:00:00.000Z".to_owned(),
+            payload: RunStartedPayload {
+                kind: RunKind::Relay,
+                actor: "observer".to_owned(),
+                harness: "relay-harness".to_owned(),
+                model: None,
+                parent_run_id: None,
+                parent_tool_use_id: None,
+                schedule: None,
+                repository: None,
+                work_order: None,
+                ceilings: Some(RunCeilings {
+                    cost_usd: Some(2.5),
+                    tokens: Some(4000),
+                    wall_ms: Some(60000),
+                    idle_ms: Some(30000),
+                    turns: Some(12),
+                    extra: PayloadExtension::new(),
+                }),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let finished = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: RUN_FINISHED.to_owned(),
+            run_id: "run-batch".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T04:00:01.000Z".to_owned(),
+            payload: RunFinishedPayload {
+                outcome: RunOutcome::Capped,
+                reason: Some("turns".to_owned()),
+                truncated: None,
+                cost_usd: None,
+                usage: None,
+                duration_ms: 1000,
+                estimated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        assert_eq!(serialise_event(&started).unwrap(), RELAY_CEILINGS_WIRE);
+        assert_eq!(serialise_event(&finished).unwrap(), CAPPED_OUTCOME_WIRE);
+    }
+
+    #[test]
+    fn unknown_outcome_keeps_cross_version_byte_identity_with_typescript_and_input() {
+        let event = parse_event(UNKNOWN_OUTCOME_WIRE).unwrap();
+        let parsed: RunFinishedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+
+        assert_eq!(
+            parsed.outcome,
+            RunOutcome::Unknown("not-a-real-outcome".to_owned())
+        );
+        assert_eq!(serialise_event(&event).unwrap(), UNKNOWN_OUTCOME_WIRE);
+    }
+
+    #[test]
+    fn retained_and_known_capped_outcomes_emit_identical_bytes() {
+        assert_eq!(
+            serde_json::to_string(&RunOutcome::Unknown("capped".to_owned())).unwrap(),
+            serde_json::to_string(&RunOutcome::Capped).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&RunOutcome::Capped).unwrap(),
+            r#""capped""#
+        );
     }
 
     #[test]
@@ -2129,23 +2676,27 @@ mod tests {
         ]);
         let mut sink = InMemorySink::new(move || timestamps.pop_front().unwrap());
 
-        let first = sink.append_draft(
-            "run-1",
-            EventDraft {
-                event_type: "test.happened".to_owned(),
-                payload: json!(1),
-                captured_at: None,
-            },
-        );
+        let first = sink
+            .append_draft(
+                "run-1",
+                EventDraft {
+                    event_type: "test.happened".to_owned(),
+                    payload: json!(1),
+                    captured_at: None,
+                },
+            )
+            .unwrap();
         let first_stamp = (first.seq, first.ts.clone());
-        let second = sink.append_draft(
-            "run-1",
-            EventDraft {
-                event_type: "test.happened".to_owned(),
-                payload: json!(2),
-                captured_at: None,
-            },
-        );
+        let second = sink
+            .append_draft(
+                "run-1",
+                EventDraft {
+                    event_type: "test.happened".to_owned(),
+                    payload: json!(2),
+                    captured_at: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(first_stamp, (1, "2026-09-06T00:00:01.000Z".to_owned()));
         assert_eq!(second.seq, 2);
@@ -2166,9 +2717,234 @@ mod tests {
                 ..complete_event()
             })
             .unwrap_err();
-        assert_eq!(error.expected, 2);
-        assert_eq!(error.received, 3);
+        let AppendError::Sequence(sequence_error) = error else {
+            panic!("expected AppendError::Sequence, got {error:?}");
+        };
+        assert_eq!(sequence_error.expected, 2);
+        assert_eq!(sequence_error.received, 3);
         assert_eq!(sink.events("run-1").len(), 1);
+    }
+
+    // -- A run has at most one `run.finished` (issues #5 and #3) --------
+
+    fn run_finished_draft(payload: Value) -> EventDraft {
+        EventDraft {
+            event_type: RUN_FINISHED.to_owned(),
+            payload,
+            captured_at: None,
+        }
+    }
+
+    fn agent_text_draft(text: &str) -> EventDraft {
+        EventDraft {
+            event_type: AGENT_TEXT.to_owned(),
+            payload: json!({ "text": text }),
+            captured_at: None,
+        }
+    }
+
+    #[test]
+    fn append_draft_refuses_a_second_run_finished() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let error = sink
+            .append_draft(
+                "run-1",
+                run_finished_draft(json!({ "outcome": "completed", "durationMs": 2 })),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunClosedError {
+                run_id: "run-1".to_owned()
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "run run-1 already recorded a terminal event; no further events are accepted for it"
+        );
+    }
+
+    #[test]
+    fn append_draft_refuses_agent_text_after_run_finished() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let error = sink
+            .append_draft("run-1", agent_text_draft("too late"))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunClosedError {
+                run_id: "run-1".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn append_event_refuses_a_second_run_finished_distinctly_from_a_gap() {
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        let finished = Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        };
+        sink.append_event(finished.clone()).unwrap();
+
+        // The closed run refuses via `RunClosed`...
+        let closed_error = sink
+            .append_event(Event {
+                event_type: AGENT_TEXT.to_owned(),
+                seq: 3,
+                payload: json!({ "text": "too late" }),
+                ..complete_event()
+            })
+            .unwrap_err();
+        let AppendError::RunClosed(run_closed) = closed_error else {
+            panic!("expected AppendError::RunClosed, got {closed_error:?}");
+        };
+        assert_eq!(run_closed.run_id, "run-1");
+        assert_eq!(
+            run_closed.to_string(),
+            "run run-1 already recorded a terminal event; no further events are accepted for it"
+        );
+
+        // ...while a *still-open* run with the same kind of skipped seq
+        // refuses via `Sequence` instead: the two failure modes stay
+        // distinguishable rather than one swallowing the other.
+        let mut other_sink = InMemorySink::new(|| "unused".to_owned());
+        other_sink.append_event(complete_event()).unwrap();
+        let gap_error = other_sink
+            .append_event(Event {
+                seq: 3,
+                ..complete_event()
+            })
+            .unwrap_err();
+        let AppendError::Sequence(sequence_error) = gap_error else {
+            panic!("expected AppendError::Sequence, got {gap_error:?}");
+        };
+        assert_ne!(
+            sequence_error.to_string(),
+            run_closed.to_string(),
+            "a sequence gap and a closed run must report different messages"
+        );
+    }
+
+    #[test]
+    fn append_event_refuses_a_gap_on_a_closed_run_as_run_closed_not_sequence() {
+        // Once a run is closed, *any* further append is refused as
+        // `RunClosed` — even one that also happens to skip a seq. `RunClosed`
+        // is checked first, so this is not misreported as a gap.
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        sink.append_event(Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        })
+        .unwrap();
+
+        let error = sink
+            .append_event(Event {
+                event_type: AGENT_TEXT.to_owned(),
+                seq: 99,
+                payload: json!({ "text": "too late" }),
+                ..complete_event()
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppendError::RunClosed(_)),
+            "error was: {error:?}"
+        );
+    }
+
+    #[test]
+    fn refused_append_leaves_stored_events_and_seq_unchanged() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        let before = sink.events("run-1").to_vec();
+        assert_eq!(before.len(), 1);
+
+        sink.append_draft("run-1", agent_text_draft("too late"))
+            .unwrap_err();
+        sink.append_event(Event {
+            event_type: AGENT_TEXT.to_owned(),
+            seq: 2,
+            payload: json!({ "text": "also too late" }),
+            ..complete_event()
+        })
+        .unwrap_err();
+
+        let after = sink.events("run-1").to_vec();
+        assert_eq!(
+            after, before,
+            "a refused append must not change stored events"
+        );
+        assert_eq!(after.len(), 1, "a refused append must not consume a seq");
+
+        // The seq counter, not just the event count, is unchanged: the next
+        // legitimate draft for a still-open run would take seq 2, so proving
+        // that on a fresh run confirms `next_seq` was never advanced here by
+        // the refused appends above (this run stays closed, so it cannot
+        // accept a "next legitimate" append itself).
+        let mut other_sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        other_sink
+            .append_draft("run-2", agent_text_draft("first"))
+            .unwrap();
+        let second = other_sink
+            .append_draft("run-2", agent_text_draft("second"))
+            .unwrap();
+        assert_eq!(second.seq, 2);
+    }
+
+    #[test]
+    fn closing_one_run_does_not_close_another() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft(
+            "run-1",
+            run_finished_draft(json!({ "outcome": "completed", "durationMs": 1 })),
+        )
+        .unwrap();
+
+        assert!(
+            sink.append_draft("run-1", agent_text_draft("too late"))
+                .is_err()
+        );
+        assert!(sink.append_draft("run-2", agent_text_draft("fine")).is_ok());
+        assert_eq!(sink.events("run-2").len(), 1);
+    }
+
+    #[test]
+    fn a_run_without_run_finished_keeps_accepting_appends() {
+        let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
+        sink.append_draft("run-1", agent_text_draft("one")).unwrap();
+        sink.append_draft("run-1", agent_text_draft("two")).unwrap();
+        let third = sink
+            .append_draft("run-1", agent_text_draft("three"))
+            .unwrap();
+
+        assert_eq!(third.seq, 3);
+        assert_eq!(sink.events("run-1").len(), 3);
     }
 
     /// Builds an `Event<RunStartedPayload>` around a hand-written payload
@@ -2289,6 +3065,19 @@ mod tests {
         assert!(serde_json::from_str::<RunCeilings>(r#"{"wallMs":-5}"#).is_err());
     }
 
+    #[test]
+    fn idle_and_turn_ceilings_apply_the_safe_integer_rule() {
+        for field in ["idleMs", "turns"] {
+            for invalid in ["-1", "1.5", "9007199254740992"] {
+                let ceilings = format!(r#"{{"{field}":{invalid}}}"#);
+                assert!(serde_json::from_str::<RunCeilings>(&ceilings).is_err());
+            }
+
+            let safe = format!(r#"{{"{field}":{MAX_SAFE_INTEGER_MAGNITUDE}}}"#);
+            assert!(serde_json::from_str::<RunCeilings>(&safe).is_ok());
+        }
+    }
+
     // -- run.finished durationMs is a required u64 (follow-up to issue #6) --
 
     #[test]
@@ -2329,7 +3118,7 @@ mod tests {
     /// `parse_event` runs `validate_payload_numbers` over the whole payload,
     /// but a caller who deserialises straight into `Event<RunFinishedPayload>`
     /// (bypassing `parse_event` entirely) relies instead on the
-    /// `deserialize_optional_safe_u64` each of these six fields now carries.
+    /// `deserialize_optional_safe_u64` each of these bounded fields carries.
     #[test]
     fn typed_run_finished_payload_deserialization_rejects_a_usage_count_beyond_the_safe_bound() {
         let input = format!(
@@ -2355,8 +3144,8 @@ mod tests {
     }
 
     /// Same bound, exercised on `RunStartedPayload.ceilings` rather than
-    /// `RunFinishedPayload.usage`, so all six fields are covered on the typed
-    /// path rather than just the one the brief names explicitly.
+    /// `RunFinishedPayload.usage`, so both nested structs are covered on the
+    /// typed path rather than just the one the brief names explicitly.
     #[test]
     fn typed_run_started_payload_deserialization_rejects_a_ceilings_count_beyond_the_safe_bound() {
         let input = format!(
@@ -2388,8 +3177,9 @@ mod tests {
     /// Deliberately not `assert_eq!(RUN_STARTED, "run.started")`: that only
     /// proves someone typed the same string twice, and would pass just as
     /// happily if both copies were wrong. Going through a real round-trip
-    /// fails the moment the constant and what `validate_known_payload` (and
-    /// so `parse_event`) actually accepts for that type part company.
+    /// fails the moment the constant and what
+    /// `check_known_payload_representation` (and so `parse_event`) actually
+    /// accepts for that type part company.
     #[test]
     fn known_type_constants_match_their_own_wire_round_trip() {
         fn round_tripped_type(event_type: &str, payload: Value) -> String {
@@ -2460,7 +3250,7 @@ mod tests {
     }
 
     #[test]
-    fn every_known_type_is_recognised_by_the_validation_path_and_an_unrecognised_type_is_not() {
+    fn every_known_type_uses_the_representation_path_and_an_unrecognised_type_does_not() {
         // A JSON string fails every known payload struct's deserialisation
         // (each expects an object), while an unrecognised type's fallthrough
         // arm accepts any payload unconditionally. This distinguishes "this
@@ -2471,11 +3261,11 @@ mod tests {
 
         for &known in &KNOWN_TYPES {
             assert!(
-                validate_known_payload(known, &malformed_payload).is_err(),
-                "{known} should have been validated against its typed payload"
+                check_known_payload_representation(known, &malformed_payload).is_err(),
+                "{known} should have been checked against its typed payload"
             );
         }
 
-        assert!(validate_known_payload("future.happened", &malformed_payload).is_ok());
+        assert!(check_known_payload_representation("future.happened", &malformed_payload).is_ok());
     }
 }
