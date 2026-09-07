@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "sweep",
+  "seq": 3,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "human-decides-5c3e457224b8d7e995e7787412c3db45aeff37141e59429e95b2979f3452e3d9",
+    "dossier": {
+      "blastRadius": "fixture-org/decisions#4 only.",
+      "optionsRuledOut": [
+        "Proceeding without the human's answer."
+      ],
+      "question": "Whether to proceed with the reversible implementation.",
+      "recommendedAction": "Choose one of the listed options."
+    },
+    "kind": "human_decides",
+    "options": [
+      {
+        "id": "yes",
+        "label": "yes"
+      },
+      {
+        "id": "no",
+        "label": "no"
+      }
+    ],
+    "subject": "fixture-org/decisions#4"
+  }
+}

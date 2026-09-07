@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "sweep",
+  "seq": 4,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "tripwire-1291e36e45b74d65d267da75e820c27e622411812016a0760e84429f70c48ed2",
+    "dossier": {
+      "blastRadius": "fixture-org/decisions@refs/heads/ostrom/unexplained-fixture only.",
+      "optionsRuledOut": [
+        "Auto-proceed — unexplained-write requires human judgment."
+      ],
+      "question": "May fixture-org/decisions@refs/heads/ostrom/unexplained-fixture proceed past this unexplained-write?",
+      "recommendedAction": "Review fixture-org/decisions@refs/heads/ostrom/unexplained-fixture, then approve, reject, or defer it with `ostrom queue`."
+    },
+    "kind": "tripwire",
+    "options": [
+      {
+        "id": "approve",
+        "label": "approve"
+      },
+      {
+        "id": "reject",
+        "label": "reject"
+      },
+      {
+        "id": "defer",
+        "label": "defer"
+      }
+    ],
+    "subject": "fixture-org/decisions@refs/heads/ostrom/unexplained-fixture"
+  }
+}

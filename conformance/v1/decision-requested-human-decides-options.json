@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "sweep",
+  "seq": 2,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "human-decides-70d19ed813edc8773048b814ae566b60d5bce54ccd7af2fbbf0af8f92a207679",
+    "dossier": {
+      "blastRadius": "fixture-org/decisions#4 only.",
+      "optionsRuledOut": [
+        "Proceeding without the human's answer."
+      ],
+      "question": "Which release window should be used?",
+      "recommendedAction": "Choose one of the listed options."
+    },
+    "kind": "human_decides",
+    "options": [
+      {
+        "id": "weekday",
+        "label": "Weekday"
+      },
+      {
+        "id": "weekend",
+        "label": "Weekend"
+      }
+    ],
+    "subject": "fixture-org/decisions#4"
+  }
+}

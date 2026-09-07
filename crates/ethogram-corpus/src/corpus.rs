@@ -68,4 +68,36 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         name: "control-requested-steer.json",
         raw_json: include_str!("../../../conformance/v1/control-requested-steer.json"),
     },
+    Fixture {
+        name: "decision-answered-excuse.json",
+        raw_json: include_str!("../../../conformance/v1/decision-answered-excuse.json"),
+    },
+    Fixture {
+        name: "decision-requested-budget.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-budget.json"),
+    },
+    Fixture {
+        name: "decision-requested-gate-inconclusive.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-gate-inconclusive.json"),
+    },
+    Fixture {
+        name: "decision-requested-human-decides-options.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-human-decides-options.json"),
+    },
+    Fixture {
+        name: "decision-requested-human-decides.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-human-decides.json"),
+    },
+    Fixture {
+        name: "decision-requested-tripwire.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-tripwire.json"),
+    },
+    Fixture {
+        name: "decision-requested-unclassified.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-unclassified.json"),
+    },
+    Fixture {
+        name: "decision-requested-unexplained-write.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-unexplained-write.json"),
+    },
 ];
