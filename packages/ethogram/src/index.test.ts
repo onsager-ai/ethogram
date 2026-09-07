@@ -1604,6 +1604,11 @@ describe("validate", () => {
       // field-specific `AgentTextPayload.text` check below it is never
       // reached for an over-bound `text`, since nothing over the universal
       // bound can also be under it.
+      //
+      // That shadowing is a fact about the two constants being equal, not a
+      // loosened assertion. If `MAX_TEXT_SCALARS` ever rises above
+      // `agent.text`'s own field bound, the field-specific message returns
+      // and this expectation must change back to `AgentTextPayload.text`.
       [
         AGENT_TEXT,
         { text: "😀".repeat(MAX_TEXT_SCALARS + 1) },
@@ -1695,7 +1700,10 @@ describe("validate", () => {
     assert.doesNotThrow(() => parseEvent(event));
     // Reported by the universal text-scalar bound (issue #28), which runs
     // before the eventType switch and shares `agent.text`'s own bound value,
-    // so it is what actually reports this case.
+    // so it is what actually reports this case. If `MAX_TEXT_SCALARS` ever
+    // rises above `agent.text`'s field bound, the field-specific
+    // `AgentTextPayload.text` message returns and this expectation must
+    // change back.
     assert.throws(
       () => validate(event.type, event.payload),
       new TypeError(
