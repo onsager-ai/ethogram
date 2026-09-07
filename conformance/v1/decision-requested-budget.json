@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "builder-20300102T030405000Z-fixture-0",
+  "seq": 2,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "budget-20300102T030405000Z-fixture-1",
+    "dossier": {
+      "blastRadius": "All runs charged to the operator account at fixture-org/decisions.",
+      "optionsRuledOut": [
+        "Proceeding under the current spend ceiling"
+      ],
+      "question": "The operator account at fixture-org/decisions has reached its daily ceiling of 50 USD for 2030-01-02 (50 USD spent). Raise the ceiling or wait?",
+      "recommendedAction": "Wait for budget to become available, or have the operator author a policy version with a higher ceiling."
+    },
+    "kind": "budget",
+    "options": [
+      {
+        "id": "raise",
+        "label": "Author a policy version with a higher ceiling, superseding fixture-org/decisions/current"
+      },
+      {
+        "id": "wait",
+        "label": "Wait for budget to become available"
+      }
+    ],
+    "subject": "account:fixture-org/decisions"
+  }
+}

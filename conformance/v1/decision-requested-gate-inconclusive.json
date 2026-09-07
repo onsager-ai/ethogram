@@ -1,0 +1,39 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "gate",
+  "seq": 2,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "gate_inconclusive-d660b87e278b7967dbb8627bde6724fcaf13adad6d03dba9ef9b4c13d5165ad0",
+    "dossier": {
+      "blastRadius": "fixture-org/decisions#7, head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa only; no standing permission or change to gate conditions.",
+      "optionsRuledOut": [
+        "Treat mergeable as observed despite its inconclusive evidence: {\"mergeable\":\"UNKNOWN\"}",
+        "Treat required_checks as observed despite its inconclusive evidence: {\"selectors\":[{\"selector\":\"fixture-check\",\"result\":\"inconclusive\",\"matches\":[{\"name\":\"fixture-check\",\"state\":\"UNRECOGNIZED\"}]}]}"
+      ],
+      "question": "May fixture-org/decisions#7 proceed with these inconclusive gate conditions: mergeable, required_checks?",
+      "recommendedAction": "Wait for observable evidence for mergeable, required_checks and rerun the gate, or explicitly choose a condition to excuse or fail."
+    },
+    "kind": "gate_inconclusive",
+    "options": [
+      {
+        "id": "excuse:mergeable",
+        "label": "Excuse mergeable for this PR head"
+      },
+      {
+        "id": "excuse:required_checks",
+        "label": "Excuse required_checks for this PR head"
+      },
+      {
+        "id": "wait",
+        "label": "Wait for observable evidence and rerun the gate"
+      },
+      {
+        "id": "fail",
+        "label": "Fail this gate judgment"
+      }
+    ],
+    "subject": "fixture-org/decisions#7"
+  }
+}

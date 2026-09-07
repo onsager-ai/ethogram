@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "sweep",
+  "seq": 2,
+  "ts": "2030-01-02T03:04:05.000Z",
+  "payload": {
+    "decisionId": "tripwire-3e3cc15a1b8f13e2762d553bd742474a8472ed06d9395689fedfb607066a910d",
+    "dossier": {
+      "blastRadius": "fixture-org/decisions#1 only.",
+      "optionsRuledOut": [
+        "Auto-proceed — a tripwire requires human judgment."
+      ],
+      "question": "May fixture-org/decisions#1 cross the matched mandate tripwire?",
+      "recommendedAction": "Review fixture-org/decisions#1, then approve, reject, or defer it with `ostrom queue`."
+    },
+    "kind": "tripwire",
+    "options": [
+      {
+        "id": "approve",
+        "label": "approve"
+      },
+      {
+        "id": "reject",
+        "label": "reject"
+      },
+      {
+        "id": "defer",
+        "label": "defer"
+      }
+    ],
+    "subject": "fixture-org/decisions#1"
+  }
+}
