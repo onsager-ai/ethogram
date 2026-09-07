@@ -144,14 +144,21 @@ export interface RunUsage {
  * Closes a run and carries the runtime's own computed totals.
  *
  * `costUsd` and `usage` here are the runtime's own reckoning for the run as
- * a whole, computed once at the point the run ends — not a sum a consumer
- * has assembled from every `agent.completed` the run happened to emit along
- * the way. Recomputing that total client-side by adding up
- * `agent.completed.costUsd`/`usage` over-counts whenever one harness session
- * reports `agent.completed` more than once, because those fields are
- * cumulative per session rather than per invocation (see
- * `AgentCompletedPayload`'s doc comments for why). This payload is the
- * number to trust for the run.
+ * a whole, computed once at the point the run ends. The two fields are not
+ * interchangeable in how a consumer would reconstruct them from
+ * `agent.completed`, and that asymmetry is worth stating plainly rather than
+ * leaving it to be discovered: `usage` needs no special handling, because
+ * the harness reports token counts per invocation, so summing
+ * `agent.completed.usage` across every completion in the run agrees with
+ * this field, exactly as it does for `turns` and `durationMs`. `costUsd`
+ * does not, because the harness instead reports cost as a running total for
+ * the harness session that produced it — `agent.completed.costUsd` is
+ * cumulative per `sessionId` rather than per invocation, and naively
+ * summing it over every `agent.completed` in a run over-counts whenever a
+ * session reports more than once. Reconstructing it therefore needs the
+ * maximum observed within each `sessionId`, summed only across distinct
+ * sessions (see `AgentCompletedPayload`'s doc comments for why). This
+ * payload is the number to trust for the run either way.
  */
 export interface RunFinishedPayload {
   outcome: RunOutcome;
@@ -201,21 +208,22 @@ export interface AgentCompletedPayload {
   stage?: string;
   /**
    * Number of turns *this invocation* took (the actual, not the ceiling
-   * bound in `RunCeilings.turns`). Unlike `costUsd` and `usage` below, this
-   * is per invocation rather than cumulative per session, so it is safe to
-   * sum across every `agent.completed` in a run.
+   * bound in `RunCeilings.turns`). Like `usage` and `durationMs` below and
+   * unlike `costUsd`, this is per invocation rather than cumulative per
+   * session, so it is safe to sum across every `agent.completed` in a run.
    */
   turns?: number;
   /**
    * Echoes the harness session identifier `agent.started` already carries,
-   * so this completion can state which session's totals it is reporting.
-   * `costUsd` and `usage` below are cumulative per session rather than per
-   * invocation, and that rule was unusable from a completion alone before
-   * this field existed: `sessionId` appeared only on `agent.started`, so a
-   * consumer had to correlate backwards to whichever `agent.started` opened
-   * the session before it could safely take a maximum within a session or
-   * sum across sessions. Carrying it here too makes the rule applicable
-   * from the very event that states the totals it governs.
+   * so this completion can state which session's running cost total it is
+   * reporting. `costUsd` below is cumulative per session rather than per
+   * invocation — unlike `usage` beside it, see its doc comment for why —
+   * and that rule was unusable from a completion alone before this field
+   * existed: `sessionId` appeared only on `agent.started`, so a consumer
+   * had to correlate backwards to whichever `agent.started` opened the
+   * session before it could safely take a maximum within a session or sum
+   * across sessions. Carrying it here too makes the rule applicable from
+   * the very event that states the cost total it governs.
    */
   sessionId?: string;
   /**
@@ -227,23 +235,32 @@ export interface AgentCompletedPayload {
    * Summing every `agent.completed.costUsd` in a run therefore over-counts
    * whenever a session reports more than once — take the maximum observed
    * within each `sessionId` instead, and sum only across distinct sessions.
-   * `run.finished.costUsd` carries the runtime's own computed total for the
-   * whole run and is the number to trust there.
+   *
+   * This is genuinely asymmetric with `usage` immediately below, which sums
+   * cleanly across invocations with no such caveat: the harness reports
+   * cost as a running total for the whole session but reports token counts
+   * per invocation, and each field here only ever reflects what the
+   * harness itself reports. `run.finished.costUsd` carries the runtime's
+   * own computed total for the whole run and is the number to trust there.
    */
   costUsd?: number;
   model?: string;
   /**
-   * Same cumulative-per-`sessionId` caveat as `costUsd` above: this is the
-   * session's running usage total as of this completion, not a
-   * per-invocation delta, so naively summing every `agent.completed.usage`
-   * in a run over-counts a session that reports more than once. Take the
-   * maximum within each session and sum across sessions; `run.finished.usage`
-   * carries the runtime's own computed total for the run.
+   * Unlike `costUsd` just above, this carries no cumulative-per-session
+   * caveat: the harness reports token counts per invocation rather than as
+   * a running session total, so this is a fresh delta each time, and
+   * summing every `agent.completed.usage` in a run agrees with
+   * `run.finished.usage`, which still carries the runtime's own computed
+   * total for the run and remains the number to trust there. Do not assume
+   * this field behaves like `costUsd` merely because they sit next to each
+   * other and share a `sessionId` — the harness reports the two totals on
+   * different bases, and this field's rule follows from that, not from any
+   * pattern shared with its neighbour.
    */
   usage?: RunUsage;
   /**
-   * Wall time *this invocation* took. Like `turns` above and unlike
-   * `costUsd`/`usage`, this is per invocation rather than cumulative per
+   * Wall time *this invocation* took. Like `turns` and `usage` above and
+   * unlike `costUsd`, this is per invocation rather than cumulative per
    * session, so it is safe to sum across every `agent.completed` in a run.
    */
   durationMs?: number;

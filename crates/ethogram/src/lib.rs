@@ -484,14 +484,21 @@ pub struct RunUsage {
 /// Closes a run and carries the runtime's own computed totals.
 ///
 /// `costUsd` and `usage` here are the runtime's own reckoning for the run as
-/// a whole, computed once at the point the run ends — not a sum a consumer
-/// has assembled from every `agent.completed` the run happened to emit along
-/// the way. Recomputing that total client-side by adding up
-/// `agent.completed.costUsd`/`usage` over-counts whenever one harness
-/// session reports `agent.completed` more than once, because those fields
-/// are cumulative per session rather than per invocation (see
-/// [`AgentCompletedPayload`]'s doc comments for why). This payload is the
-/// number to trust for the run.
+/// a whole, computed once at the point the run ends. The two fields are not
+/// interchangeable in how a consumer would reconstruct them from
+/// `agent.completed`, and that asymmetry is worth stating plainly rather
+/// than leaving it to be discovered: `usage` needs no special handling,
+/// because the harness reports token counts per invocation, so summing
+/// `agent.completed.usage` across every completion in the run agrees with
+/// this field, exactly as it does for `turns` and `durationMs`. `costUsd`
+/// does not, because the harness instead reports cost as a running total
+/// for the harness session that produced it — `agent.completed.costUsd` is
+/// cumulative per `sessionId` rather than per invocation, and naively
+/// summing it over every `agent.completed` in a run over-counts whenever a
+/// session reports more than once. Reconstructing it therefore needs the
+/// maximum observed within each `sessionId`, summed only across distinct
+/// sessions (see [`AgentCompletedPayload`]'s doc comments for why). This
+/// payload is the number to trust for the run either way.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunFinishedPayload {
@@ -682,9 +689,10 @@ pub struct AgentCompletedPayload {
     )]
     pub stage: Option<String>,
     /// Number of turns *this invocation* took (the actual, not the ceiling
-    /// bound in `RunCeilings.turns`). Unlike `cost_usd` and `usage` below,
-    /// this is per invocation rather than cumulative per session, so it is
-    /// safe to sum across every `agent.completed` in a run.
+    /// bound in `RunCeilings.turns`). Like `usage` and `duration_ms` below
+    /// and unlike `cost_usd`, this is per invocation rather than cumulative
+    /// per session, so it is safe to sum across every `agent.completed` in
+    /// a run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
@@ -692,15 +700,16 @@ pub struct AgentCompletedPayload {
     )]
     pub turns: Option<u64>,
     /// Echoes the harness session identifier `agent.started` already
-    /// carries, so this completion can state which session's totals it is
-    /// reporting. `cost_usd` and `usage` below are cumulative per session
-    /// rather than per invocation, and that rule was unusable from a
-    /// completion alone before this field existed: `sessionId` appeared only
-    /// on `agent.started`, so a consumer had to correlate backwards to
+    /// carries, so this completion can state which session's running cost
+    /// total it is reporting. `cost_usd` below is cumulative per session
+    /// rather than per invocation — unlike `usage` beside it, see its doc
+    /// comment for why — and that rule was unusable from a completion alone
+    /// before this field existed: `sessionId` appeared only on
+    /// `agent.started`, so a consumer had to correlate backwards to
     /// whichever `agent.started` opened the session before it could safely
     /// take a maximum within a session or sum across sessions. Carrying it
     /// here too makes the rule applicable from the very event that states
-    /// the totals it governs.
+    /// the cost total it governs.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -715,8 +724,15 @@ pub struct AgentCompletedPayload {
     /// delta. Summing every `agent.completed.costUsd` in a run therefore
     /// over-counts whenever a session reports more than once — take the
     /// maximum observed within each `sessionId` instead, and sum only across
-    /// distinct sessions. `run.finished.costUsd` carries the runtime's own
-    /// computed total for the whole run and is the number to trust there.
+    /// distinct sessions.
+    ///
+    /// This is genuinely asymmetric with `usage` immediately below, which
+    /// sums cleanly across invocations with no such caveat: the harness
+    /// reports cost as a running total for the whole session but reports
+    /// token counts per invocation, and each field here only ever reflects
+    /// what the harness itself reports. `run.finished.costUsd` carries the
+    /// runtime's own computed total for the whole run and is the number to
+    /// trust there.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -729,21 +745,24 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub model: Option<String>,
-    /// Same cumulative-per-`sessionId` caveat as `cost_usd` above: this is
-    /// the session's running usage total as of this completion, not a
-    /// per-invocation delta, so naively summing every
-    /// `agent.completed.usage` in a run over-counts a session that reports
-    /// more than once. Take the maximum within each session and sum across
-    /// sessions; `run.finished.usage` carries the runtime's own computed
-    /// total for the run.
+    /// Unlike `cost_usd` just above, this carries no cumulative-per-session
+    /// caveat: the harness reports token counts per invocation rather than
+    /// as a running session total, so this is a fresh delta each time, and
+    /// summing every `agent.completed.usage` in a run agrees with
+    /// `run.finished.usage`, which still carries the runtime's own computed
+    /// total for the run and remains the number to trust there. Do not
+    /// assume this field behaves like `cost_usd` merely because they sit
+    /// next to each other and share a `sessionId` — the harness reports the
+    /// two totals on different bases, and this field's rule follows from
+    /// that, not from any pattern shared with its neighbour.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
-    /// Wall time *this invocation* took. Like `turns` above and unlike
-    /// `cost_usd`/`usage`, this is per invocation rather than cumulative per
+    /// Wall time *this invocation* took. Like `turns` and `usage` above and
+    /// unlike `cost_usd`, this is per invocation rather than cumulative per
     /// session, so it is safe to sum across every `agent.completed` in a
     /// run.
     #[serde(
@@ -3388,6 +3407,39 @@ mod tests {
         assert_eq!(
             serialise_event(&event).unwrap(),
             r#"{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"apple":3,"mango":2,"zebra":1}}"#
+        );
+    }
+
+    #[test]
+    fn serde_json_float_roundtrip_feature_is_required_for_correctly_rounded_costs() {
+        // Guards the workspace `Cargo.toml` pin of serde_json's
+        // `float_roundtrip` feature the same way
+        // `payload_keys_sort_by_utf8_bytes_even_for_a_plain_object_literal`
+        // above guards against `preserve_order`: a dependency bump that
+        // dropped it would otherwise surface only as a cross-language byte
+        // diff in the conformance harness, which someone then has to trace
+        // back to a parser rather than a value. This asserts on the parser
+        // directly instead.
+        //
+        // 0.09765190000000001 is the `costUsd` captured in
+        // `conformance/v1/agent-completed.json` (and repeated verbatim in
+        // `conformance/v1/agent-completed-repeated-terminal.json`). Without
+        // `float_roundtrip`, serde_json's default float parser is correctly
+        // rounded for most inputs but not this one: it reads this literal as
+        // the f64 one ULP below the value JavaScript's `JSON.parse` produces
+        // for the same text.
+        //
+        // The comparison is on the bit pattern, not the decimal value,
+        // because comparing values is exactly what lets a one-ULP error slip
+        // through unnoticed.
+        let value: Value = serde_json::from_str(r#"{"costUsd":0.09765190000000001}"#).unwrap();
+        let cost_usd = value["costUsd"].as_f64().unwrap();
+        assert_eq!(
+            cost_usd.to_bits(),
+            0x3fb8ffb704e46b50,
+            "parsed bit pattern was {:#x}; float_roundtrip is missing or a dependency \
+             regressed serde_json's float parsing",
+            cost_usd.to_bits()
         );
     }
 
