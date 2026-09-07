@@ -144,14 +144,21 @@ export interface RunUsage {
  * Closes a run and carries the runtime's own computed totals.
  *
  * `costUsd` and `usage` here are the runtime's own reckoning for the run as
- * a whole, computed once at the point the run ends — not a sum a consumer
- * has assembled from every `agent.completed` the run happened to emit along
- * the way. Recomputing that total client-side by adding up
- * `agent.completed.costUsd`/`usage` over-counts whenever one harness session
- * reports `agent.completed` more than once, because those fields are
- * cumulative per session rather than per invocation (see
- * `AgentCompletedPayload`'s doc comments for why). This payload is the
- * number to trust for the run.
+ * a whole, computed once at the point the run ends. The two fields are not
+ * interchangeable in how a consumer would reconstruct them from
+ * `agent.completed`, and that asymmetry is worth stating plainly rather than
+ * leaving it to be discovered: `usage` needs no special handling, because
+ * the harness reports token counts per invocation, so summing
+ * `agent.completed.usage` across every completion in the run agrees with
+ * this field, exactly as it does for `turns` and `durationMs`. `costUsd`
+ * does not, because the harness instead reports cost as a running total for
+ * the harness session that produced it — `agent.completed.costUsd` is
+ * cumulative per `sessionId` rather than per invocation, and naively
+ * summing it over every `agent.completed` in a run over-counts whenever a
+ * session reports more than once. Reconstructing it therefore needs the
+ * maximum observed within each `sessionId`, summed only across distinct
+ * sessions (see `AgentCompletedPayload`'s doc comments for why). This
+ * payload is the number to trust for the run either way.
  */
 export interface RunFinishedPayload {
   outcome: RunOutcome;
@@ -201,21 +208,22 @@ export interface AgentCompletedPayload {
   stage?: string;
   /**
    * Number of turns *this invocation* took (the actual, not the ceiling
-   * bound in `RunCeilings.turns`). Unlike `costUsd` and `usage` below, this
-   * is per invocation rather than cumulative per session, so it is safe to
-   * sum across every `agent.completed` in a run.
+   * bound in `RunCeilings.turns`). Like `usage` and `durationMs` below and
+   * unlike `costUsd`, this is per invocation rather than cumulative per
+   * session, so it is safe to sum across every `agent.completed` in a run.
    */
   turns?: number;
   /**
    * Echoes the harness session identifier `agent.started` already carries,
-   * so this completion can state which session's totals it is reporting.
-   * `costUsd` and `usage` below are cumulative per session rather than per
-   * invocation, and that rule was unusable from a completion alone before
-   * this field existed: `sessionId` appeared only on `agent.started`, so a
-   * consumer had to correlate backwards to whichever `agent.started` opened
-   * the session before it could safely take a maximum within a session or
-   * sum across sessions. Carrying it here too makes the rule applicable
-   * from the very event that states the totals it governs.
+   * so this completion can state which session's running cost total it is
+   * reporting. `costUsd` below is cumulative per session rather than per
+   * invocation — unlike `usage` beside it, see its doc comment for why —
+   * and that rule was unusable from a completion alone before this field
+   * existed: `sessionId` appeared only on `agent.started`, so a consumer
+   * had to correlate backwards to whichever `agent.started` opened the
+   * session before it could safely take a maximum within a session or sum
+   * across sessions. Carrying it here too makes the rule applicable from
+   * the very event that states the cost total it governs.
    */
   sessionId?: string;
   /**
@@ -227,23 +235,32 @@ export interface AgentCompletedPayload {
    * Summing every `agent.completed.costUsd` in a run therefore over-counts
    * whenever a session reports more than once — take the maximum observed
    * within each `sessionId` instead, and sum only across distinct sessions.
-   * `run.finished.costUsd` carries the runtime's own computed total for the
-   * whole run and is the number to trust there.
+   *
+   * This is genuinely asymmetric with `usage` immediately below, which sums
+   * cleanly across invocations with no such caveat: the harness reports
+   * cost as a running total for the whole session but reports token counts
+   * per invocation, and each field here only ever reflects what the
+   * harness itself reports. `run.finished.costUsd` carries the runtime's
+   * own computed total for the whole run and is the number to trust there.
    */
   costUsd?: number;
   model?: string;
   /**
-   * Same cumulative-per-`sessionId` caveat as `costUsd` above: this is the
-   * session's running usage total as of this completion, not a
-   * per-invocation delta, so naively summing every `agent.completed.usage`
-   * in a run over-counts a session that reports more than once. Take the
-   * maximum within each session and sum across sessions; `run.finished.usage`
-   * carries the runtime's own computed total for the run.
+   * Unlike `costUsd` just above, this carries no cumulative-per-session
+   * caveat: the harness reports token counts per invocation rather than as
+   * a running session total, so this is a fresh delta each time, and
+   * summing every `agent.completed.usage` in a run agrees with
+   * `run.finished.usage`, which still carries the runtime's own computed
+   * total for the run and remains the number to trust there. Do not assume
+   * this field behaves like `costUsd` merely because they sit next to each
+   * other and share a `sessionId` — the harness reports the two totals on
+   * different bases, and this field's rule follows from that, not from any
+   * pattern shared with its neighbour.
    */
   usage?: RunUsage;
   /**
-   * Wall time *this invocation* took. Like `turns` above and unlike
-   * `costUsd`/`usage`, this is per invocation rather than cumulative per
+   * Wall time *this invocation* took. Like `turns` and `usage` above and
+   * unlike `costUsd`, this is per invocation rather than cumulative per
    * session, so it is safe to sum across every `agent.completed` in a run.
    */
   durationMs?: number;
@@ -311,6 +328,47 @@ export interface ControlAppliedPayload {
   landedIn?: string;
 }
 
+export const CAPTURE_REFUSAL_CAUSES = [
+  "over_bound",
+  "gap",
+  "duplicate",
+  "finished",
+  "malformed",
+] as const;
+
+export type KnownCaptureRefusalCause =
+  (typeof CAPTURE_REFUSAL_CAUSES)[number];
+
+/**
+ * A capture-refusal cause this SDK knows, or an unfamiliar wire string
+ * retained verbatim for a newer vocabulary. Consumers must handle the
+ * unfamiliar-string case explicitly and must never map it onto a known cause.
+ */
+export type CaptureRefusalCause =
+  | KnownCaptureRefusalCause
+  | (string & {});
+
+/**
+ * Records an event refused by a relay or capturing runtime on that runtime's
+ * own run. It names the source run without embedding the refused content,
+ * whose size may be the reason for refusal.
+ */
+export interface CaptureRefusedPayload {
+  cause: CaptureRefusalCause;
+  sourceRunId: string;
+  sourceSeq?: number;
+  sourceType?: string;
+  field?: string;
+  count?: number;
+  max?: number;
+  /**
+   * A bounded, excerpted parser message for `malformed`, not content from the
+   * refused event itself. `truncated` records whether it was excerpted.
+   */
+  detail?: string;
+  truncated?: boolean;
+}
+
 /** The wire string for a `run.started` event's `type` field. */
 export const RUN_STARTED = "run.started" as const;
 /** The wire string for a `run.finished` event's `type` field. */
@@ -331,6 +389,8 @@ export const AGENT_WARNING = "agent.warning" as const;
 export const CONTROL_REQUESTED = "control.requested" as const;
 /** The wire string for a `control.applied` event's `type` field. */
 export const CONTROL_APPLIED = "control.applied" as const;
+/** The wire string for a `capture.refused` event's `type` field. */
+export const CAPTURE_REFUSED = "capture.refused" as const;
 
 /**
  * Every event `type` this SDK has a typed payload for. This is not a closed
@@ -350,6 +410,7 @@ export const KNOWN_TYPES = [
   AGENT_WARNING,
   CONTROL_REQUESTED,
   CONTROL_APPLIED,
+  CAPTURE_REFUSED,
 ] as const;
 
 export type KnownType = (typeof KNOWN_TYPES)[number];
@@ -370,6 +431,7 @@ export interface EventPayloadMap {
   [AGENT_WARNING]: AgentWarningPayload;
   [CONTROL_REQUESTED]: ControlRequestedPayload;
   [CONTROL_APPLIED]: ControlAppliedPayload;
+  [CAPTURE_REFUSED]: CaptureRefusedPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -456,6 +518,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
 const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
+const CAPTURE_REFUSAL_CAUSE_VALUES = new Set<string>(CAPTURE_REFUSAL_CAUSES);
 const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
 
 const RUN_STARTED_FIELDS = new Set<string>([
@@ -557,6 +620,18 @@ const CONTROL_APPLIED_FIELDS = new Set<string>([
   "reason",
   "truncated",
   "landedIn",
+]);
+
+const CAPTURE_REFUSED_FIELDS = new Set<string>([
+  "cause",
+  "sourceRunId",
+  "sourceSeq",
+  "sourceType",
+  "field",
+  "count",
+  "max",
+  "detail",
+  "truncated",
 ]);
 
 /**
@@ -1022,6 +1097,42 @@ export function parseControlAppliedPayload(
   };
 }
 
+/**
+ * Parse a representable `capture.refused` payload. Unknown fields and
+ * unfamiliar `cause` strings are tolerated and retained, while required
+ * fields stay strict.
+ */
+export function parseCaptureRefusedPayload(
+  value: unknown,
+): CaptureRefusedPayload {
+  const name = "CaptureRefusedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const cause = requiredString(value, "cause", name);
+  const sourceRunId = requiredString(value, "sourceRunId", name);
+  const sourceSeq = optionalSafeInteger(value, "sourceSeq", name);
+  const sourceType = optionalString(value, "sourceType", name);
+  const field = optionalString(value, "field", name);
+  const count = optionalSafeInteger(value, "count", name);
+  const max = optionalSafeInteger(value, "max", name);
+  const detail = optionalString(value, "detail", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  return {
+    cause: cause as CaptureRefusalCause,
+    sourceRunId,
+    ...(sourceSeq === undefined ? {} : { sourceSeq }),
+    ...(sourceType === undefined ? {} : { sourceType }),
+    ...(field === undefined ? {} : { field }),
+    ...(count === undefined ? {} : { count }),
+    ...(max === undefined ? {} : { max }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(truncated === undefined ? {} : { truncated }),
+    ...extractUnknownFields(value, CAPTURE_REFUSED_FIELDS),
+  };
+}
+
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
     case RUN_STARTED:
@@ -1044,6 +1155,8 @@ function parseKnownPayload(eventType: string, payload: unknown): unknown {
       return parseControlRequestedPayload(payload);
     case CONTROL_APPLIED:
       return parseControlAppliedPayload(payload);
+    case CAPTURE_REFUSED:
+      return parseCaptureRefusedPayload(payload);
     default:
       return payload;
   }
@@ -1193,6 +1306,18 @@ export function validate(eventType: string, payload: unknown): void {
           `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
         );
       }
+      // A `steer` is an instruction queued for the run's next turn; one
+      // carrying nothing to say is a producer error. This is policy, not
+      // representability, so it lives here and not in `parseEvent` (see its
+      // doc comment): a steer with no text is perfectly representable, and a
+      // forwarder must still be able to relay it. An absent `text` and a
+      // present-but-empty one are the same defect, so both are rejected
+      // identically.
+      if (requested.kind === "steer" && !requested.text) {
+        throw new TypeError(
+          'ControlRequestedPayload.text is required and must not be empty when kind is "steer": a steer with nothing to say is a producer error',
+        );
+      }
       validateScalarBound(
         requested.text,
         "ControlRequestedPayload.text",
@@ -1205,6 +1330,20 @@ export function validate(eventType: string, payload: unknown): void {
       validateScalarBound(
         applied.reason,
         "ControlAppliedPayload.reason",
+        MAX_EXCERPT_SCALARS,
+      );
+      return;
+    }
+    case CAPTURE_REFUSED: {
+      const refused = parsed as CaptureRefusedPayload;
+      if (!CAPTURE_REFUSAL_CAUSE_VALUES.has(refused.cause)) {
+        throw new TypeError(
+          `CaptureRefusedPayload.cause has unknown value: ${refused.cause}`,
+        );
+      }
+      validateScalarBound(
+        refused.detail,
+        "CaptureRefusedPayload.detail",
         MAX_EXCERPT_SCALARS,
       );
       return;

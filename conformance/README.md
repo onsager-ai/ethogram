@@ -118,8 +118,10 @@ lose precision on either fits the safe-integer range or is carried as a
 string; a payload that needs otherwise carries that value as a string
 instead of a number that happens to look integral.
 
-`v1/` remains empty until the first real capture because the first immutable
-fixture must record observed producer output rather than an invented example.
+`v1/` was held empty until the first real capture, because the first immutable
+fixture had to record observed producer output rather than an invented example.
+It now holds fixtures derived from real captures and still grows only that way.
+Waiting cost time once; an invented fixture would have been wrong permanently.
 
 ## Library views
 

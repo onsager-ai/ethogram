@@ -33,13 +33,15 @@ pub const AGENT_WARNING: &str = "agent.warning";
 pub const CONTROL_REQUESTED: &str = "control.requested";
 /// The wire string for a `control.applied` event's `type` field.
 pub const CONTROL_APPLIED: &str = "control.applied";
+/// The wire string for a `capture.refused` event's `type` field.
+pub const CAPTURE_REFUSED: &str = "capture.refused";
 
 /// Every event `type` this SDK has a typed payload for. This is not a closed
 /// vocabulary: `parse_event` still accepts a type it has never heard of (see
 /// `check_known_payload_representation`'s fallthrough), and a consumer may
 /// still match a literal for vocabulary this SDK has not learned. A constant
 /// is a name for a string, not a gate.
-pub const KNOWN_TYPES: [&str; 10] = [
+pub const KNOWN_TYPES: [&str; 11] = [
     RUN_STARTED,
     RUN_FINISHED,
     AGENT_STARTED,
@@ -50,6 +52,7 @@ pub const KNOWN_TYPES: [&str; 10] = [
     AGENT_WARNING,
     CONTROL_REQUESTED,
     CONTROL_APPLIED,
+    CAPTURE_REFUSED,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,6 +269,66 @@ impl<'de> Deserialize<'de> for ControlKind {
     }
 }
 
+/// A capture-refusal cause this SDK knows, or an unfamiliar wire string
+/// retained verbatim in `Unknown`. Consumers must handle `Unknown` explicitly
+/// and must never map it onto a known cause.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureRefusalCause {
+    /// The refused event exceeded a capture bound.
+    OverBound,
+    /// The refused event would leave a gap in the source run's sequence.
+    Gap,
+    /// The refused event duplicated one already recorded.
+    Duplicate,
+    /// The source run had already finished.
+    Finished,
+    /// The refused event could not be parsed into a representable envelope.
+    Malformed,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
+}
+
+impl CaptureRefusalCause {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OverBound => "over_bound",
+            Self::Gap => "gap",
+            Self::Duplicate => "duplicate",
+            Self::Finished => "finished",
+            Self::Malformed => "malformed",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for CaptureRefusalCause {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureRefusalCause {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "over_bound" => Self::OverBound,
+            "gap" => Self::Gap,
+            "duplicate" => Self::Duplicate,
+            "finished" => Self::Finished,
+            "malformed" => Self::Malformed,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
 /// Unknown fields on a payload are never rejected and never dropped (issue
 /// #12): a sink that forwards an event it does not fully understand must be
 /// byte-preserving, or the stream loses data silently at exactly the
@@ -421,14 +484,21 @@ pub struct RunUsage {
 /// Closes a run and carries the runtime's own computed totals.
 ///
 /// `costUsd` and `usage` here are the runtime's own reckoning for the run as
-/// a whole, computed once at the point the run ends — not a sum a consumer
-/// has assembled from every `agent.completed` the run happened to emit along
-/// the way. Recomputing that total client-side by adding up
-/// `agent.completed.costUsd`/`usage` over-counts whenever one harness
-/// session reports `agent.completed` more than once, because those fields
-/// are cumulative per session rather than per invocation (see
-/// [`AgentCompletedPayload`]'s doc comments for why). This payload is the
-/// number to trust for the run.
+/// a whole, computed once at the point the run ends. The two fields are not
+/// interchangeable in how a consumer would reconstruct them from
+/// `agent.completed`, and that asymmetry is worth stating plainly rather
+/// than leaving it to be discovered: `usage` needs no special handling,
+/// because the harness reports token counts per invocation, so summing
+/// `agent.completed.usage` across every completion in the run agrees with
+/// this field, exactly as it does for `turns` and `durationMs`. `costUsd`
+/// does not, because the harness instead reports cost as a running total
+/// for the harness session that produced it — `agent.completed.costUsd` is
+/// cumulative per `sessionId` rather than per invocation, and naively
+/// summing it over every `agent.completed` in a run over-counts whenever a
+/// session reports more than once. Reconstructing it therefore needs the
+/// maximum observed within each `sessionId`, summed only across distinct
+/// sessions (see [`AgentCompletedPayload`]'s doc comments for why). This
+/// payload is the number to trust for the run either way.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunFinishedPayload {
@@ -619,9 +689,10 @@ pub struct AgentCompletedPayload {
     )]
     pub stage: Option<String>,
     /// Number of turns *this invocation* took (the actual, not the ceiling
-    /// bound in `RunCeilings.turns`). Unlike `cost_usd` and `usage` below,
-    /// this is per invocation rather than cumulative per session, so it is
-    /// safe to sum across every `agent.completed` in a run.
+    /// bound in `RunCeilings.turns`). Like `usage` and `duration_ms` below
+    /// and unlike `cost_usd`, this is per invocation rather than cumulative
+    /// per session, so it is safe to sum across every `agent.completed` in
+    /// a run.
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_u64",
@@ -629,15 +700,16 @@ pub struct AgentCompletedPayload {
     )]
     pub turns: Option<u64>,
     /// Echoes the harness session identifier `agent.started` already
-    /// carries, so this completion can state which session's totals it is
-    /// reporting. `cost_usd` and `usage` below are cumulative per session
-    /// rather than per invocation, and that rule was unusable from a
-    /// completion alone before this field existed: `sessionId` appeared only
-    /// on `agent.started`, so a consumer had to correlate backwards to
+    /// carries, so this completion can state which session's running cost
+    /// total it is reporting. `cost_usd` below is cumulative per session
+    /// rather than per invocation — unlike `usage` beside it, see its doc
+    /// comment for why — and that rule was unusable from a completion alone
+    /// before this field existed: `sessionId` appeared only on
+    /// `agent.started`, so a consumer had to correlate backwards to
     /// whichever `agent.started` opened the session before it could safely
     /// take a maximum within a session or sum across sessions. Carrying it
     /// here too makes the rule applicable from the very event that states
-    /// the totals it governs.
+    /// the cost total it governs.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -652,8 +724,15 @@ pub struct AgentCompletedPayload {
     /// delta. Summing every `agent.completed.costUsd` in a run therefore
     /// over-counts whenever a session reports more than once — take the
     /// maximum observed within each `sessionId` instead, and sum only across
-    /// distinct sessions. `run.finished.costUsd` carries the runtime's own
-    /// computed total for the whole run and is the number to trust there.
+    /// distinct sessions.
+    ///
+    /// This is genuinely asymmetric with `usage` immediately below, which
+    /// sums cleanly across invocations with no such caveat: the harness
+    /// reports cost as a running total for the whole session but reports
+    /// token counts per invocation, and each field here only ever reflects
+    /// what the harness itself reports. `run.finished.costUsd` carries the
+    /// runtime's own computed total for the whole run and is the number to
+    /// trust there.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -666,21 +745,24 @@ pub struct AgentCompletedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub model: Option<String>,
-    /// Same cumulative-per-`sessionId` caveat as `cost_usd` above: this is
-    /// the session's running usage total as of this completion, not a
-    /// per-invocation delta, so naively summing every
-    /// `agent.completed.usage` in a run over-counts a session that reports
-    /// more than once. Take the maximum within each session and sum across
-    /// sessions; `run.finished.usage` carries the runtime's own computed
-    /// total for the run.
+    /// Unlike `cost_usd` just above, this carries no cumulative-per-session
+    /// caveat: the harness reports token counts per invocation rather than
+    /// as a running session total, so this is a fresh delta each time, and
+    /// summing every `agent.completed.usage` in a run agrees with
+    /// `run.finished.usage`, which still carries the runtime's own computed
+    /// total for the run and remains the number to trust there. Do not
+    /// assume this field behaves like `cost_usd` merely because they sit
+    /// next to each other and share a `sessionId` — the harness reports the
+    /// two totals on different bases, and this field's rule follows from
+    /// that, not from any pattern shared with its neighbour.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub usage: Option<RunUsage>,
-    /// Wall time *this invocation* took. Like `turns` above and unlike
-    /// `cost_usd`/`usage`, this is per invocation rather than cumulative per
+    /// Wall time *this invocation* took. Like `turns` and `usage` above and
+    /// unlike `cost_usd`, this is per invocation rather than cumulative per
     /// session, so it is safe to sum across every `agent.completed` in a
     /// run.
     #[serde(
@@ -772,6 +854,62 @@ pub struct ControlAppliedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub landed_in: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+/// Records an event refused by a relay or capturing runtime on that runtime's
+/// own run. It names the source run without embedding the refused content,
+/// whose size may be the reason for refusal.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRefusedPayload {
+    pub cause: CaptureRefusalCause,
+    pub source_run_id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_seq: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_type: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub field: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub count: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max: Option<u64>,
+    /// A bounded, excerpted parser message for `malformed`, not content from
+    /// the refused event itself. `truncated` records whether it was excerpted.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub detail: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
     #[serde(flatten)]
     pub extra: PayloadExtension,
 }
@@ -931,6 +1069,20 @@ where
                 "ControlRequestedPayload.kind has unknown value: {value}"
             )));
         }
+        // A `steer` is an instruction queued for the run's next turn; one
+        // carrying nothing to say is a producer error. This is policy, not
+        // representability, so it lives here and not in `parse_event` (see
+        // that function's doc comment): a steer with no text is perfectly
+        // representable, and a forwarder must still be able to relay it.
+        // An absent `text` and a present-but-empty one are the same defect,
+        // so both are rejected identically.
+        if requested.kind == ControlKind::Steer
+            && requested.text.as_deref().unwrap_or("").is_empty()
+        {
+            return Err(de::Error::custom(
+                "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error",
+            ));
+        }
         validate_scalar_bound(
             requested.text.as_deref(),
             "ControlRequestedPayload.text",
@@ -941,6 +1093,18 @@ where
         validate_scalar_bound(
             applied.reason.as_deref(),
             "ControlAppliedPayload.reason",
+            MAX_EXCERPT_SCALARS,
+        )?;
+    } else if event_type == CAPTURE_REFUSED {
+        let refused = serde_json::from_value::<CaptureRefusedPayload>(payload)?;
+        if let CaptureRefusalCause::Unknown(value) = refused.cause {
+            return Err(de::Error::custom(format_args!(
+                "CaptureRefusedPayload.cause has unknown value: {value}"
+            )));
+        }
+        validate_scalar_bound(
+            refused.detail.as_deref(),
+            "CaptureRefusedPayload.detail",
             MAX_EXCERPT_SCALARS,
         )?;
     }
@@ -1004,6 +1168,8 @@ fn check_known_payload_representation(event_type: &str, payload: &Value) -> serd
         serde_json::from_value::<ControlRequestedPayload>(payload.clone()).map(drop)
     } else if event_type == CONTROL_APPLIED {
         serde_json::from_value::<ControlAppliedPayload>(payload.clone()).map(drop)
+    } else if event_type == CAPTURE_REFUSED {
+        serde_json::from_value::<CaptureRefusedPayload>(payload.clone()).map(drop)
     } else {
         Ok(())
     }
@@ -1615,6 +1781,17 @@ mod tests {
     // future vocabulary-aware SDK would emit.
     const UNKNOWN_CONTROL_KIND_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}"#;
 
+    // Cross-SDK byte identity for a fully populated `over_bound` refusal and
+    // a minimal `gap` refusal (spec #15). These exact literals are pasted into
+    // the TypeScript suite and asserted against events hand-built through each
+    // SDK's typed API.
+    const CAPTURE_REFUSED_OVER_BOUND_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":1,"ts":"2026-09-07T06:00:00.000Z","payload":{"cause":"over_bound","count":20000,"field":"AgentTextPayload.text","max":16384,"sourceRunId":"run-source","sourceSeq":8,"sourceType":"agent.text"}}"#;
+    const CAPTURE_REFUSED_GAP_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":2,"ts":"2026-09-07T06:00:01.000Z","payload":{"cause":"gap","sourceRunId":"run-source-gap"}}"#;
+
+    // This value is intentionally one neither SDK will ever know. The cause
+    // string and the whole canonical event must survive an older relay exactly.
+    const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}"#;
+
     fn complete_event() -> Event {
         Event {
             v: EVENT_SCHEMA_VERSION,
@@ -1906,6 +2083,16 @@ mod tests {
                     "reason": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
                 }),
                 "ControlAppliedPayload.reason",
+                MAX_EXCERPT_SCALARS,
+            ),
+            (
+                CAPTURE_REFUSED,
+                json!({
+                    "cause": "malformed",
+                    "sourceRunId": "run-source",
+                    "detail": "😀".repeat(MAX_EXCERPT_SCALARS + 1)
+                }),
+                "CaptureRefusedPayload.detail",
                 MAX_EXCERPT_SCALARS,
             ),
         ];
@@ -2506,13 +2693,62 @@ mod tests {
     // -- control.* (spec #8) ---------------------------------------------
 
     #[test]
-    fn accepts_every_permitted_control_kind() {
+    fn parse_event_accepts_every_permitted_control_kind_without_text() {
+        // `parse_event` answers "can both SDKs carry this?", not "should a
+        // producer have emitted this?" A `steer` naming no `text` is
+        // perfectly representable — `validate` below rejects it as a
+        // producer error, but a forwarder must still be able to relay it.
+        // This is the test that would fail if someone later "helpfully"
+        // moved the steer-needs-text rule into the parser.
         for kind in ["interrupt", "steer"] {
             let payload = json!({ "controlId": "control-1", "kind": kind, "by": "operator" });
-            let input = lifecycle_event_input("control.requested", payload.clone());
+            let input = lifecycle_event_input("control.requested", payload);
             parse_event(&input).unwrap();
-            validate(CONTROL_REQUESTED, &payload).unwrap();
         }
+    }
+
+    #[test]
+    fn validate_accepts_interrupt_with_no_text() {
+        // An interrupt has nothing to say by design.
+        let payload = json!({ "controlId": "control-1", "kind": "interrupt", "by": "operator" });
+        validate(CONTROL_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_steer_with_text() {
+        let payload = json!({
+            "controlId": "control-1",
+            "kind": "steer",
+            "by": "operator",
+            "text": "take point on the next turn"
+        });
+        validate(CONTROL_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_steer_with_absent_text() {
+        let payload = json!({ "controlId": "control-1", "kind": "steer", "by": "operator" });
+        let error = validate(CONTROL_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_steer_with_empty_text() {
+        // A zero-length instruction is the same defect as an absent one.
+        let payload = json!({
+            "controlId": "control-1",
+            "kind": "steer",
+            "by": "operator",
+            "text": ""
+        });
+        let error = validate(CONTROL_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error"
+        );
     }
 
     #[test]
@@ -2697,6 +2933,251 @@ mod tests {
             serialise_event(&applied_interrupt).unwrap(),
             CONTROL_APPLIED_INTERRUPT_WIRE
         );
+    }
+
+    // -- capture.refused (spec #15) -------------------------------------
+
+    #[test]
+    fn accepts_every_permitted_capture_refusal_cause() {
+        for cause in ["over_bound", "gap", "duplicate", "finished", "malformed"] {
+            let payload = json!({ "cause": cause, "sourceRunId": "run-source" });
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+            parse_event(&input).unwrap();
+            validate(CAPTURE_REFUSED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_capture_refused_field() {
+        for field in ["cause", "sourceRunId"] {
+            let mut payload = json!({ "cause": "gap", "sourceRunId": "run-source" });
+            payload.as_object_mut().unwrap().remove(field);
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+
+            let parse_error = parse_event(&input).unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for {field} was: {parse_error}"
+            );
+            let validation_error = validate(CAPTURE_REFUSED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for {field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_an_unknown_capture_refusal_cause_verbatim_and_validate_reports_it() {
+        let event = parse_event(UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE).unwrap();
+        let parsed: CaptureRefusedPayload = serde_json::from_value(event.payload.clone()).unwrap();
+
+        assert_eq!(
+            parsed.cause,
+            CaptureRefusalCause::Unknown("never-a-valid-capture-refusal-cause".to_owned())
+        );
+        let error = validate(CAPTURE_REFUSED, &event.payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "CaptureRefusedPayload.cause has unknown value: never-a-valid-capture-refusal-cause"
+        );
+        assert_eq!(parsed.cause.as_str(), "never-a-valid-capture-refusal-cause");
+        assert_eq!(
+            serde_json::to_string(&parsed.cause).unwrap(),
+            r#""never-a-valid-capture-refusal-cause""#
+        );
+        assert_eq!(
+            serialise_event(&event).unwrap(),
+            UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE
+        );
+    }
+
+    #[test]
+    fn capture_refused_counts_are_non_negative_safe_integers() {
+        for field in ["sourceSeq", "count", "max"] {
+            for invalid in [json!(-1), json!(1.5), json!(9_007_199_254_740_992_u64)] {
+                let mut payload = json!({ "cause": "over_bound", "sourceRunId": "run-source" });
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_owned(), invalid);
+                let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+
+                assert!(parse_event(&input).is_err(), "parse accepted {field}");
+                assert!(
+                    validate(CAPTURE_REFUSED, &payload).is_err(),
+                    "validate accepted {field}"
+                );
+            }
+
+            let mut payload = json!({ "cause": "over_bound", "sourceRunId": "run-source" });
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), json!(MAX_SAFE_INTEGER_MAGNITUDE));
+            let input = lifecycle_event_input(CAPTURE_REFUSED, payload.clone());
+            parse_event(&input).unwrap();
+            validate(CAPTURE_REFUSED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn capture_refused_never_carries_content_bearing_fields() {
+        // This is a fully populated typed payload, so adding even an optional
+        // field to `CaptureRefusedPayload` first breaks this struct literal.
+        // Once that field is populated, the exact permitted-key assertion
+        // below still fails unless the protocol's no-content boundary is
+        // deliberately revisited. Listing only currently imagined forbidden
+        // names would not catch a newly invented content field.
+        let payload = CaptureRefusedPayload {
+            cause: CaptureRefusalCause::OverBound,
+            source_run_id: "run-source".to_owned(),
+            source_seq: Some(8),
+            source_type: Some(AGENT_TEXT.to_owned()),
+            field: Some("AgentTextPayload.text".to_owned()),
+            count: Some(20_000),
+            max: Some(16_384),
+            detail: Some("parser message only".to_owned()),
+            truncated: Some(false),
+            extra: PayloadExtension::new(),
+        };
+        let serialised = serde_json::to_value(payload).unwrap();
+        let keys: std::collections::HashSet<&str> = serialised
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([
+                "cause",
+                "sourceRunId",
+                "sourceSeq",
+                "sourceType",
+                "field",
+                "count",
+                "max",
+                "detail",
+                "truncated",
+            ])
+        );
+    }
+
+    #[test]
+    fn absent_optional_capture_refused_fields_are_omitted_instead_of_null() {
+        let payload = CaptureRefusedPayload {
+            cause: CaptureRefusalCause::Gap,
+            source_run_id: "run-source-gap".to_owned(),
+            source_seq: None,
+            source_type: None,
+            field: None,
+            count: None,
+            max: None,
+            detail: None,
+            truncated: None,
+            extra: PayloadExtension::new(),
+        };
+        let serialised = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(
+            serialised,
+            json!({ "cause": "gap", "sourceRunId": "run-source-gap" })
+        );
+        assert!(!serialised.to_string().contains(":null"));
+    }
+
+    #[test]
+    fn capture_refused_retains_and_re_emits_unknown_payload_fields() {
+        let payload: CaptureRefusedPayload = serde_json::from_value(json!({
+            "cause": "gap",
+            "sourceRunId": "run-source-gap",
+            "future": { "value": 1 }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.extra.get("future"), Some(&json!({ "value": 1 })));
+        assert_eq!(
+            serde_json::to_value(payload).unwrap()["future"],
+            json!({ "value": 1 })
+        );
+    }
+
+    #[test]
+    fn parse_event_carries_an_over_bound_capture_detail_that_validate_refuses() {
+        let input = lifecycle_event_input(
+            CAPTURE_REFUSED,
+            json!({
+                "cause": "malformed",
+                "sourceRunId": "run-source",
+                "detail": "x".repeat(MAX_EXCERPT_SCALARS + 1)
+            }),
+        );
+        let event = parse_event(&input).unwrap();
+        let error = validate(CAPTURE_REFUSED, &event.payload).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "CaptureRefusedPayload.detail has 4097 Unicode scalar values; maximum is 4096"
+        );
+    }
+
+    #[test]
+    fn capture_refused_events_match_the_typescript_pinned_bytes() {
+        let over_bound = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CAPTURE_REFUSED.to_owned(),
+            run_id: "run-relay".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T06:00:00.000Z".to_owned(),
+            payload: CaptureRefusedPayload {
+                cause: CaptureRefusalCause::OverBound,
+                source_run_id: "run-source".to_owned(),
+                source_seq: Some(8),
+                source_type: Some(AGENT_TEXT.to_owned()),
+                field: Some("AgentTextPayload.text".to_owned()),
+                count: Some(20_000),
+                max: Some(16_384),
+                detail: None,
+                truncated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let gap = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: CAPTURE_REFUSED.to_owned(),
+            run_id: "run-relay".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T06:00:01.000Z".to_owned(),
+            payload: CaptureRefusedPayload {
+                cause: CaptureRefusalCause::Gap,
+                source_run_id: "run-source-gap".to_owned(),
+                source_seq: None,
+                source_type: None,
+                field: None,
+                count: None,
+                max: None,
+                detail: None,
+                truncated: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        validate(CAPTURE_REFUSED, &over_bound.payload).unwrap();
+        assert!(over_bound.payload.count.unwrap() > over_bound.payload.max.unwrap());
+        assert_eq!(
+            serialise_event(&over_bound).unwrap(),
+            CAPTURE_REFUSED_OVER_BOUND_WIRE
+        );
+        assert_eq!(serialise_event(&gap).unwrap(), CAPTURE_REFUSED_GAP_WIRE);
+
+        for expected in [CAPTURE_REFUSED_OVER_BOUND_WIRE, CAPTURE_REFUSED_GAP_WIRE] {
+            let parsed = parse_event(expected).unwrap();
+            assert_eq!(serialise_event(&parsed).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -2976,6 +3457,107 @@ mod tests {
     }
 
     #[test]
+    fn ulp_neighbours_of_short_decimals_match_measured_javascript_output() {
+        // The class-4 canonicalisation above was diff-tested against real
+        // JavaScript over 200,000 randomly sampled f64 values plus an
+        // exponent sweep, byte-identical, zero differences -- and it still
+        // missed a real defect, because uniform random sampling over the bit
+        // space almost always produces values with full-length mantissas.
+        // The shape that failed was a *short decimal perturbed by about one
+        // ULP* (`0.0976519` nudged by a hair), which is vanishingly rare
+        // under random sampling and extremely common in real money and
+        // telemetry, since it is what summing a handful of prices produces.
+        // The specific bug is fixed and has its own guard test above
+        // (`serde_json_float_roundtrip_feature_is_required_for_correctly_rounded_costs`);
+        // this covers the sampling gap that let it through, independently of
+        // whether that particular bug ever recurs.
+        //
+        // Each base below is a short, money-/telemetry-shaped decimal. For
+        // each, the neighbouring doubles one and two ULPs above and below
+        // are generated here via `f64::from_bits(base.to_bits() ± n)`,
+        // mirroring the TypeScript suite's `DataView`-based equivalent. The
+        // *expected* strings were computed once with a throwaway Node
+        // script (`JSON.stringify` of each bit-shifted double) and are
+        // hard-coded here and in the TypeScript suite, since the two suites
+        // cannot share a live process to compare against a running Node.
+        // Every one of the 40 values agreed between `serde_json`'s digit
+        // choice (re-laid by `EcmaScriptFormatter`) and V8's `JSON.stringify`
+        // when this table was generated -- had any disagreed, that would
+        // have been a live class-4 divergence, not a table update.
+        const BASES: &[f64] = &[0.0976519, 0.1, 0.3, 1.25, 12.34, 0.001, 99.99, 1234.5678];
+
+        // (index into BASES, signed ULP offset from that base, expected
+        // `JSON.stringify` output for the resulting double)
+        const EXPECTED: &[(usize, i8, &str)] = &[
+            (0, -2, "0.09765189999999997"),
+            (0, -1, "0.09765189999999999"),
+            (0, 0, "0.0976519"),
+            (0, 1, "0.09765190000000001"),
+            (0, 2, "0.09765190000000003"),
+            (1, -2, "0.09999999999999998"),
+            (1, -1, "0.09999999999999999"),
+            (1, 0, "0.1"),
+            (1, 1, "0.10000000000000002"),
+            (1, 2, "0.10000000000000003"),
+            (2, -2, "0.2999999999999999"),
+            (2, -1, "0.29999999999999993"),
+            (2, 0, "0.3"),
+            (2, 1, "0.30000000000000004"),
+            (2, 2, "0.3000000000000001"),
+            (3, -2, "1.2499999999999996"),
+            (3, -1, "1.2499999999999998"),
+            (3, 0, "1.25"),
+            (3, 1, "1.2500000000000002"),
+            (3, 2, "1.2500000000000004"),
+            (4, -2, "12.339999999999996"),
+            (4, -1, "12.339999999999998"),
+            (4, 0, "12.34"),
+            (4, 1, "12.340000000000002"),
+            (4, 2, "12.340000000000003"),
+            (5, -2, "0.0009999999999999996"),
+            (5, -1, "0.0009999999999999998"),
+            (5, 0, "0.001"),
+            (5, 1, "0.0010000000000000002"),
+            (5, 2, "0.0010000000000000005"),
+            (6, -2, "99.98999999999997"),
+            (6, -1, "99.98999999999998"),
+            (6, 0, "99.99"),
+            (6, 1, "99.99000000000001"),
+            (6, 2, "99.99000000000002"),
+            (7, -2, "1234.5677999999996"),
+            (7, -1, "1234.5677999999998"),
+            (7, 0, "1234.5678"),
+            (7, 1, "1234.5678000000003"),
+            (7, 2, "1234.5678000000005"),
+        ];
+
+        assert_eq!(
+            EXPECTED.len(),
+            BASES.len() * 5,
+            "table covers every base at ULP offsets -2, -1, 0, 1, 2"
+        );
+
+        for &(base_index, offset, expected) in EXPECTED {
+            let base = BASES[base_index];
+            let bits = base.to_bits().wrapping_add(offset as i64 as u64);
+            let value = f64::from_bits(bits);
+
+            let event = Event {
+                payload: json!({ "value": value }),
+                ..complete_event()
+            };
+
+            assert_eq!(
+                serialise_event(&event).unwrap(),
+                format!(
+                    r#"{{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{{"value":{expected}}}}}"#
+                ),
+                "base {base} (index {base_index}) offset {offset} expected {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn payload_keys_sort_by_utf8_bytes_even_for_a_plain_object_literal() {
         // This guards against a future dependency change flipping on
         // serde_json's `preserve_order` feature: if that ever happens, this
@@ -2989,6 +3571,39 @@ mod tests {
         assert_eq!(
             serialise_event(&event).unwrap(),
             r#"{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"apple":3,"mango":2,"zebra":1}}"#
+        );
+    }
+
+    #[test]
+    fn serde_json_float_roundtrip_feature_is_required_for_correctly_rounded_costs() {
+        // Guards the workspace `Cargo.toml` pin of serde_json's
+        // `float_roundtrip` feature the same way
+        // `payload_keys_sort_by_utf8_bytes_even_for_a_plain_object_literal`
+        // above guards against `preserve_order`: a dependency bump that
+        // dropped it would otherwise surface only as a cross-language byte
+        // diff in the conformance harness, which someone then has to trace
+        // back to a parser rather than a value. This asserts on the parser
+        // directly instead.
+        //
+        // 0.09765190000000001 is the `costUsd` captured in
+        // `conformance/v1/agent-completed.json` (and repeated verbatim in
+        // `conformance/v1/agent-completed-repeated-terminal.json`). Without
+        // `float_roundtrip`, serde_json's default float parser is correctly
+        // rounded for most inputs but not this one: it reads this literal as
+        // the f64 one ULP below the value JavaScript's `JSON.parse` produces
+        // for the same text.
+        //
+        // The comparison is on the bit pattern, not the decimal value,
+        // because comparing values is exactly what lets a one-ULP error slip
+        // through unnoticed.
+        let value: Value = serde_json::from_str(r#"{"costUsd":0.09765190000000001}"#).unwrap();
+        let cost_usd = value["costUsd"].as_f64().unwrap();
+        assert_eq!(
+            cost_usd.to_bits(),
+            0x3fb8ffb704e46b50,
+            "parsed bit pattern was {:#x}; float_roundtrip is missing or a dependency \
+             regressed serde_json's float parsing",
+            cost_usd.to_bits()
         );
     }
 
@@ -3624,7 +4239,7 @@ mod tests {
         assert!(serde_json::from_str::<Event<RunStartedPayload>>(&input).is_ok());
     }
 
-    /// For each of the eight known types, builds a minimally valid event of
+    /// For each of the eleven known types, builds a minimally valid event of
     /// that type, serialises it, and parses the `type` field back out of the
     /// result — then compares that against the exported constant.
     ///
@@ -3690,11 +4305,18 @@ mod tests {
             ),
             CONTROL_APPLIED
         );
+        assert_eq!(
+            round_tripped_type(
+                CAPTURE_REFUSED,
+                json!({ "cause": "gap", "sourceRunId": "run-source" }),
+            ),
+            CAPTURE_REFUSED
+        );
     }
 
     #[test]
-    fn known_types_holds_exactly_the_ten_recognised_types_with_no_duplicates() {
-        assert_eq!(KNOWN_TYPES.len(), 10);
+    fn known_types_holds_exactly_the_eleven_recognised_types_with_no_duplicates() {
+        assert_eq!(KNOWN_TYPES.len(), 11);
 
         let unique: std::collections::HashSet<&str> = KNOWN_TYPES.iter().copied().collect();
         assert_eq!(
@@ -3715,6 +4337,7 @@ mod tests {
                 AGENT_WARNING,
                 CONTROL_REQUESTED,
                 CONTROL_APPLIED,
+                CAPTURE_REFUSED,
             ])
         );
     }

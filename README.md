@@ -13,11 +13,12 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Run lifecycle, agent observation, and control implemented.** The version 1
-envelope, its `run.*` lifecycle, the six `agent.*` observations, and the two
-`control.*` events exist in both SDKs. The conformance corpus remains empty
-until the first real capture lands, because an invented fixture would become
-an immutable guess.
+**Run lifecycle, agent observation, control, and capture refusal implemented.**
+The version 1 envelope, its `run.*` lifecycle, the six `agent.*` observations,
+the two `control.*` events, and `capture.refused` exist in both SDKs. The
+conformance corpus (`conformance/v1/`) holds nine fixtures derived from real
+captures. It grows only from real captures, never from an invented example,
+because an invented fixture would become an immutable guess.
 
 ## Why it is a separate repository
 
@@ -190,6 +191,20 @@ never before. Both `control.*` events are emitted by **the run's runtime,
 never by the console** — a console that shows a run as interrupted before
 `control.applied` arrives has misread the protocol. `landedIn` records the
 `toolUseId` a hard kill landed inside, when there was one.
+
+## Capture
+
+| type | required payload | optional payload | meaning |
+|---|---|---|---|
+| `capture.refused` | `cause`, `sourceRunId` | `sourceSeq`, `sourceType`, `field`, `count`, `max`, `detail`, `truncated` | Records an event a relay or capturing runtime refused, on that runtime's own run rather than the source run whose sequence it cannot touch. |
+
+`cause` is one of `over_bound`, `gap`, `duplicate`, `finished`, or `malformed`,
+closed at validation and open and retaining at parse like the other closed
+unions. An `over_bound` refusal carries the bounded field and its measured
+`count` and `max`, never the content that exceeded the bound. A `malformed`
+refusal may carry only an excerpted parser message in `detail`, with
+`truncated` recording whether it was cut; that message describes the parse
+failure rather than reproducing refused content.
 
 ## Decisions before the first extraction
 
