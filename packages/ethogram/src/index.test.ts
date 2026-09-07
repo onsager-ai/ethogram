@@ -153,6 +153,12 @@ const DECISION_ANSWERED_HUMAN_WIRE =
 const DECISION_ANSWERED_TIMEOUT_WIRE =
   '{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}';
 
+// Cross-SDK byte identity for `decision.answered.requestedRunId` (spec #7
+// correction). This exact literal is pasted into the Rust suite and asserted
+// against an event built through each SDK's typed API.
+const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE =
+  '{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}';
+
 // This value is intentionally one neither SDK will ever know. The kind
 // string and the whole canonical event must survive an older relay exactly.
 const UNKNOWN_DECISION_KIND_WIRE =
@@ -1544,11 +1550,29 @@ describe("decision payload parsing and validation (spec #7)", () => {
       assert.equal(Object.hasOwn(request, field), false);
     }
     assert.equal(Object.hasOwn(request.dossier, "truncated"), false);
-    for (const field of ["byTimeout", "reversal"]) {
+    for (const field of ["byTimeout", "reversal", "requestedRunId"]) {
       assert.equal(Object.hasOwn(answer, field), false);
     }
     assert.ok(!JSON.stringify(request).includes(":null"));
     assert.ok(!JSON.stringify(answer).includes(":null"));
+  });
+
+  test("serialises requestedRunId when present, and it round-trips", () => {
+    const answer = parseDecisionAnsweredPayload({
+      ...consistencyAnswer("allow"),
+      requestedRunId: "run-decision",
+    });
+    assert.equal(answer.requestedRunId, "run-decision");
+
+    const event = parseEvent({
+      ...completeEvent(),
+      type: DECISION_ANSWERED,
+      payload: answer,
+    });
+    const serialised = JSON.parse(serialiseEvent(event)) as {
+      payload: Record<string, unknown>;
+    };
+    assert.equal(serialised.payload.requestedRunId, "run-decision");
   });
 
   test("retains and re-emits unknown fields at every decision payload level", () => {
@@ -1582,6 +1606,7 @@ describe("decision payload parsing and validation (spec #7)", () => {
           type: DECISION_ANSWERED,
           payload: {
             ...consistencyAnswer("allow"),
+            requestedRunId: "run-decision",
             futureAnswer: { value: 4 },
           },
         }),
@@ -1599,6 +1624,9 @@ describe("decision payload parsing and validation (spec #7)", () => {
       { value: 2 },
     );
     assert.deepEqual(forwardedAnswer.payload.futureAnswer, { value: 4 });
+    // `requestedRunId` is a known field, not an extra: adding it must not
+    // disturb the unknown-field tolerance path exercised above.
+    assert.equal(forwardedAnswer.payload.requestedRunId, "run-decision");
   });
 });
 
@@ -1626,6 +1654,19 @@ describe("validate", () => {
     assert.throws(
       () => validate(AGENT_COMPLETED, { sessionId: 7 }),
       /AgentCompletedPayload\.sessionId must be a string when present/,
+    );
+  });
+
+  test("rejects a non-string requestedRunId on decision.answered", () => {
+    assert.throws(
+      () =>
+        validate(DECISION_ANSWERED, {
+          decisionId: "decision-1",
+          optionId: "allow",
+          by: "principal:user:alice",
+          requestedRunId: 7,
+        }),
+      /DecisionAnsweredPayload\.requestedRunId must be a string when present/,
     );
   });
 
@@ -2666,6 +2707,36 @@ describe("serialiseEvent payload key sorting", () => {
         expected,
       );
     }
+  });
+
+  test("pins byte-identical decision.answered with requestedRunId with Rust", () => {
+    const answer: Event<EventPayloadMap> = {
+      v: 1,
+      type: DECISION_ANSWERED,
+      runId: "run-decision-answer",
+      seq: 1,
+      ts: "2026-09-07T07:10:00.000Z",
+      payload: {
+        decisionId: "decision-1",
+        optionId: "allow",
+        by: "principal:user:alice",
+        requestedRunId: "run-decision",
+      },
+    };
+
+    validate(DECISION_ANSWERED, answer.payload);
+    assert.equal(
+      serialiseEvent(answer),
+      DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE,
+    );
+    assert.equal(
+      serialiseEvent(
+        parseEvent(
+          JSON.parse(DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE) as unknown,
+        ),
+      ),
+      DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE,
+    );
   });
 
   test("sorts all amended run usage fields", () => {

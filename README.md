@@ -292,7 +292,7 @@ from those fields, except for `Policy.message` and `Malformed.message`.
 | type | required payload | optional payload | meaning |
 |---|---|---|---|
 | `decision.requested` | `decisionId`, `kind`, `dossier`, `options` | `subject`, `expiresAt`, `onTimeout` | Opens a producer-assigned decision and carries the bounded escalation dossier plus the options a human may choose. |
-| `decision.answered` | `decisionId`, `optionId`, `by` | `byTimeout`, `reversal` | Records the answer after the owning run has applied it, distinguishing a timeout from a principal's choice. |
+| `decision.answered` | `decisionId`, `optionId`, `by` | `byTimeout`, `reversal`, `requestedRunId` | Records the answer, emitted by the invocation that applies it on its own run — usually a different, later run than the one that requested the decision — distinguishing a timeout from a principal's choice. |
 
 `kind` is one of `permission`, `tripwire`, `gate_inconclusive`,
 `human_decides`, or `budget`, closed at validation and open and retaining at
@@ -300,9 +300,10 @@ parse like the other closed unions. The required `dossier` carries `question`,
 `optionsRuledOut` (an array of strings), `recommendedAction`, and `blastRadius`;
 those fields and every `options[].label` are bounded at 4,096 Unicode scalar
 values. A single optional `dossier.truncated` flag records whether any of that
-narration was excerpted. Option ids, `decisionId`, and `reversal` are
-identifiers and are not excerpt-bounded. `subject` is a reference such as a PR
-URL, issue number, or tool name, never the subject's content.
+narration was excerpted. Option ids, `decisionId`, `reversal`, and
+`requestedRunId` are identifiers and are not excerpt-bounded. `subject` is a
+reference such as a PR URL, issue number, or tool name, never the subject's
+content.
 
 `onTimeout` is allowed only for a `permission` and must be `deny`. Its absence
 leaves the decision open. This is validation policy rather than parsing policy:
@@ -310,14 +311,25 @@ a forwarder may carry a representable invalid request, while a producer cannot
 quietly give a tripwire an auto-proceed path that violates the "never
 auto-proceed" rule.
 
-`decision.answered` is emitted by the run that owns the decision, after the
-answer has been applied, never by the console that collected it. `by` is a
-resolvable principal identity rather than a display name. `byTimeout` is
-semantically material: a permission that expired unanswered is nobody deciding,
-not a decision with a long response gap. Each SDK exposes a separate
-cross-event helper that checks matching `decisionId` values, the chosen option,
-and any reversal when both payloads are available; it is not part of parsing
-because the two events remain independent on the wire.
+**`decision.answered` is emitted by the invocation that applies the answer, on
+its own run — not by the run that requested the decision, which has usually
+already finished by the time a human responds.** The two events are
+correlated only by `decisionId`, never by sharing a `runId`, and
+`decision.answered` is never emitted by a console that merely collected the
+answer. This is a correction (ruled on #7): a run has at most one
+`run.finished`, and a sink refuses every append to a closed run, so an answer
+emitted "on the owning run" minutes or hours later would be refused by the
+sink — the previous wording described something the protocol's own rules
+forbid. `requestedRunId` carries the run that emitted the corresponding
+`decision.requested`, since a consumer holding only the answer cannot
+otherwise find the asking run now that the two events routinely live on
+different runs. `by` is a resolvable principal identity rather than a display
+name. `byTimeout` is semantically material: a permission that expired
+unanswered is nobody deciding, not a decision with a long response gap. Each
+SDK exposes a separate cross-event helper that checks matching `decisionId`
+values, the chosen option, and any reversal when both payloads are available;
+it is not part of parsing because the two events remain independent on the
+wire, and it does not check `requestedRunId`.
 
 ## Decisions before the first extraction
 
