@@ -369,6 +369,91 @@ export interface CaptureRefusedPayload {
   truncated?: boolean;
 }
 
+export const DECISION_KINDS = [
+  "permission",
+  "tripwire",
+  "gate_inconclusive",
+  "human_decides",
+  "budget",
+] as const;
+
+export type KnownDecisionKind = (typeof DECISION_KINDS)[number];
+
+/**
+ * A decision kind this SDK knows, or an unfamiliar wire string retained
+ * verbatim for a newer vocabulary. Consumers must handle the unfamiliar-string
+ * case explicitly and must never map it onto a known kind.
+ */
+export type DecisionKind = KnownDecisionKind | (string & {});
+
+/**
+ * Bounded narration supplied with a `decision.requested`. All four content
+ * fields are checked against `MAX_EXCERPT_SCALARS` by `validate`, while parsing
+ * enforces only representability so a forwarder can still carry an over-bound
+ * dossier. `truncated` applies to the dossier as a whole rather than to each
+ * narration field separately.
+ */
+export interface DecisionDossier {
+  question: string;
+  optionsRuledOut: string[];
+  recommendedAction: string;
+  blastRadius: string;
+  truncated?: boolean;
+}
+
+/** One answer a human may choose. `id` is unbounded; `label` is narration. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * Opens a decision owned by this run. The dossier and option labels carry
+ * bounded narration; `subject` is only a reference such as a PR URL, issue
+ * number, or tool name, never the subject's content.
+ *
+ * `onTimeout` is enforced rather than conventional: it is allowed only for
+ * `permission`, and its only permitted value is `"deny"`. A tripwire that
+ * auto-proceeded on timeout would violate ostrom's "never auto-proceed" rule;
+ * enforcing the restriction in `validate` prevents a producer from shipping
+ * that mistake quietly. `parseEvent` deliberately does not apply this policy,
+ * because a forwarder must retain any representable request.
+ */
+export interface DecisionRequestedPayload {
+  /** Producer-assigned and unique within the run. */
+  decisionId: string;
+  kind: DecisionKind;
+  dossier: DecisionDossier;
+  options: DecisionOption[];
+  subject?: string;
+  /** Optional ISO-8601 expiry time. */
+  expiresAt?: string;
+  /** Option id applied after expiry. Absence leaves the decision open. */
+  onTimeout?: string;
+}
+
+/**
+ * Records an answer only after the run that owns the decision has applied it.
+ * It is emitted by that run, never by the console that collected the answer;
+ * a consumer showing the decision as settled before this event arrives has
+ * misread the protocol.
+ *
+ * `byTimeout` is semantically material. Without it, a human choosing
+ * `optionId: "deny"` is indistinguishable from a permission expiring
+ * unanswered with the same option and a runtime principal in `by`. A timeout
+ * is not a decision with a long gap; it is nobody deciding. Absence means
+ * false. `reversal` is the unbounded option identifier that undoes this
+ * answer, not prose.
+ */
+export interface DecisionAnsweredPayload {
+  decisionId: string;
+  optionId: string;
+  /** A principal identity a consumer resolves, never a display name. */
+  by: string;
+  byTimeout?: boolean;
+  reversal?: string;
+}
+
 /** The wire string for a `run.started` event's `type` field. */
 export const RUN_STARTED = "run.started" as const;
 /** The wire string for a `run.finished` event's `type` field. */
@@ -391,6 +476,10 @@ export const CONTROL_REQUESTED = "control.requested" as const;
 export const CONTROL_APPLIED = "control.applied" as const;
 /** The wire string for a `capture.refused` event's `type` field. */
 export const CAPTURE_REFUSED = "capture.refused" as const;
+/** The wire string for a `decision.requested` event's `type` field. */
+export const DECISION_REQUESTED = "decision.requested" as const;
+/** The wire string for a `decision.answered` event's `type` field. */
+export const DECISION_ANSWERED = "decision.answered" as const;
 
 /**
  * Every event `type` this SDK has a typed payload for. This is not a closed
@@ -411,6 +500,8 @@ export const KNOWN_TYPES = [
   CONTROL_REQUESTED,
   CONTROL_APPLIED,
   CAPTURE_REFUSED,
+  DECISION_REQUESTED,
+  DECISION_ANSWERED,
 ] as const;
 
 export type KnownType = (typeof KNOWN_TYPES)[number];
@@ -432,6 +523,8 @@ export interface EventPayloadMap {
   [CONTROL_REQUESTED]: ControlRequestedPayload;
   [CONTROL_APPLIED]: ControlAppliedPayload;
   [CAPTURE_REFUSED]: CaptureRefusedPayload;
+  [DECISION_REQUESTED]: DecisionRequestedPayload;
+  [DECISION_ANSWERED]: DecisionAnsweredPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -519,6 +612,7 @@ const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
 const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
 const CAPTURE_REFUSAL_CAUSE_VALUES = new Set<string>(CAPTURE_REFUSAL_CAUSES);
+const DECISION_KIND_VALUES = new Set<string>(DECISION_KINDS);
 const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
 
 const RUN_STARTED_FIELDS = new Set<string>([
@@ -632,6 +726,34 @@ const CAPTURE_REFUSED_FIELDS = new Set<string>([
   "max",
   "detail",
   "truncated",
+]);
+
+const DECISION_DOSSIER_FIELDS = new Set<string>([
+  "question",
+  "optionsRuledOut",
+  "recommendedAction",
+  "blastRadius",
+  "truncated",
+]);
+
+const DECISION_OPTION_FIELDS = new Set<string>(["id", "label"]);
+
+const DECISION_REQUESTED_FIELDS = new Set<string>([
+  "decisionId",
+  "kind",
+  "dossier",
+  "options",
+  "subject",
+  "expiresAt",
+  "onTimeout",
+]);
+
+const DECISION_ANSWERED_FIELDS = new Set<string>([
+  "decisionId",
+  "optionId",
+  "by",
+  "byTimeout",
+  "reversal",
 ]);
 
 /**
@@ -786,6 +908,21 @@ function requiredBoolean(
   const fieldValue = value[field];
   if (typeof fieldValue !== "boolean") {
     throw new TypeError(`${name}.${field} must be a boolean`);
+  }
+  return fieldValue;
+}
+
+function requiredArray(
+  value: Record<string, unknown>,
+  field: string,
+  name: string,
+): unknown[] {
+  if (!Object.hasOwn(value, field)) {
+    throw new TypeError(`${name} is missing required field: ${field}`);
+  }
+  const fieldValue = value[field];
+  if (!Array.isArray(fieldValue)) {
+    throw new TypeError(`${name}.${field} must be an array`);
   }
   return fieldValue;
 }
@@ -1133,6 +1270,111 @@ export function parseCaptureRefusedPayload(
   };
 }
 
+function parseDecisionDossier(value: unknown): DecisionDossier {
+  const name = "DecisionRequestedPayload.dossier";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const question = requiredString(value, "question", name);
+  const optionsRuledOut = requiredArray(
+    value,
+    "optionsRuledOut",
+    name,
+  ).map((option, index) => {
+    if (typeof option !== "string") {
+      throw new TypeError(`${name}.optionsRuledOut[${index}] must be a string`);
+    }
+    return option;
+  });
+  const recommendedAction = requiredString(value, "recommendedAction", name);
+  const blastRadius = requiredString(value, "blastRadius", name);
+  const truncated = optionalBoolean(value, "truncated", name);
+  return {
+    question,
+    optionsRuledOut,
+    recommendedAction,
+    blastRadius,
+    ...(truncated === undefined ? {} : { truncated }),
+    ...extractUnknownFields(value, DECISION_DOSSIER_FIELDS),
+  };
+}
+
+function parseDecisionOption(value: unknown, index: number): DecisionOption {
+  const name = `DecisionRequestedPayload.options[${index}]`;
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const id = requiredString(value, "id", name);
+  const label = requiredString(value, "label", name);
+  return {
+    id,
+    label,
+    ...extractUnknownFields(value, DECISION_OPTION_FIELDS),
+  };
+}
+
+/**
+ * Parse a representable `decision.requested` payload. Unknown fields and
+ * unfamiliar `kind` strings are retained. Capture bounds and the `onTimeout`
+ * policy are deliberately left to `validate`, so a forwarder can carry a
+ * representable request even when its producer should not have emitted it.
+ */
+export function parseDecisionRequestedPayload(
+  value: unknown,
+): DecisionRequestedPayload {
+  const name = "DecisionRequestedPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const decisionId = requiredString(value, "decisionId", name);
+  const kind = requiredString(value, "kind", name);
+  if (!Object.hasOwn(value, "dossier")) {
+    throw new TypeError(`${name} is missing required field: dossier`);
+  }
+  const dossier = parseDecisionDossier(value.dossier);
+  const options = requiredArray(value, "options", name).map(parseDecisionOption);
+  const subject = optionalString(value, "subject", name);
+  const expiresAt = optionalString(value, "expiresAt", name);
+  const onTimeout = optionalString(value, "onTimeout", name);
+  return {
+    decisionId,
+    kind: kind as DecisionKind,
+    dossier,
+    options,
+    ...(subject === undefined ? {} : { subject }),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(onTimeout === undefined ? {} : { onTimeout }),
+    ...extractUnknownFields(value, DECISION_REQUESTED_FIELDS),
+  };
+}
+
+/** Parse a representable `decision.answered` payload, retaining extras. */
+export function parseDecisionAnsweredPayload(
+  value: unknown,
+): DecisionAnsweredPayload {
+  const name = "DecisionAnsweredPayload";
+  if (!isRecord(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+
+  const decisionId = requiredString(value, "decisionId", name);
+  const optionId = requiredString(value, "optionId", name);
+  const by = requiredString(value, "by", name);
+  const byTimeout = optionalBoolean(value, "byTimeout", name);
+  const reversal = optionalString(value, "reversal", name);
+  return {
+    decisionId,
+    optionId,
+    by,
+    ...(byTimeout === undefined ? {} : { byTimeout }),
+    ...(reversal === undefined ? {} : { reversal }),
+    ...extractUnknownFields(value, DECISION_ANSWERED_FIELDS),
+  };
+}
+
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
     case RUN_STARTED:
@@ -1157,6 +1399,10 @@ function parseKnownPayload(eventType: string, payload: unknown): unknown {
       return parseControlAppliedPayload(payload);
     case CAPTURE_REFUSED:
       return parseCaptureRefusedPayload(payload);
+    case DECISION_REQUESTED:
+      return parseDecisionRequestedPayload(payload);
+    case DECISION_ANSWERED:
+      return parseDecisionAnsweredPayload(payload);
     default:
       return payload;
   }
@@ -1348,8 +1594,98 @@ export function validate(eventType: string, payload: unknown): void {
       );
       return;
     }
+    case DECISION_REQUESTED: {
+      const requested = parsed as DecisionRequestedPayload;
+      if (!DECISION_KIND_VALUES.has(requested.kind)) {
+        throw new TypeError(
+          `DecisionRequestedPayload.kind has unknown value: ${requested.kind}`,
+        );
+      }
+      if (requested.onTimeout !== undefined) {
+        if (requested.kind !== "permission") {
+          throw new TypeError(
+            `DecisionRequestedPayload.onTimeout is permitted only when kind is "permission"; received kind "${requested.kind}"`,
+          );
+        }
+        if (requested.onTimeout !== "deny") {
+          throw new TypeError(
+            `DecisionRequestedPayload.onTimeout must be "deny" when kind is "permission"; received "${requested.onTimeout}"`,
+          );
+        }
+      }
+      validateScalarBound(
+        requested.dossier.question,
+        "DecisionRequestedPayload.dossier.question",
+        MAX_EXCERPT_SCALARS,
+      );
+      for (const [index, ruledOut] of requested.dossier.optionsRuledOut.entries()) {
+        validateScalarBound(
+          ruledOut,
+          `DecisionRequestedPayload.dossier.optionsRuledOut[${index}]`,
+          MAX_EXCERPT_SCALARS,
+        );
+      }
+      validateScalarBound(
+        requested.dossier.recommendedAction,
+        "DecisionRequestedPayload.dossier.recommendedAction",
+        MAX_EXCERPT_SCALARS,
+      );
+      validateScalarBound(
+        requested.dossier.blastRadius,
+        "DecisionRequestedPayload.dossier.blastRadius",
+        MAX_EXCERPT_SCALARS,
+      );
+      for (const [index, option] of requested.options.entries()) {
+        validateScalarBound(
+          option.label,
+          `DecisionRequestedPayload.options[${index}].label`,
+          MAX_EXCERPT_SCALARS,
+        );
+      }
+      return;
+    }
+    case DECISION_ANSWERED:
+      return;
     default:
       // The remaining known types have no closed union or captured text.
+  }
+}
+
+/**
+ * Checks consistency visible only when a `decision.requested` and
+ * `decision.answered` payload are available together. This is intentionally
+ * separate from `validate` and `parseEvent`: the events are independent on
+ * the wire, and a forwarder handling one has not necessarily seen the other.
+ *
+ * The chosen `optionId` must be present in the request's options. The sole
+ * exception is the request's `onTimeout` value when `byTimeout` is true.
+ * `reversal`, when present, must always be a request option, and the two
+ * `decisionId` values must match.
+ */
+export function validateDecisionAnswerAgainstRequest(
+  request: DecisionRequestedPayload,
+  answer: DecisionAnsweredPayload,
+): void {
+  if (request.decisionId !== answer.decisionId) {
+    throw new TypeError(
+      `DecisionAnsweredPayload.decisionId does not match request: expected "${request.decisionId}"; received "${answer.decisionId}"`,
+    );
+  }
+
+  const optionIds = new Set(request.options.map((option) => option.id));
+  const optionExists = optionIds.has(answer.optionId);
+  const isTimeoutOption =
+    answer.byTimeout === true && request.onTimeout === answer.optionId;
+  if (!optionExists && !isTimeoutOption) {
+    throw new TypeError(
+      `DecisionAnsweredPayload.optionId does not name a request option: "${answer.optionId}"`,
+    );
+  }
+
+  if (answer.reversal !== undefined && !optionIds.has(answer.reversal)) {
+    throw new TypeError(
+      `DecisionAnsweredPayload.reversal does not name a request option: "${answer.reversal}"`,
+    );
   }
 }
 
