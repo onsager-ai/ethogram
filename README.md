@@ -16,9 +16,10 @@ doing, named once so that two systems mean the same thing by the same word.
 **The version 1 vocabulary is complete.** The envelope, its `run.*` lifecycle,
 the six `agent.*` observations, the two `control.*` events, `capture.refused`,
 and the two `decision.*` events exist in both SDKs. The conformance corpus
-(`conformance/v1/`) holds nine fixtures derived from real captures. It grows
-only from real captures, never from an invented example, because an invented
-fixture would become an immutable guess.
+(`conformance/v1/`) is seeded from real captures, and grows only that way —
+never from an invented example, because an invented fixture would become an
+immutable guess. The corpus is the count; this sentence deliberately is not,
+since a number here would go stale every time a capture lands.
 
 ## Why it is a separate repository
 
