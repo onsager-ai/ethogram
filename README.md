@@ -133,7 +133,7 @@ unlike harness units.
 | `agent.text` | `text` | `stage`, `truncated`, `parentToolUseId` | Carries bounded assistant narration and, when nested beneath a tool call, names that parent. |
 | `agent.tool_use` | `tool` | `stage`, `inputExcerpt`, `truncated`, `toolUseId`, `parentToolUseId` | Records a tool invocation with bounded input and identifiers that preserve nesting. |
 | `agent.tool_result` | `tool` | `stage`, `isError`, `resultExcerpt`, `truncated`, `toolUseId`, `parentToolUseId` | Records a bounded tool response and associates it with the corresponding invocation. |
-| `agent.completed` | — | `stage`, `turns`, `costUsd`, `model`, `usage`, `durationMs`, `estimated` | Records completion and any harness-reported totals without requiring metrics the harness does not expose. |
+| `agent.completed` | — | `stage`, `turns`, `sessionId`, `costUsd`, `model`, `usage`, `durationMs`, `estimated` | Records completion and any harness-reported totals without requiring metrics the harness does not expose. |
 | `agent.warning` | `message` | `stage` | Carries a non-terminal harness warning without promoting it to a run outcome. |
 
 `stage` is an open string on every agent observation. Pipeline stages belong to

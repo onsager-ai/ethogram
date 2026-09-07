@@ -207,15 +207,28 @@ export interface AgentCompletedPayload {
    */
   turns?: number;
   /**
-   * Cumulative for the harness session named by the corresponding
-   * `agent.started.sessionId`, not per invocation: this is the running
-   * total as of *this* completion, so a session that reports
-   * `agent.completed` more than once reports an increasing total each time
-   * rather than a fresh delta. Summing every `agent.completed.costUsd` in a
-   * run therefore over-counts whenever a session reports more than once —
-   * take the maximum observed within each `sessionId` instead, and sum only
-   * across distinct sessions. `run.finished.costUsd` carries the runtime's
-   * own computed total for the whole run and is the number to trust there.
+   * Echoes the harness session identifier `agent.started` already carries,
+   * so this completion can state which session's totals it is reporting.
+   * `costUsd` and `usage` below are cumulative per session rather than per
+   * invocation, and that rule was unusable from a completion alone before
+   * this field existed: `sessionId` appeared only on `agent.started`, so a
+   * consumer had to correlate backwards to whichever `agent.started` opened
+   * the session before it could safely take a maximum within a session or
+   * sum across sessions. Carrying it here too makes the rule applicable
+   * from the very event that states the totals it governs.
+   */
+  sessionId?: string;
+  /**
+   * Cumulative for the harness session named by this payload's own
+   * `sessionId` (which echoes the `sessionId` on the `agent.started` that
+   * opened it), not per invocation: this is the running total as of *this*
+   * completion, so a session that reports `agent.completed` more than once
+   * reports an increasing total each time rather than a fresh delta.
+   * Summing every `agent.completed.costUsd` in a run therefore over-counts
+   * whenever a session reports more than once — take the maximum observed
+   * within each `sessionId` instead, and sum only across distinct sessions.
+   * `run.finished.costUsd` carries the runtime's own computed total for the
+   * whole run and is the number to trust there.
    */
   costUsd?: number;
   model?: string;
@@ -456,6 +469,7 @@ const AGENT_TOOL_RESULT_FIELDS = new Set<string>([
 const AGENT_COMPLETED_FIELDS = new Set<string>([
   "stage",
   "turns",
+  "sessionId",
   "costUsd",
   "model",
   "usage",
@@ -828,6 +842,7 @@ export function parseAgentCompletedPayload(
 
   const stage = optionalString(value, "stage", name);
   const turns = optionalSafeInteger(value, "turns", name);
+  const sessionId = optionalString(value, "sessionId", name);
   const costUsd = optionalNumber(value, "costUsd", name);
   const model = optionalString(value, "model", name);
   const usage = Object.hasOwn(value, "usage")
@@ -838,6 +853,7 @@ export function parseAgentCompletedPayload(
   return {
     ...(stage === undefined ? {} : { stage }),
     ...(turns === undefined ? {} : { turns }),
+    ...(sessionId === undefined ? {} : { sessionId }),
     ...(costUsd === undefined ? {} : { costUsd }),
     ...(model === undefined ? {} : { model }),
     ...(usage === undefined ? {} : { usage }),
