@@ -170,20 +170,57 @@ export interface AgentWarningPayload {
   message: string;
 }
 
+/** The wire string for a `run.started` event's `type` field. */
+export const RUN_STARTED = "run.started" as const;
+/** The wire string for a `run.finished` event's `type` field. */
+export const RUN_FINISHED = "run.finished" as const;
+/** The wire string for an `agent.started` event's `type` field. */
+export const AGENT_STARTED = "agent.started" as const;
+/** The wire string for an `agent.text` event's `type` field. */
+export const AGENT_TEXT = "agent.text" as const;
+/** The wire string for an `agent.tool_use` event's `type` field. */
+export const AGENT_TOOL_USE = "agent.tool_use" as const;
+/** The wire string for an `agent.tool_result` event's `type` field. */
+export const AGENT_TOOL_RESULT = "agent.tool_result" as const;
+/** The wire string for an `agent.completed` event's `type` field. */
+export const AGENT_COMPLETED = "agent.completed" as const;
+/** The wire string for an `agent.warning` event's `type` field. */
+export const AGENT_WARNING = "agent.warning" as const;
+
+/**
+ * Every event `type` this SDK has a typed payload for. This is not a closed
+ * vocabulary: `parseEvent` still accepts a type it has never heard of (see
+ * `parseKnownPayload`'s fallthrough), and a consumer may still match a
+ * literal for vocabulary this SDK has not learned. A constant is a name for
+ * a string, not a gate.
+ */
+export const KNOWN_TYPES = [
+  RUN_STARTED,
+  RUN_FINISHED,
+  AGENT_STARTED,
+  AGENT_TEXT,
+  AGENT_TOOL_USE,
+  AGENT_TOOL_RESULT,
+  AGENT_COMPLETED,
+  AGENT_WARNING,
+] as const;
+
+export type KnownType = (typeof KNOWN_TYPES)[number];
+
 /**
  * The protocol payload map. Supplying it to `EventDraft` or `Event` produces a
  * correlated discriminated union; their unparameterised forms deliberately
  * remain open for callers that only need the envelope or handle future types.
  */
 export interface EventPayloadMap {
-  "run.started": RunStartedPayload;
-  "run.finished": RunFinishedPayload;
-  "agent.started": AgentStartedPayload;
-  "agent.text": AgentTextPayload;
-  "agent.tool_use": AgentToolUsePayload;
-  "agent.tool_result": AgentToolResultPayload;
-  "agent.completed": AgentCompletedPayload;
-  "agent.warning": AgentWarningPayload;
+  [RUN_STARTED]: RunStartedPayload;
+  [RUN_FINISHED]: RunFinishedPayload;
+  [AGENT_STARTED]: AgentStartedPayload;
+  [AGENT_TEXT]: AgentTextPayload;
+  [AGENT_TOOL_USE]: AgentToolUsePayload;
+  [AGENT_TOOL_RESULT]: AgentToolResultPayload;
+  [AGENT_COMPLETED]: AgentCompletedPayload;
+  [AGENT_WARNING]: AgentWarningPayload;
 }
 
 type EventType<Payloads extends object> = Extract<keyof Payloads, string>;
@@ -757,21 +794,21 @@ export function parseAgentWarningPayload(value: unknown): AgentWarningPayload {
 
 function parseKnownPayload(eventType: string, payload: unknown): unknown {
   switch (eventType) {
-    case "run.started":
+    case RUN_STARTED:
       return parseRunStartedPayload(payload);
-    case "run.finished":
+    case RUN_FINISHED:
       return parseRunFinishedPayload(payload);
-    case "agent.started":
+    case AGENT_STARTED:
       return parseAgentStartedPayload(payload);
-    case "agent.text":
+    case AGENT_TEXT:
       return parseAgentTextPayload(payload);
-    case "agent.tool_use":
+    case AGENT_TOOL_USE:
       return parseAgentToolUsePayload(payload);
-    case "agent.tool_result":
+    case AGENT_TOOL_RESULT:
       return parseAgentToolResultPayload(payload);
-    case "agent.completed":
+    case AGENT_COMPLETED:
       return parseAgentCompletedPayload(payload);
-    case "agent.warning":
+    case AGENT_WARNING:
       return parseAgentWarningPayload(payload);
     default:
       return payload;
@@ -1020,7 +1057,7 @@ export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
   let run: FoldedRun | undefined;
 
   for (const event of events) {
-    if (event.type === "run.started") {
+    if (event.type === RUN_STARTED) {
       if (run !== undefined) {
         throw new Error("Run fold received more than one run.started event");
       }
@@ -1038,7 +1075,7 @@ export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
       continue;
     }
 
-    if (event.type === "run.finished") {
+    if (event.type === RUN_FINISHED) {
       if (run === undefined) {
         throw new Error("Run fold received run.finished before run.started");
       }

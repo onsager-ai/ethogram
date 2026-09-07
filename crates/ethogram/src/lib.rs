@@ -13,6 +13,39 @@ pub const MAX_TEXT_SCALARS: usize = 16_384;
 /// Maximum number of Unicode scalar values carried by a tool excerpt.
 pub const MAX_EXCERPT_SCALARS: usize = 4_096;
 
+/// The wire string for a `run.started` event's `type` field.
+pub const RUN_STARTED: &str = "run.started";
+/// The wire string for a `run.finished` event's `type` field.
+pub const RUN_FINISHED: &str = "run.finished";
+/// The wire string for an `agent.started` event's `type` field.
+pub const AGENT_STARTED: &str = "agent.started";
+/// The wire string for an `agent.text` event's `type` field.
+pub const AGENT_TEXT: &str = "agent.text";
+/// The wire string for an `agent.tool_use` event's `type` field.
+pub const AGENT_TOOL_USE: &str = "agent.tool_use";
+/// The wire string for an `agent.tool_result` event's `type` field.
+pub const AGENT_TOOL_RESULT: &str = "agent.tool_result";
+/// The wire string for an `agent.completed` event's `type` field.
+pub const AGENT_COMPLETED: &str = "agent.completed";
+/// The wire string for an `agent.warning` event's `type` field.
+pub const AGENT_WARNING: &str = "agent.warning";
+
+/// Every event `type` this SDK has a typed payload for. This is not a closed
+/// vocabulary: `parse_event` still accepts a type it has never heard of (see
+/// `validate_known_payload`'s fallthrough), and a consumer may still match a
+/// literal for vocabulary this SDK has not learned. A constant is a name for
+/// a string, not a gate.
+pub const KNOWN_TYPES: [&str; 8] = [
+    RUN_STARTED,
+    RUN_FINISHED,
+    AGENT_STARTED,
+    AGENT_TEXT,
+    AGENT_TOOL_USE,
+    AGENT_TOOL_RESULT,
+    AGENT_COMPLETED,
+    AGENT_WARNING,
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Excerpt {
     pub text: String,
@@ -528,23 +561,42 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     Ok(event)
 }
 
+/// Validates `payload` against the typed struct for `event_type`, if this SDK
+/// has one.
+///
+/// This is deliberately an `if`/`else if` chain comparing `event_type` with
+/// `==` against the exported constants above, not a `match` on string
+/// literals. A `match` arm written as a bare identifier — `match event_type {
+/// RUN_STARTED => ... }` — does not compare against the constant; it
+/// destructures, binding a new local variable named `RUN_STARTED` that
+/// shadows the constant and matches unconditionally. The compiler only warns
+/// (`non_upper_case_globals` fires on a real constant name, but nothing
+/// catches a name that happens to already be uppercase), so that shape is a
+/// silent bug rather than a build failure. `==` has no such reading: it is
+/// always a value comparison, so an arm can only ever fire when `event_type`
+/// actually equals the named constant. Because each arm's condition *is* the
+/// constant rather than a second copy of its string, renaming the constant
+/// renames what the arm matches and nothing else is possible — there is no
+/// independent literal left to drift out of step.
 fn validate_known_payload(event_type: &str, payload: &Value) -> serde_json::Result<()> {
-    match event_type {
-        "run.started" => serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop),
-        "run.finished" => serde_json::from_value::<RunFinishedPayload>(payload.clone()).map(drop),
-        "agent.started" => serde_json::from_value::<AgentStartedPayload>(payload.clone()).map(drop),
-        "agent.text" => serde_json::from_value::<AgentTextPayload>(payload.clone()).map(drop),
-        "agent.tool_use" => {
-            serde_json::from_value::<AgentToolUsePayload>(payload.clone()).map(drop)
-        }
-        "agent.tool_result" => {
-            serde_json::from_value::<AgentToolResultPayload>(payload.clone()).map(drop)
-        }
-        "agent.completed" => {
-            serde_json::from_value::<AgentCompletedPayload>(payload.clone()).map(drop)
-        }
-        "agent.warning" => serde_json::from_value::<AgentWarningPayload>(payload.clone()).map(drop),
-        _ => Ok(()),
+    if event_type == RUN_STARTED {
+        serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop)
+    } else if event_type == RUN_FINISHED {
+        serde_json::from_value::<RunFinishedPayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_STARTED {
+        serde_json::from_value::<AgentStartedPayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_TEXT {
+        serde_json::from_value::<AgentTextPayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_TOOL_USE {
+        serde_json::from_value::<AgentToolUsePayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_TOOL_RESULT {
+        serde_json::from_value::<AgentToolResultPayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_COMPLETED {
+        serde_json::from_value::<AgentCompletedPayload>(payload.clone()).map(drop)
+    } else if event_type == AGENT_WARNING {
+        serde_json::from_value::<AgentWarningPayload>(payload.clone()).map(drop)
+    } else {
+        Ok(())
     }
 }
 
@@ -2327,5 +2379,103 @@ mod tests {
         );
 
         assert!(serde_json::from_str::<Event<RunStartedPayload>>(&input).is_ok());
+    }
+
+    /// For each of the eight known types, builds a minimally valid event of
+    /// that type, serialises it, and parses the `type` field back out of the
+    /// result — then compares that against the exported constant.
+    ///
+    /// Deliberately not `assert_eq!(RUN_STARTED, "run.started")`: that only
+    /// proves someone typed the same string twice, and would pass just as
+    /// happily if both copies were wrong. Going through a real round-trip
+    /// fails the moment the constant and what `validate_known_payload` (and
+    /// so `parse_event`) actually accepts for that type part company.
+    #[test]
+    fn known_type_constants_match_their_own_wire_round_trip() {
+        fn round_tripped_type(event_type: &str, payload: Value) -> String {
+            let input = lifecycle_event_input(event_type, payload);
+            parse_event(&input).unwrap().event_type
+        }
+
+        assert_eq!(
+            round_tripped_type(
+                RUN_STARTED,
+                json!({ "kind": "loop", "actor": "builder", "harness": "codex" }),
+            ),
+            RUN_STARTED
+        );
+        assert_eq!(
+            round_tripped_type(
+                RUN_FINISHED,
+                json!({ "outcome": "completed", "durationMs": 1250 }),
+            ),
+            RUN_FINISHED
+        );
+        assert_eq!(round_tripped_type(AGENT_STARTED, json!({})), AGENT_STARTED);
+        assert_eq!(
+            round_tripped_type(AGENT_TEXT, json!({ "text": "hello" })),
+            AGENT_TEXT
+        );
+        assert_eq!(
+            round_tripped_type(AGENT_TOOL_USE, json!({ "tool": "read" })),
+            AGENT_TOOL_USE
+        );
+        assert_eq!(
+            round_tripped_type(AGENT_TOOL_RESULT, json!({ "tool": "read" })),
+            AGENT_TOOL_RESULT
+        );
+        assert_eq!(
+            round_tripped_type(AGENT_COMPLETED, json!({})),
+            AGENT_COMPLETED
+        );
+        assert_eq!(
+            round_tripped_type(AGENT_WARNING, json!({ "message": "warning" })),
+            AGENT_WARNING
+        );
+    }
+
+    #[test]
+    fn known_types_holds_exactly_the_eight_recognised_types_with_no_duplicates() {
+        assert_eq!(KNOWN_TYPES.len(), 8);
+
+        let unique: std::collections::HashSet<&str> = KNOWN_TYPES.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            KNOWN_TYPES.len(),
+            "KNOWN_TYPES has a duplicate"
+        );
+        assert_eq!(
+            unique,
+            std::collections::HashSet::from([
+                RUN_STARTED,
+                RUN_FINISHED,
+                AGENT_STARTED,
+                AGENT_TEXT,
+                AGENT_TOOL_USE,
+                AGENT_TOOL_RESULT,
+                AGENT_COMPLETED,
+                AGENT_WARNING,
+            ])
+        );
+    }
+
+    #[test]
+    fn every_known_type_is_recognised_by_the_validation_path_and_an_unrecognised_type_is_not() {
+        // A JSON string fails every known payload struct's deserialisation
+        // (each expects an object), while an unrecognised type's fallthrough
+        // arm accepts any payload unconditionally. This distinguishes "this
+        // type was actually validated against a typed struct" from "this
+        // type was waved through" without depending on any one type's
+        // required fields.
+        let malformed_payload = json!("not-an-object");
+
+        for &known in &KNOWN_TYPES {
+            assert!(
+                validate_known_payload(known, &malformed_payload).is_err(),
+                "{known} should have been validated against its typed payload"
+            );
+        }
+
+        assert!(validate_known_payload("future.happened", &malformed_payload).is_ok());
     }
 }
