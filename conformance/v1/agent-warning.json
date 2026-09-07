@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "agent.warning",
+  "runId": "run-claude-error-shapes",
+  "seq": 6,
+  "ts": "2026-09-07T09:30:06.000Z",
+  "payload": {
+    "message": "claude result subtype \"error_max_turns\"",
+    "stage": "generate"
+  }
+}

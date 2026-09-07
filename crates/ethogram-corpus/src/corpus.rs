@@ -4,6 +4,10 @@ use crate::Fixture;
 
 pub(crate) static V1_FIXTURES: &[Fixture] = &[
     Fixture {
+        name: "agent-completed-max-turns.json",
+        raw_json: include_str!("../../../conformance/v1/agent-completed-max-turns.json"),
+    },
+    Fixture {
         name: "agent-completed-repeated-terminal.json",
         raw_json: include_str!("../../../conformance/v1/agent-completed-repeated-terminal.json"),
     },
@@ -24,6 +28,10 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         raw_json: include_str!("../../../conformance/v1/agent-text.json"),
     },
     Fixture {
+        name: "agent-tool-result-error.json",
+        raw_json: include_str!("../../../conformance/v1/agent-tool-result-error.json"),
+    },
+    Fixture {
         name: "agent-tool-result-subagent.json",
         raw_json: include_str!("../../../conformance/v1/agent-tool-result-subagent.json"),
     },
@@ -38,5 +46,9 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "agent-tool-use.json",
         raw_json: include_str!("../../../conformance/v1/agent-tool-use.json"),
+    },
+    Fixture {
+        name: "agent-warning.json",
+        raw_json: include_str!("../../../conformance/v1/agent-warning.json"),
     },
 ];

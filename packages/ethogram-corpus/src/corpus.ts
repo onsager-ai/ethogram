@@ -2,6 +2,10 @@
 
 export const V1_FIXTURES = [
   {
+    name: "agent-completed-max-turns.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.completed\",\n  \"runId\": \"run-claude-error-shapes\",\n  \"seq\": 5,\n  \"ts\": \"2026-09-07T09:30:05.000Z\",\n  \"payload\": {\n    \"costUsd\": 0.0223935,\n    \"durationMs\": 3380,\n    \"model\": \"claude-haiku-4-5-20251001\",\n    \"stage\": \"generate\",\n    \"turns\": 2,\n    \"usage\": {\n      \"cacheCreationTokens\": 9517,\n      \"cacheReadTokens\": 13615,\n      \"inputTokens\": 9,\n      \"outputTokens\": 193\n    }\n  }\n}\n",
+  },
+  {
     name: "agent-completed-repeated-terminal.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.completed\",\n  \"runId\": \"run-claude-subagent\",\n  \"seq\": 14,\n  \"ts\": \"2026-09-07T05:12:14.000Z\",\n  \"payload\": {\n    \"costUsd\": 0.09765190000000001,\n    \"durationMs\": 1664,\n    \"model\": \"claude-haiku-4-5-20251001\",\n    \"stage\": \"generate\",\n    \"turns\": 1,\n    \"usage\": {\n      \"cacheCreationTokens\": 559,\n      \"cacheReadTokens\": 26784,\n      \"inputTokens\": 10,\n      \"outputTokens\": 58\n    }\n  }\n}\n",
   },
@@ -22,6 +26,10 @@ export const V1_FIXTURES = [
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.text\",\n  \"runId\": \"run-claude-subagent\",\n  \"seq\": 4,\n  \"ts\": \"2026-09-07T05:12:04.000Z\",\n  \"payload\": {\n    \"stage\": \"generate\",\n    \"text\": \"the agent reported a short step of routine progress and the\"\n  }\n}\n",
   },
   {
+    name: "agent-tool-result-error.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.tool_result\",\n  \"runId\": \"run-claude-error-shapes\",\n  \"seq\": 4,\n  \"ts\": \"2026-09-07T09:30:04.000Z\",\n  \"payload\": {\n    \"isError\": true,\n    \"resultExcerpt\": \"Exit code 1\\ncat: /nonexistent-file-xyz: No such file or directory\",\n    \"stage\": \"generate\",\n    \"tool\": \"Bash\",\n    \"toolUseId\": \"toolu_01VL7aVtfw8YsTXwszEqRDbW\"\n  }\n}\n",
+  },
+  {
     name: "agent-tool-result-subagent.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.tool_result\",\n  \"runId\": \"run-claude-subagent\",\n  \"seq\": 9,\n  \"ts\": \"2026-09-07T05:12:09.000Z\",\n  \"payload\": {\n    \"parentToolUseId\": \"toolu_01N4UBnESypVtuFSMQMNGTG8\",\n    \"resultExcerpt\": \"capture-subagent-ok\",\n    \"stage\": \"generate\",\n    \"tool\": \"Bash\",\n    \"toolUseId\": \"toolu_01GvYvaZZx61VzJyHo1mkUpk\"\n  }\n}\n",
   },
@@ -36,5 +44,9 @@ export const V1_FIXTURES = [
   {
     name: "agent-tool-use.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.tool_use\",\n  \"runId\": \"run-claude-subagent\",\n  \"seq\": 5,\n  \"ts\": \"2026-09-07T05:12:05.000Z\",\n  \"payload\": {\n    \"inputExcerpt\": \"{\\\"description\\\":\\\"Run shell command and report output\\\",\\\"subagent_type\\\":\\\"general-purpose\\\",\\\"prompt\\\":\\\"Run the shell command: echo capture-subagent-ok — then report its output.\\\"}\",\n    \"stage\": \"generate\",\n    \"tool\": \"Agent\",\n    \"toolUseId\": \"toolu_01N4UBnESypVtuFSMQMNGTG8\"\n  }\n}\n",
+  },
+  {
+    name: "agent-warning.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.warning\",\n  \"runId\": \"run-claude-error-shapes\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-07T09:30:06.000Z\",\n  \"payload\": {\n    \"message\": \"claude result subtype \\\"error_max_turns\\\"\",\n    \"stage\": \"generate\"\n  }\n}\n",
   },
 ] as const;

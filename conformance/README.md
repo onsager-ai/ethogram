@@ -20,6 +20,13 @@ from the other.
   rule below would then preserve the guess forever.
 - Fixtures are grouped by schema version: `v1/`, `v2/`, and so on. Version 1 is
   the first protocol version; `v0/` never exists.
+- A fixture's `runId`, `seq` and `ts` may be **synthesised** when the capture it
+  came from never passed through a sink — a normaliser's drafts carry none of
+  the three, and they are sink-owned by definition (#3). Where they are
+  synthesised, `seq` is the event's true position in its capture's normalised
+  stream, so `seq` values are deliberately **not contiguous** across the
+  fixtures drawn from one capture: they are a selection from a run, not a
+  complete stream, and a reader should not infer a gap from them.
 - A fixture is **immutable once published**. Correcting a fixture changes what
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
 - Every payload variant gets at least one fixture. A payload with no fixture is
