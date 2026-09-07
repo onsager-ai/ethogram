@@ -123,12 +123,19 @@ handoffs, and relays are kinds of run, not separate concepts.
 `relay`; a relay is a long-lived process that observes other runs and emits on
 its own run.
 `outcome` is one of `completed`, `failed`, `no-op`, `timed-out`, `interrupted`,
-`permission-denied`, `canceled`, or `capped`. `capped` means a non-time ceiling
-such as tokens, cost, or turns was reached, with `reason` naming which;
-`timed-out` remains wall-clock or idle timeout, and `canceled` remains
-operator-only. These sets are closed at validation but open and retaining at
-parse: an unfamiliar member is carried and forwarded as its exact raw string,
-and `validate` reports it as unknown so a sink may refuse it.
+`permission-denied`, `canceled`, `capped`, `blocked`, or `unstarted`. `capped`
+means a non-time ceiling such as tokens, cost, or turns was reached, with
+`reason` naming which; `timed-out` remains wall-clock or idle timeout, and
+`canceled` remains operator-only. `blocked` ends a run that may not proceed
+until something outside the run changes; **it is not an error of the run**, so
+a consumer that colours it as a failure is misreporting. `unstarted` means the
+run was recorded — `run.started` was emitted, the schedule fired — but its
+process never ran at all, with `reason` naming why (a spawn failure, a
+disarmed loop, a missing binary), and is distinct from `failed`, where the
+process ran and did not succeed. These sets are closed at validation but open
+and retaining at parse: an unfamiliar member is carried and forwarded as its
+exact raw string, and `validate` reports it as unknown so a sink may refuse
+it.
 
 `ceilings` may carry `costUsd`, `tokens`, `wallMs`, `idleMs`, and `turns`. Every
 declared ceiling is enforced; an absent ceiling means unbounded and unenforced,

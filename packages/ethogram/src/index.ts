@@ -130,6 +130,8 @@ export const RUN_OUTCOMES = [
   "permission-denied",
   "canceled",
   "capped",
+  "blocked",
+  "unstarted",
 ] as const;
 
 export type KnownRunOutcome = (typeof RUN_OUTCOMES)[number];
@@ -138,6 +140,15 @@ export type KnownRunOutcome = (typeof RUN_OUTCOMES)[number];
  * A run outcome this SDK knows, or an unfamiliar wire string retained
  * verbatim for a newer vocabulary. Consumers acting on an outcome must treat
  * an unfamiliar string as "not this", never as one of the known outcomes.
+ *
+ * `"blocked"` ended because the run may not proceed until something outside
+ * the run changes; **not an error of the run**. A consumer that colours
+ * `"blocked"` as a failure is misreporting, since nothing went wrong inside
+ * the run.
+ *
+ * `"unstarted"` means the run's process never ran; `reason` names why —
+ * `"disarmed"`, `"spawn"`, or a missing binary, excerpted as today. Distinct
+ * from `"failed"`, where the process ran and did not succeed.
  */
 export type RunOutcome = KnownRunOutcome | (string & {});
 
