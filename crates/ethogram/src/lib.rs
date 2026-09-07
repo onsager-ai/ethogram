@@ -5,6 +5,11 @@ use std::fmt::{self, Display, Formatter};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 
+mod validation;
+
+use validation::decode_payload;
+pub use validation::{ValidationError, ValidationErrorKind};
+
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum number of Unicode scalar values carried by an `agent.text`.
@@ -1007,8 +1012,8 @@ pub struct CaptureRefusedPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub max: Option<u64>,
-    /// A bounded, excerpted parser message for `malformed`, not content from
-    /// the refused event itself. `truncated` records whether it was excerpted.
+    /// A bounded, excerpted parser or validation message for `malformed`.
+    /// `truncated` records whether it was excerpted.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -1212,7 +1217,7 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
 /// via the `deny_unknown_fields` still present on `Event` and `EventDraft`.
 pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     let event: Event = serde_json::from_str(input)?;
-    validate_payload_numbers(&event.payload, "payload").map_err(de::Error::custom)?;
+    validate_payload_numbers(&event.payload, "payload")?;
     check_known_payload_representation(&event.event_type, &event.payload)?;
     Ok(event)
 }
@@ -1239,36 +1244,45 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// "should a producer have emitted this?" `parse_event` therefore does not
 /// call this function, nor either universal bound directly: a representable
 /// over-bound event must remain forwardable.
-pub fn validate<P>(event_type: &str, payload: &P) -> serde_json::Result<()>
+pub fn validate<P>(event_type: &str, payload: &P) -> Result<(), ValidationError>
 where
     P: Serialize + ?Sized,
 {
-    let payload = serde_json::to_value(payload)?;
+    let payload = serde_json::to_value(payload)
+        .map_err(|error| ValidationError::policy("payload", error.to_string()))?;
 
     // Universal bounds: run before the known-type branch below, and for
     // every event including one of an unrecognised type (issue #28).
-    validate_payload_text_scalars(&payload, "payload").map_err(de::Error::custom)?;
-    validate_payload_size(&payload).map_err(de::Error::custom)?;
+    validate_payload_text_scalars(&payload, "payload")?;
+    validate_payload_size(&payload)?;
 
     if !KNOWN_TYPES.contains(&event_type) {
         return Ok(());
     }
 
-    validate_payload_numbers(&payload, "payload").map_err(de::Error::custom)?;
+    validate_payload_numbers(&payload, "payload")?;
 
     if event_type == RUN_STARTED {
-        let started = serde_json::from_value::<RunStartedPayload>(payload)?;
+        let started = decode_payload::<RunStartedPayload>(payload)?;
         if let RunKind::Unknown(value) = started.kind {
-            return Err(de::Error::custom(format_args!(
-                "RunStartedPayload.kind has unknown value: {value}"
-            )));
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.kind".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("RunStartedPayload.kind has unknown value: {value}"),
+            ));
         }
     } else if event_type == RUN_FINISHED {
-        let finished = serde_json::from_value::<RunFinishedPayload>(payload)?;
+        let finished = decode_payload::<RunFinishedPayload>(payload)?;
         if let RunOutcome::Unknown(value) = finished.outcome {
-            return Err(de::Error::custom(format_args!(
-                "RunFinishedPayload.outcome has unknown value: {value}"
-            )));
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.outcome".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("RunFinishedPayload.outcome has unknown value: {value}"),
+            ));
         }
         validate_scalar_bound(
             finished.reason.as_deref(),
@@ -1276,39 +1290,43 @@ where
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == AGENT_STARTED {
-        serde_json::from_value::<AgentStartedPayload>(payload).map(drop)?;
+        decode_payload::<AgentStartedPayload>(payload).map(drop)?;
     } else if event_type == AGENT_TEXT {
-        let text = serde_json::from_value::<AgentTextPayload>(payload)?;
+        let text = decode_payload::<AgentTextPayload>(payload)?;
         validate_scalar_bound(Some(&text.text), "AgentTextPayload.text", MAX_TEXT_SCALARS)?;
     } else if event_type == AGENT_TOOL_USE {
-        let tool_use = serde_json::from_value::<AgentToolUsePayload>(payload)?;
+        let tool_use = decode_payload::<AgentToolUsePayload>(payload)?;
         validate_scalar_bound(
             tool_use.input_excerpt.as_deref(),
             "AgentToolUsePayload.inputExcerpt",
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == AGENT_TOOL_RESULT {
-        let tool_result = serde_json::from_value::<AgentToolResultPayload>(payload)?;
+        let tool_result = decode_payload::<AgentToolResultPayload>(payload)?;
         validate_scalar_bound(
             tool_result.result_excerpt.as_deref(),
             "AgentToolResultPayload.resultExcerpt",
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == AGENT_COMPLETED {
-        serde_json::from_value::<AgentCompletedPayload>(payload).map(drop)?;
+        decode_payload::<AgentCompletedPayload>(payload).map(drop)?;
     } else if event_type == AGENT_WARNING {
-        let warning = serde_json::from_value::<AgentWarningPayload>(payload)?;
+        let warning = decode_payload::<AgentWarningPayload>(payload)?;
         validate_scalar_bound(
             Some(&warning.message),
             "AgentWarningPayload.message",
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == CONTROL_REQUESTED {
-        let requested = serde_json::from_value::<ControlRequestedPayload>(payload)?;
+        let requested = decode_payload::<ControlRequestedPayload>(payload)?;
         if let ControlKind::Unknown(value) = requested.kind {
-            return Err(de::Error::custom(format_args!(
-                "ControlRequestedPayload.kind has unknown value: {value}"
-            )));
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.kind".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("ControlRequestedPayload.kind has unknown value: {value}"),
+            ));
         }
         // A `steer` is an instruction queued for the run's next turn; one
         // carrying nothing to say is a producer error. This is policy, not
@@ -1320,7 +1338,8 @@ where
         if requested.kind == ControlKind::Steer
             && requested.text.as_deref().unwrap_or("").is_empty()
         {
-            return Err(de::Error::custom(
+            return Err(ValidationError::policy(
+                "payload.text",
                 "ControlRequestedPayload.text is required and must not be empty when kind is \"steer\": a steer with nothing to say is a producer error",
             ));
         }
@@ -1330,18 +1349,22 @@ where
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == CONTROL_APPLIED {
-        let applied = serde_json::from_value::<ControlAppliedPayload>(payload)?;
+        let applied = decode_payload::<ControlAppliedPayload>(payload)?;
         validate_scalar_bound(
             applied.reason.as_deref(),
             "ControlAppliedPayload.reason",
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == CAPTURE_REFUSED {
-        let refused = serde_json::from_value::<CaptureRefusedPayload>(payload)?;
+        let refused = decode_payload::<CaptureRefusedPayload>(payload)?;
         if let CaptureRefusalCause::Unknown(value) = refused.cause {
-            return Err(de::Error::custom(format_args!(
-                "CaptureRefusedPayload.cause has unknown value: {value}"
-            )));
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.cause".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("CaptureRefusedPayload.cause has unknown value: {value}"),
+            ));
         }
         validate_scalar_bound(
             refused.detail.as_deref(),
@@ -1349,33 +1372,46 @@ where
             MAX_EXCERPT_SCALARS,
         )?;
     } else if event_type == DECISION_REQUESTED {
-        let requested = serde_json::from_value::<DecisionRequestedPayload>(payload)?;
+        let requested = decode_payload::<DecisionRequestedPayload>(payload)?;
         if let DecisionKind::Unknown(value) = &requested.kind {
-            return Err(de::Error::custom(format_args!(
-                "DecisionRequestedPayload.kind has unknown value: {value}"
-            )));
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.kind".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("DecisionRequestedPayload.kind has unknown value: {value}"),
+            ));
         }
 
         if let Some(on_timeout) = requested.on_timeout.as_deref() {
             if requested.kind != DecisionKind::Permission {
-                return Err(de::Error::custom(format_args!(
-                    "DecisionRequestedPayload.onTimeout is permitted only when kind is \"permission\"; received kind \"{}\"",
-                    requested.kind.as_str()
-                )));
+                return Err(ValidationError::policy(
+                    "payload.onTimeout",
+                    format!(
+                        "DecisionRequestedPayload.onTimeout is permitted only when kind is \"permission\"; received kind \"{}\"",
+                        requested.kind.as_str()
+                    ),
+                ));
             }
             if on_timeout != "deny" {
-                return Err(de::Error::custom(format_args!(
-                    "DecisionRequestedPayload.onTimeout must be \"deny\" when kind is \"permission\"; received \"{on_timeout}\""
-                )));
+                return Err(ValidationError::policy(
+                    "payload.onTimeout",
+                    format!(
+                        "DecisionRequestedPayload.onTimeout must be \"deny\" when kind is \"permission\"; received \"{on_timeout}\""
+                    ),
+                ));
             }
             if !requested
                 .options
                 .iter()
                 .any(|option| option.id == on_timeout)
             {
-                return Err(de::Error::custom(format_args!(
-                    "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"{on_timeout}\""
-                )));
+                return Err(ValidationError::policy(
+                    "payload.onTimeout",
+                    format!(
+                        "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"{on_timeout}\""
+                    ),
+                ));
             }
         }
 
@@ -1409,7 +1445,7 @@ where
             )?;
         }
     } else if event_type == DECISION_ANSWERED {
-        serde_json::from_value::<DecisionAnsweredPayload>(payload).map(drop)?;
+        decode_payload::<DecisionAnsweredPayload>(payload).map(drop)?;
     }
 
     Ok(())
@@ -1475,18 +1511,31 @@ fn validate_scalar_bound(
     value: Option<&str>,
     field: &str,
     maximum: usize,
-) -> serde_json::Result<()> {
+) -> Result<(), ValidationError> {
     let Some(value) = value else {
         return Ok(());
     };
     let actual = value.chars().count();
     if actual > maximum {
-        Err(de::Error::custom(format_args!(
-            "{field} has {actual} Unicode scalar values; maximum is {maximum}"
-        )))
+        Err(ValidationError::new(
+            ValidationErrorKind::OverBound {
+                path: payload_path(field),
+                count: actual,
+                max: maximum,
+            },
+            format!("{field} has {actual} Unicode scalar values; maximum is {maximum}"),
+        ))
     } else {
         Ok(())
     }
+}
+
+// Convert a known field label, never diagnostic text, into its wire path.
+fn payload_path(field: &str) -> String {
+    let (_, suffix) = field
+        .split_once('.')
+        .expect("known field has a payload type prefix");
+    format!("payload.{suffix}")
 }
 
 /// Checks whether `payload` is representable by the typed struct for
@@ -1591,6 +1640,13 @@ pub fn serialise_event<P: Serialize>(event: &Event<P>) -> serde_json::Result<Str
     Ok(String::from_utf8(bytes).expect("a JSON serialiser only ever writes valid UTF-8"))
 }
 
+/// Serialises a validation error as its kind and fields, using the event
+/// payload serialiser's UTF-8 key ordering and ECMAScript number notation.
+pub fn serialise_validation_error(error: &ValidationError) -> serde_json::Result<String> {
+    let bytes = serialise_payload_canonical(&serde_json::to_value(error)?)?;
+    Ok(String::from_utf8(bytes).expect("a JSON serialiser only ever writes valid UTF-8"))
+}
+
 /// Recursively validates that every integral-valued number in `value` is
 /// within the safe-integer magnitude bound, naming the offending path (for
 /// example `payload.nested.count` or `payload.items[2].total`) when the
@@ -1598,7 +1654,7 @@ pub fn serialise_event<P: Serialize>(event: &Event<P>) -> serde_json::Result<Str
 /// their magnitude. Mirrors `deserialize_seq` and reuses the same bound
 /// (issue #9): a value that needs more precision must be carried as a string
 /// instead of a number.
-fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), String> {
+fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), ValidationError> {
     match value {
         Value::Object(fields) => {
             for (key, child) in fields {
@@ -1614,8 +1670,11 @@ fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), String> {
         }
         Value::Number(number) => {
             if number_exceeds_safe_integer_magnitude(number) {
-                Err(format!(
-                    "{path} is an integral number whose magnitude exceeds the safe integer bound: actual {number}; maximum {MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string"
+                Err(ValidationError::policy(
+                    path,
+                    format!(
+                        "{path} is an integral number whose magnitude exceeds the safe integer bound: actual {number}; maximum {MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string"
+                    ),
                 ))
             } else {
                 Ok(())
@@ -1659,7 +1718,7 @@ fn number_exceeds_safe_integer_magnitude(number: &serde_json::Number) -> bool {
 /// [`validate`] calls this unconditionally, before branching on whether
 /// `event_type` is recognised, so an unrecognised type is covered by the
 /// same floor as a known one instead of going unchecked.
-fn validate_payload_text_scalars(value: &Value, path: &str) -> Result<(), String> {
+fn validate_payload_text_scalars(value: &Value, path: &str) -> Result<(), ValidationError> {
     match value {
         Value::Object(fields) => {
             for (key, child) in fields {
@@ -1676,8 +1735,15 @@ fn validate_payload_text_scalars(value: &Value, path: &str) -> Result<(), String
         Value::String(text) => {
             let actual = text.chars().count();
             if actual > MAX_TEXT_SCALARS {
-                Err(format!(
-                    "{path} has {actual} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}"
+                Err(ValidationError::new(
+                    ValidationErrorKind::OverBound {
+                        path: path.to_owned(),
+                        count: actual,
+                        max: MAX_TEXT_SCALARS,
+                    },
+                    format!(
+                        "{path} has {actual} Unicode scalar values; maximum is {MAX_TEXT_SCALARS}"
+                    ),
                 ))
             } else {
                 Ok(())
@@ -1709,13 +1775,21 @@ fn serialise_payload_canonical(payload: &Value) -> serde_json::Result<Vec<u8>> {
 /// [`validate`] calls this unconditionally, before branching on whether
 /// `event_type` is recognised, so an unrecognised type is covered by the
 /// same floor as a known one instead of going unchecked.
-fn validate_payload_size(payload: &Value) -> Result<(), String> {
-    let bytes = serialise_payload_canonical(payload)
-        .map_err(|error| format!("payload could not be serialised to measure its size: {error}"))?;
+fn validate_payload_size(payload: &Value) -> Result<(), ValidationError> {
+    let bytes = serialise_payload_canonical(payload).map_err(|error| {
+        ValidationError::policy(
+            "payload",
+            format!("payload could not be serialised to measure its size: {error}"),
+        )
+    })?;
     let actual = bytes.len();
     if actual > MAX_PAYLOAD_BYTES {
-        Err(format!(
-            "payload has {actual} bytes; maximum is {MAX_PAYLOAD_BYTES}"
+        Err(ValidationError::new(
+            ValidationErrorKind::PayloadTooLarge {
+                bytes: actual,
+                max: MAX_PAYLOAD_BYTES,
+            },
+            format!("payload has {actual} bytes; maximum is {MAX_PAYLOAD_BYTES}"),
         ))
     } else {
         Ok(())

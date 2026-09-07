@@ -1,0 +1,8 @@
+{
+  "type": "run.finished",
+  "payload": {
+    "outcome": "not-a-real-outcome",
+    "durationMs": 1
+  },
+  "expectedKind": "UnknownMember"
+}

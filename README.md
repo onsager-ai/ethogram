@@ -238,9 +238,50 @@ never by the console** — a console that shows a run as interrupted before
 closed at validation and open and retaining at parse like the other closed
 unions. An `over_bound` refusal carries the bounded field and its measured
 `count` and `max`, never the content that exceeded the bound. A `malformed`
-refusal may carry only an excerpted parser message in `detail`, with
-`truncated` recording whether it was cut; that message describes the parse
-failure rather than reproducing refused content.
+refusal may carry an excerpted parser or validation message in `detail`, with
+`truncated` recording whether it was cut.
+
+### Sink guide: refusing a validation error
+
+`validate` now returns `Result<(), ValidationError>` in Rust and throws
+`ValidationError` in TypeScript. Use its structured kind to choose the
+`capture.refused.cause` and copy the fields below; no message parsing is needed.
+
+| kind | error fields | `capture.refused.cause` and fields to copy |
+|---|---|---|
+| `OverBound` | `path`, `count`, `max` | `over_bound`: `field = path`, `count`, `max` |
+| `PayloadTooLarge` | `bytes`, `max` | `over_bound`: `field = "payload"`, `count = bytes`, `max` |
+| `UnknownMember` | `path`, `value` | `malformed`: excerpt the error message into `detail` |
+| `MissingField` | `path` | `malformed`: excerpt the error message into `detail` |
+| `Policy` | `path`, `message` | `malformed`: excerpt `message` into `detail` |
+
+Paths start at `payload`, such as `payload.dossier.question` or
+`payload.options[0].label`. `count` measures Unicode scalar values for
+`OverBound`; `bytes` measures the payload's canonical UTF-8 serialisation for
+`PayloadTooLarge`. For `malformed`, use `excerpt(message, MAX_EXCERPT_SCALARS)`
+and copy its text and truncation flag to `detail` and `truncated`. Stamp the
+refusal on the capturing runtime's run and identify the source using
+`sourceRunId`, and `sourceSeq` / `sourceType` when available.
+
+In Rust, match `error.kind`, a closed `ValidationErrorKind` enum carrying the
+fields above. `error.to_string()` preserves the original diagnostic exactly;
+`From<ValidationError> for serde_json::Error` keeps callers using `?` in a
+`serde_json::Result` working. In TypeScript, switch on `error.details.kind`
+to narrow the discriminated union and read its fields; `error.kind` also
+exposes the tag. The class extends `TypeError`, retaining its `name` and
+original `message`, so existing `TypeError` checks and message matches hold.
+
+`Policy` includes steer without nonempty text and all existing `onTimeout`
+checks: permission only, deny only, and membership in the request's options.
+Existing representation failures other than missing fields (wrong types,
+unsafe integers, or an input that cannot be serialised) also carry a `Policy`
+path and their original diagnostic. Parsing still checks representability
+without applying capture bounds or producer policy.
+
+`serialise_validation_error` / `serialiseValidationError` emits only the kind
+and its fields in canonical JSON, using the event payload serialiser's UTF-8
+key ordering and number notation. The compatibility diagnostic is separate
+from those fields, except for `Policy.message`.
 
 ## Decisions
 
@@ -296,7 +337,7 @@ fixture exists. All three are now settled and remain here with their reasons:
 ## Layout
 
 ```
-conformance/   canonical fixtures both SDKs must serialise identically
+conformance/   captured versioned fixtures and separate handwritten validation inputs
 packages/      TypeScript SDK
 crates/        Rust SDK
 ```
