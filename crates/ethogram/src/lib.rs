@@ -1134,8 +1134,9 @@ pub struct DecisionRequestedPayload {
 /// `option_id: "deny"` is indistinguishable from a permission expiring
 /// unanswered with the same option and a runtime principal in `by`. A timeout
 /// is not a decision with a long gap; it is nobody deciding. Absence means
-/// false. `reversal` is the unbounded option identifier that undoes this
-/// answer, not prose.
+/// false. `reversal` names the identifier that would undo this answer; see
+/// its own doc comment below for the two forms it may take and why neither is
+/// checked against the request.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionAnsweredPayload {
@@ -1149,6 +1150,24 @@ pub struct DecisionAnsweredPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub by_timeout: Option<bool>,
+    /// The identifier that would undo this answer, if the producer accepts
+    /// one. Two forms (ruled on #7):
+    ///
+    /// - an offered `options[].id`, or
+    /// - a `<verb>:<subject>` **action id** — `revoke:required_checks` undoes
+    ///   `excuse:required_checks`, even though `revoke:required_checks` was
+    ///   never among the options offered to the human, because those options
+    ///   were about whether to excuse, not about how to later revoke.
+    ///
+    /// Either form is meaningful only because **the producer accepts its own
+    /// reversal ids as a subsequent `option_id` on this decision** — that
+    /// acceptance is what makes an unoffered id legible rather than
+    /// arbitrary. It follows that `reversal` is therefore not checkable
+    /// against the request: `validate_decision_answer_against_request` does
+    /// not check it. The alternative — requiring membership in
+    /// `options[].id` — would refuse a legitimate undo that the producer will
+    /// honour, which is worse than not checking at all. `validate` still only
+    /// checks that, when present, this is a string.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -1501,8 +1520,12 @@ where
 /// genuine timeout answer against such a request validate correctly instead
 /// of being misreported as an unrecognised option.
 ///
-/// A `reversal`, when present, must always be an option from the request, and
-/// the two `decision_id` values must match.
+/// The two `decision_id` values must match. `reversal`, when present, is
+/// **not** checked here (ruled on #7): it may name either an offered option
+/// or a `<verb>:<subject>` action id the producer accepts as a later answer
+/// to this same decision, and only the producer knows which action ids it
+/// accepts — see [`DecisionAnsweredPayload::reversal`]'s doc comment for why
+/// checking it against `options[].id` would refuse a legitimate undo.
 pub fn validate_decision_answer_against_request(
     request: &DecisionRequestedPayload,
     answer: &DecisionAnsweredPayload,
@@ -1524,14 +1547,6 @@ pub fn validate_decision_answer_against_request(
         return Err(de::Error::custom(format_args!(
             "DecisionAnsweredPayload.optionId does not name a request option: \"{}\"",
             answer.option_id
-        )));
-    }
-
-    if let Some(reversal) = answer.reversal.as_deref()
-        && !request.options.iter().any(|option| option.id == reversal)
-    {
-        return Err(de::Error::custom(format_args!(
-            "DecisionAnsweredPayload.reversal does not name a request option: \"{reversal}\""
         )));
     }
 
@@ -2359,6 +2374,13 @@ mod tests {
     // #7 correction). This exact literal is pasted into the TypeScript suite
     // and asserted against an event hand-built through each SDK's typed API.
     const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}"#;
+
+    // Cross-SDK byte identity for a `<verb>:<subject>` action-id `reversal`
+    // (ruled on #7): `revoke:required_checks` undoes `excuse:required_checks`
+    // even though it was never among the options offered to the human. This
+    // exact literal is pasted into the TypeScript suite and asserted against
+    // an event hand-built through each SDK's typed API.
+    const DECISION_ANSWERED_ACTION_REVERSAL_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision-revoke","seq":1,"ts":"2026-09-07T09:00:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-revoke-1","optionId":"excuse:required_checks","reversal":"revoke:required_checks"}}"#;
 
     // This value is intentionally one neither SDK will ever know. The kind's
     // raw bytes and the whole canonical event must survive an older relay.
@@ -4327,7 +4349,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_event_helper_checks_option_timeout_reversal_and_decision_id() {
+    fn cross_event_helper_checks_option_timeout_and_decision_id_and_accepts_any_reversal() {
         let request = consistency_request();
         let valid = consistency_answer("allow");
         validate_decision_answer_against_request(&request, &valid).unwrap();
@@ -4349,14 +4371,16 @@ mod tests {
         timeout.by_timeout = None;
         assert!(validate_decision_answer_against_request(&request, &timeout).is_err());
 
-        let mut invalid_reversal = valid.clone();
-        invalid_reversal.reversal = Some("missing".to_owned());
-        assert!(
-            validate_decision_answer_against_request(&request, &invalid_reversal)
-                .unwrap_err()
-                .to_string()
-                .contains("reversal")
-        );
+        // Ruled on #7: a `<verb>:<subject>` action id is a legitimate
+        // `reversal` even though it was never offered as a request option —
+        // `revoke:required_checks` undoes `excuse:required_checks`, an
+        // action the human was never offered as a choice. This deliberately
+        // replaces a prior assertion that such a reversal was rejected: that
+        // behaviour is the constraint being loosened here, not a bug being
+        // preserved.
+        let mut action_reversal = valid.clone();
+        action_reversal.reversal = Some("revoke:required_checks".to_owned());
+        validate_decision_answer_against_request(&request, &action_reversal).unwrap();
 
         let mut mismatched = valid;
         mismatched.decision_id = "decision-2".to_owned();
@@ -4708,6 +4732,41 @@ mod tests {
         assert_eq!(
             serialise_event(&parsed).unwrap(),
             DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE
+        );
+    }
+
+    #[test]
+    fn decision_answered_with_action_reversal_matches_the_typescript_pinned_bytes() {
+        // Pins the loosened rule (ruled on #7): a `<verb>:<subject>` action
+        // id is a conforming `reversal` even though it names no option this
+        // request ever offered.
+        let answer = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: DECISION_ANSWERED.to_owned(),
+            run_id: "run-decision-revoke".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T09:00:00.000Z".to_owned(),
+            payload: DecisionAnsweredPayload {
+                decision_id: "decision-revoke-1".to_owned(),
+                option_id: "excuse:required_checks".to_owned(),
+                by: "principal:user:alice".to_owned(),
+                by_timeout: None,
+                reversal: Some("revoke:required_checks".to_owned()),
+                requested_run_id: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        validate(DECISION_ANSWERED, &answer.payload).unwrap();
+        assert_eq!(
+            serialise_event(&answer).unwrap(),
+            DECISION_ANSWERED_ACTION_REVERSAL_WIRE
+        );
+        let parsed = parse_event(DECISION_ANSWERED_ACTION_REVERSAL_WIRE).unwrap();
+        assert_eq!(
+            serialise_event(&parsed).unwrap(),
+            DECISION_ANSWERED_ACTION_REVERSAL_WIRE
         );
     }
 
