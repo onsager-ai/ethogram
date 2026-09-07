@@ -1,7 +1,9 @@
 # Conformance corpus
 
 Canonical event fixtures. **Both SDKs must agree on the compact canonical
-serialisation of every fixture in this directory**, and both CIs run the corpus.
+serialisation of every fixture in the versioned corpus directories**, and both
+CIs run the corpus. `handwritten-validation-inputs/` is a separate harness
+input set, described below, and is not part of the captured corpus.
 
 This is the mechanism behind principle 1. Two hand-written implementations in
 different languages are only one definition if something mechanical proves they
@@ -141,6 +143,32 @@ instead of a number that happens to look integral.
 fixture had to record observed producer output rather than an invented example.
 It now holds fixtures derived from real captures and still grows only that way.
 Waiting cost time once; an invented fixture would have been wrong permanently.
+
+## Handwritten validation inputs
+
+`handwritten-validation-inputs/*.json` exercises `validate` with one input
+per structured error kind. These are deliberately invented invalid inputs,
+not captured events: the path explicitly says handwritten inputs, is outside
+every versioned corpus directory, and is never read by the corpus generator.
+Each contains `type`, `payload`, and `expectedKind`, without a stamped event
+envelope. The harness passes the payload directly to `validate` so a missing
+required field reaches validation rather than failing in the event parser.
+
+Each SDK must produce a `ValidationError` of the declared kind for every
+input. A clean validation result fails the harness explicitly, as does an
+unexpected kind. Each error is written to `errors/<input-name>.json` under
+the SDK's existing output directory using `serialise_validation_error` /
+`serialiseValidationError`. These production helpers emit only `kind` and
+its fields, with the same recursive UTF-8 key sorting and number handling
+used for event payloads. The original diagnostic is included only where it
+is a field of the kind (`Policy.message`); stacks and SDK-specific display
+metadata are excluded.
+
+`run.sh` checks separate fixture and error-output counts in each manifest,
+then runs its existing recursive byte diff across both output directories.
+A kind, path, count, or other field disagreement therefore fails through
+the same comparison as an event serialisation disagreement. The driver
+reports captured fixtures and validation inputs as separate counts.
 
 ## Library views
 

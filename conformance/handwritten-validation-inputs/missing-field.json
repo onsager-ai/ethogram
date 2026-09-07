@@ -1,0 +1,14 @@
+{
+  "type": "decision.requested",
+  "payload": {
+    "decisionId": "d",
+    "kind": "permission",
+    "dossier": {
+      "optionsRuledOut": [],
+      "recommendedAction": "ask",
+      "blastRadius": "one run"
+    },
+    "options": []
+  },
+  "expectedKind": "MissingField"
+}

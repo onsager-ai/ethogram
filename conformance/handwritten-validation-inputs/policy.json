@@ -1,0 +1,9 @@
+{
+  "type": "control.requested",
+  "payload": {
+    "controlId": "c",
+    "kind": "steer",
+    "by": "operator"
+  },
+  "expectedKind": "Policy"
+}

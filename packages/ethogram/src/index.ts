@@ -1,3 +1,78 @@
+/** The closed set of validation failures a sink maps to capture.refused. */
+export type ValidationErrorDetails =
+  | { kind: "OverBound"; path: string; count: number; max: number }
+  | { kind: "PayloadTooLarge"; bytes: number; max: number }
+  | { kind: "UnknownMember"; path: string; value: string }
+  | { kind: "MissingField"; path: string }
+  // A producer broke a stated rule while sending an otherwise
+  // representable value: the steer-without-text rule, or one of the three
+  // `onTimeout` checks.
+  | { kind: "Policy"; path: string; message: string }
+  // The value sent could not be represented at all: wrong-typed, an
+  // unsafe integer, or not serialisable. Distinct from `Policy`, which is a
+  // stated rule broken by an otherwise representable value.
+  | { kind: "Malformed"; path: string; message: string };
+
+/**
+ * A validation failure with structured fields and the original message.
+ * Switch on `details.kind` to narrow its fields. The inherited TypeError
+ * name is intentional: existing message matches and TypeError checks hold.
+ */
+export class ValidationError extends TypeError {
+  readonly details: Readonly<ValidationErrorDetails>;
+
+  constructor(details: ValidationErrorDetails, message: string) {
+    super(message);
+    this.details = Object.freeze({ ...details });
+  }
+
+  get kind(): ValidationErrorDetails["kind"] {
+    return this.details.kind;
+  }
+
+  toJSON(): ValidationErrorDetails {
+    return { ...this.details };
+  }
+}
+
+/** Same UTF-8 key ordering and number notation as the event payload. */
+export function serialiseValidationError(error: ValidationError): string {
+  return serialisePayloadCanonical(error.toJSON());
+}
+
+// Convert a field label, never a diagnostic message, to its wire path.
+function payloadPath(field: string): string {
+  if (
+    field === "payload" ||
+    field.startsWith("payload.") ||
+    field.startsWith("payload[")
+  ) {
+    return field;
+  }
+  const dot = field.indexOf(".");
+  return dot === -1 ? "payload" : `payload${field.slice(dot)}`;
+}
+
+// Shared parsing helpers keep representability checks and their order in
+// one place. validate promotes this metadata to the public error; parsing
+// still reports TypeError without applying any producer policy.
+class PayloadRepresentationError extends TypeError {
+  readonly path: string;
+
+  constructor(field: string, message: string, readonly missing = false) {
+    super(message);
+    this.path = payloadPath(field);
+  }
+}
+
+function policyError(path: string, message: string): ValidationError {
+  return new ValidationError({ kind: "Policy", path, message }, message);
+}
+
+function malformedError(path: string, message: string): ValidationError {
+  return new ValidationError({ kind: "Malformed", path, message }, message);
+}
+
 export const EVENT_SCHEMA_VERSION = 1 as const;
 
 /** Maximum number of Unicode scalar values carried by an `agent.text`. */
@@ -413,8 +488,8 @@ export interface CaptureRefusedPayload {
   count?: number;
   max?: number;
   /**
-   * A bounded, excerpted parser message for `malformed`, not content from the
-   * refused event itself. `truncated` records whether it was excerpted.
+   * A bounded, excerpted parser or validation message for `malformed`.
+   * `truncated` records whether it was excerpted.
    */
   detail?: string;
   truncated?: boolean;
@@ -838,11 +913,18 @@ function requiredString(
   name: string,
 ): string {
   if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name} is missing required field: ${field}`,
+      true,
+    );
   }
   const fieldValue = value[field];
   if (typeof fieldValue !== "string") {
-    throw new TypeError(`${name}.${field} must be a string`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a string`,
+    );
   }
   return fieldValue;
 }
@@ -857,7 +939,10 @@ function optionalString(
   }
   const fieldValue = value[field];
   if (typeof fieldValue !== "string") {
-    throw new TypeError(`${name}.${field} must be a string when present`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a string when present`,
+    );
   }
   return fieldValue;
 }
@@ -872,7 +957,10 @@ function optionalNumber(
   }
   const fieldValue = value[field];
   if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
-    throw new TypeError(`${name}.${field} must be a finite number when present`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a finite number when present`,
+    );
   }
   return fieldValue;
 }
@@ -901,7 +989,8 @@ function optionalSafeInteger(
     !Number.isSafeInteger(fieldValue) ||
     fieldValue < 0
   ) {
-    throw new TypeError(
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
       `${name}.${field} must be a non-negative safe integer when present`,
     );
   }
@@ -922,7 +1011,11 @@ function requiredSafeInteger(
   name: string,
 ): number {
   if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name} is missing required field: ${field}`,
+      true,
+    );
   }
   const fieldValue = value[field];
   if (
@@ -930,7 +1023,10 @@ function requiredSafeInteger(
     !Number.isSafeInteger(fieldValue) ||
     fieldValue < 0
   ) {
-    throw new TypeError(`${name}.${field} must be a non-negative safe integer`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a non-negative safe integer`,
+    );
   }
   return fieldValue;
 }
@@ -945,7 +1041,10 @@ function optionalBoolean(
   }
   const fieldValue = value[field];
   if (typeof fieldValue !== "boolean") {
-    throw new TypeError(`${name}.${field} must be a boolean when present`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a boolean when present`,
+    );
   }
   return fieldValue;
 }
@@ -956,11 +1055,18 @@ function requiredBoolean(
   name: string,
 ): boolean {
   if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name} is missing required field: ${field}`,
+      true,
+    );
   }
   const fieldValue = value[field];
   if (typeof fieldValue !== "boolean") {
-    throw new TypeError(`${name}.${field} must be a boolean`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be a boolean`,
+    );
   }
   return fieldValue;
 }
@@ -971,11 +1077,18 @@ function requiredArray(
   name: string,
 ): unknown[] {
   if (!Object.hasOwn(value, field)) {
-    throw new TypeError(`${name} is missing required field: ${field}`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name} is missing required field: ${field}`,
+      true,
+    );
   }
   const fieldValue = value[field];
   if (!Array.isArray(fieldValue)) {
-    throw new TypeError(`${name}.${field} must be an array`);
+    throw new PayloadRepresentationError(
+      `${name}.${field}`,
+      `${name}.${field} must be an array`,
+    );
   }
   return fieldValue;
 }
@@ -983,7 +1096,7 @@ function requiredArray(
 function parseRunCeilings(value: unknown): RunCeilings {
   const name = "RunStartedPayload.ceilings";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const costUsd = optionalNumber(value, "costUsd", name);
@@ -1003,7 +1116,7 @@ function parseRunCeilings(value: unknown): RunCeilings {
 
 function parseRunUsage(value: unknown, name: string): RunUsage {
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const inputTokens = optionalSafeInteger(value, "inputTokens", name);
@@ -1033,7 +1146,7 @@ function parseRunUsage(value: unknown, name: string): RunUsage {
 export function parseRunStartedPayload(value: unknown): RunStartedPayload {
   const name = "RunStartedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const kind = requiredString(value, "kind", name);
@@ -1072,7 +1185,7 @@ export function parseRunStartedPayload(value: unknown): RunStartedPayload {
 export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
   const name = "RunFinishedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const outcome = requiredString(value, "outcome", name);
@@ -1101,7 +1214,7 @@ export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
 export function parseAgentStartedPayload(value: unknown): AgentStartedPayload {
   const name = "AgentStartedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1121,7 +1234,7 @@ export function parseAgentStartedPayload(value: unknown): AgentStartedPayload {
 export function parseAgentTextPayload(value: unknown): AgentTextPayload {
   const name = "AgentTextPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1141,7 +1254,7 @@ export function parseAgentTextPayload(value: unknown): AgentTextPayload {
 export function parseAgentToolUsePayload(value: unknown): AgentToolUsePayload {
   const name = "AgentToolUsePayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1169,7 +1282,7 @@ export function parseAgentToolResultPayload(
 ): AgentToolResultPayload {
   const name = "AgentToolResultPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1197,7 +1310,7 @@ export function parseAgentCompletedPayload(
 ): AgentCompletedPayload {
   const name = "AgentCompletedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1227,7 +1340,7 @@ export function parseAgentCompletedPayload(
 export function parseAgentWarningPayload(value: unknown): AgentWarningPayload {
   const name = "AgentWarningPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const stage = optionalString(value, "stage", name);
@@ -1245,7 +1358,7 @@ export function parseControlRequestedPayload(
 ): ControlRequestedPayload {
   const name = "ControlRequestedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const controlId = requiredString(value, "controlId", name);
@@ -1269,7 +1382,7 @@ export function parseControlAppliedPayload(
 ): ControlAppliedPayload {
   const name = "ControlAppliedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const controlId = requiredString(value, "controlId", name);
@@ -1297,7 +1410,7 @@ export function parseCaptureRefusedPayload(
 ): CaptureRefusedPayload {
   const name = "CaptureRefusedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const cause = requiredString(value, "cause", name);
@@ -1326,7 +1439,7 @@ export function parseCaptureRefusedPayload(
 function parseDecisionDossier(value: unknown): DecisionDossier {
   const name = "DecisionRequestedPayload.dossier";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const question = requiredString(value, "question", name);
@@ -1336,7 +1449,10 @@ function parseDecisionDossier(value: unknown): DecisionDossier {
     name,
   ).map((option, index) => {
     if (typeof option !== "string") {
-      throw new TypeError(`${name}.optionsRuledOut[${index}] must be a string`);
+      throw new PayloadRepresentationError(
+        `${name}.optionsRuledOut[${index}]`,
+        `${name}.optionsRuledOut[${index}] must be a string`,
+      );
     }
     return option;
   });
@@ -1356,7 +1472,7 @@ function parseDecisionDossier(value: unknown): DecisionDossier {
 function parseDecisionOption(value: unknown, index: number): DecisionOption {
   const name = `DecisionRequestedPayload.options[${index}]`;
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const id = requiredString(value, "id", name);
@@ -1379,13 +1495,17 @@ export function parseDecisionRequestedPayload(
 ): DecisionRequestedPayload {
   const name = "DecisionRequestedPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const decisionId = requiredString(value, "decisionId", name);
   const kind = requiredString(value, "kind", name);
   if (!Object.hasOwn(value, "dossier")) {
-    throw new TypeError(`${name} is missing required field: dossier`);
+    throw new PayloadRepresentationError(
+      `${name}.dossier`,
+      `${name} is missing required field: dossier`,
+      true,
+    );
   }
   const dossier = parseDecisionDossier(value.dossier);
   const options = requiredArray(value, "options", name).map(parseDecisionOption);
@@ -1410,7 +1530,7 @@ export function parseDecisionAnsweredPayload(
 ): DecisionAnsweredPayload {
   const name = "DecisionAnsweredPayload";
   if (!isRecord(value)) {
-    throw new TypeError(`${name} must be an object`);
+    throw new PayloadRepresentationError(name, `${name} must be an object`);
   }
 
   const decisionId = requiredString(value, "decisionId", name);
@@ -1485,7 +1605,8 @@ const MAX_SAFE_INTEGER_MAGNITUDE = Number.MAX_SAFE_INTEGER;
 function validatePayloadNumbers(value: unknown, path: string): void {
   if (typeof value === "number") {
     if (Number.isInteger(value) && Math.abs(value) > MAX_SAFE_INTEGER_MAGNITUDE) {
-      throw new TypeError(
+      throw new PayloadRepresentationError(
+        path,
         `${path} is an integral number whose magnitude exceeds the safe integer bound: actual ${String(value)}; maximum ${MAX_SAFE_INTEGER_MAGNITUDE}; a value that needs more precision must be carried as a string`,
       );
     }
@@ -1514,7 +1635,8 @@ function validateScalarBound(
   }
   const actual = Array.from(value).length;
   if (actual > maximum) {
-    throw new TypeError(
+    throw new ValidationError(
+      { kind: "OverBound", path: payloadPath(field), count: actual, max: maximum },
       `${field} has ${actual} Unicode scalar values; maximum is ${maximum}`,
     );
   }
@@ -1538,7 +1660,8 @@ function validatePayloadTextScalars(value: unknown, path: string): void {
   if (typeof value === "string") {
     const actual = Array.from(value).length;
     if (actual > MAX_TEXT_SCALARS) {
-      throw new TypeError(
+      throw new ValidationError(
+        { kind: "OverBound", path, count: actual, max: MAX_TEXT_SCALARS },
         `${path} has ${actual} Unicode scalar values; maximum is ${MAX_TEXT_SCALARS}`,
       );
     }
@@ -1584,7 +1707,8 @@ function validatePayloadSize(payload: unknown): void {
   const serialised = serialisePayloadCanonical(payload);
   const actual = Buffer.byteLength(serialised, "utf8");
   if (actual > MAX_PAYLOAD_BYTES) {
-    throw new TypeError(
+    throw new ValidationError(
+      { kind: "PayloadTooLarge", bytes: actual, max: MAX_PAYLOAD_BYTES },
       `payload has ${actual} bytes; maximum is ${MAX_PAYLOAD_BYTES}`,
     );
   }
@@ -1615,6 +1739,33 @@ function validatePayloadSize(payload: unknown): void {
  * over-bound event must remain forwardable.
  */
 export function validate(eventType: string, payload: unknown): void {
+  try {
+    validatePayload(eventType, payload);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+    if (error instanceof PayloadRepresentationError) {
+      // A missing field is its own kind; anything else here is a value that
+      // could not be represented at all (wrong-typed, out of range) rather
+      // than a stated rule broken by an otherwise representable one.
+      throw error.missing
+        ? new ValidationError(
+            { kind: "MissingField", path: error.path },
+            error.message,
+          )
+        : malformedError(error.path, error.message);
+    }
+    // A non-JSON input can also fail in the canonical serialiser itself —
+    // also a representation failure, not a stated rule.
+    if (error instanceof Error) {
+      throw malformedError("payload", error.message);
+    }
+    throw error;
+  }
+}
+
+function validatePayload(eventType: string, payload: unknown): void {
   // Universal bounds: run before the switch below, and for every event
   // including one of an unrecognised type (issue #28).
   validatePayloadTextScalars(payload, "payload");
@@ -1631,7 +1782,8 @@ export function validate(eventType: string, payload: unknown): void {
     case RUN_STARTED: {
       const started = parsed as RunStartedPayload;
       if (!RUN_KIND_VALUES.has(started.kind)) {
-        throw new TypeError(
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.kind", value: started.kind },
           `RunStartedPayload.kind has unknown value: ${started.kind}`,
         );
       }
@@ -1640,7 +1792,8 @@ export function validate(eventType: string, payload: unknown): void {
     case RUN_FINISHED: {
       const finished = parsed as RunFinishedPayload;
       if (!RUN_OUTCOME_VALUES.has(finished.outcome)) {
-        throw new TypeError(
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.outcome", value: finished.outcome },
           `RunFinishedPayload.outcome has unknown value: ${finished.outcome}`,
         );
       }
@@ -1690,7 +1843,8 @@ export function validate(eventType: string, payload: unknown): void {
     case CONTROL_REQUESTED: {
       const requested = parsed as ControlRequestedPayload;
       if (!CONTROL_KIND_VALUES.has(requested.kind)) {
-        throw new TypeError(
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.kind", value: requested.kind },
           `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
         );
       }
@@ -1702,7 +1856,8 @@ export function validate(eventType: string, payload: unknown): void {
       // present-but-empty one are the same defect, so both are rejected
       // identically.
       if (requested.kind === "steer" && !requested.text) {
-        throw new TypeError(
+        throw policyError(
+          "payload.text",
           'ControlRequestedPayload.text is required and must not be empty when kind is "steer": a steer with nothing to say is a producer error',
         );
       }
@@ -1725,7 +1880,8 @@ export function validate(eventType: string, payload: unknown): void {
     case CAPTURE_REFUSED: {
       const refused = parsed as CaptureRefusedPayload;
       if (!CAPTURE_REFUSAL_CAUSE_VALUES.has(refused.cause)) {
-        throw new TypeError(
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.cause", value: refused.cause },
           `CaptureRefusedPayload.cause has unknown value: ${refused.cause}`,
         );
       }
@@ -1739,25 +1895,29 @@ export function validate(eventType: string, payload: unknown): void {
     case DECISION_REQUESTED: {
       const requested = parsed as DecisionRequestedPayload;
       if (!DECISION_KIND_VALUES.has(requested.kind)) {
-        throw new TypeError(
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.kind", value: requested.kind },
           `DecisionRequestedPayload.kind has unknown value: ${requested.kind}`,
         );
       }
       if (requested.onTimeout !== undefined) {
         if (requested.kind !== "permission") {
-          throw new TypeError(
+          throw policyError(
+            "payload.onTimeout",
             `DecisionRequestedPayload.onTimeout is permitted only when kind is "permission"; received kind "${requested.kind}"`,
           );
         }
         if (requested.onTimeout !== "deny") {
-          throw new TypeError(
+          throw policyError(
+            "payload.onTimeout",
             `DecisionRequestedPayload.onTimeout must be "deny" when kind is "permission"; received "${requested.onTimeout}"`,
           );
         }
         if (
           !requested.options.some((option) => option.id === requested.onTimeout)
         ) {
-          throw new TypeError(
+          throw policyError(
+            "payload.onTimeout",
             `DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received "${requested.onTimeout}"`,
           );
         }
