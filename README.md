@@ -13,12 +13,12 @@ doing, named once so that two systems mean the same thing by the same word.
 
 ## Status
 
-**Run lifecycle, agent observation, control, and capture refusal implemented.**
-The version 1 envelope, its `run.*` lifecycle, the six `agent.*` observations,
-the two `control.*` events, and `capture.refused` exist in both SDKs. The
-conformance corpus (`conformance/v1/`) holds nine fixtures derived from real
-captures. It grows only from real captures, never from an invented example,
-because an invented fixture would become an immutable guess.
+**The version 1 vocabulary is complete.** The envelope, its `run.*` lifecycle,
+the six `agent.*` observations, the two `control.*` events, `capture.refused`,
+and the two `decision.*` events exist in both SDKs. The conformance corpus
+(`conformance/v1/`) holds nine fixtures derived from real captures. It grows
+only from real captures, never from an invented example, because an invented
+fixture would become an immutable guess.
 
 ## Why it is a separate repository
 
@@ -160,11 +160,12 @@ invalid event. Unknown event `type`s remain open, as they always were.
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is
 16,384 Unicode scalar values for `agent.text` and 4,096 for tool input and
-result excerpts, finish reasons, warning messages, and control text and
-reason. Excerpting counts code points, not UTF-8 bytes or UTF-16 code units,
-and cuts only on a code point boundary; it may still divide a grapheme
-cluster such as a combining sequence or joined emoji. The other limit adopted
-with these bounds is not expressible here: **consumers are expected to keep
+result excerpts, finish reasons, warning messages, control text and reason,
+decision dossier narration, and decision option labels. Excerpting counts code
+points, not UTF-8 bytes or UTF-16 code units, and cuts only on a code point
+boundary; it may still divide a grapheme cluster such as a combining sequence
+or joined emoji. The other limit adopted with these bounds is not expressible
+here: **consumers are expected to keep
 narration away from anything that decides** — a classification, a gate, a
 verdict. This repository defines the transport and cannot enforce that; a
 consumer that renders narration and also acts on it has broken a constraint
@@ -205,6 +206,38 @@ unions. An `over_bound` refusal carries the bounded field and its measured
 refusal may carry only an excerpted parser message in `detail`, with
 `truncated` recording whether it was cut; that message describes the parse
 failure rather than reproducing refused content.
+
+## Decisions
+
+| type | required payload | optional payload | meaning |
+|---|---|---|---|
+| `decision.requested` | `decisionId`, `kind`, `dossier`, `options` | `subject`, `expiresAt`, `onTimeout` | Opens a producer-assigned decision and carries the bounded escalation dossier plus the options a human may choose. |
+| `decision.answered` | `decisionId`, `optionId`, `by` | `byTimeout`, `reversal` | Records the answer after the owning run has applied it, distinguishing a timeout from a principal's choice. |
+
+`kind` is one of `permission`, `tripwire`, `gate_inconclusive`,
+`human_decides`, or `budget`, closed at validation and open and retaining at
+parse like the other closed unions. The required `dossier` carries `question`,
+`optionsRuledOut` (an array of strings), `recommendedAction`, and `blastRadius`;
+those fields and every `options[].label` are bounded at 4,096 Unicode scalar
+values. A single optional `dossier.truncated` flag records whether any of that
+narration was excerpted. Option ids, `decisionId`, and `reversal` are
+identifiers and are not excerpt-bounded. `subject` is a reference such as a PR
+URL, issue number, or tool name, never the subject's content.
+
+`onTimeout` is allowed only for a `permission` and must be `deny`. Its absence
+leaves the decision open. This is validation policy rather than parsing policy:
+a forwarder may carry a representable invalid request, while a producer cannot
+quietly give a tripwire an auto-proceed path that violates the "never
+auto-proceed" rule.
+
+`decision.answered` is emitted by the run that owns the decision, after the
+answer has been applied, never by the console that collected it. `by` is a
+resolvable principal identity rather than a display name. `byTimeout` is
+semantically material: a permission that expired unanswered is nobody deciding,
+not a decision with a long response gap. Each SDK exposes a separate
+cross-event helper that checks matching `decisionId` values, the chosen option,
+and any reversal when both payloads are available; it is not part of parsing
+because the two events remain independent on the wire.
 
 ## Decisions before the first extraction
 

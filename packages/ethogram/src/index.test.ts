@@ -13,6 +13,9 @@ import {
   CONTROL_APPLIED,
   CONTROL_KINDS,
   CONTROL_REQUESTED,
+  DECISION_ANSWERED,
+  DECISION_KINDS,
+  DECISION_REQUESTED,
   EVENT_SCHEMA_VERSION,
   InMemorySink,
   KNOWN_TYPES,
@@ -31,11 +34,16 @@ import {
   parseCaptureRefusedPayload,
   parseControlAppliedPayload,
   parseControlRequestedPayload,
+  parseDecisionAnsweredPayload,
+  parseDecisionRequestedPayload,
   parseEvent,
   serialiseEvent,
   stamp,
   validate,
+  validateDecisionAnswerAgainstRequest,
   type CaptureRefusedPayload,
+  type DecisionAnsweredPayload,
+  type DecisionRequestedPayload,
   type Event,
   type EventDraft,
   type EventPayloadMap,
@@ -123,6 +131,21 @@ const CAPTURE_REFUSED_GAP_WIRE =
 const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE =
   '{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}';
 
+// Cross-SDK byte identity for both `decision.*` events (spec #7). These exact
+// literals are pasted into the Rust suite and asserted against events built
+// through each SDK's correlated typed API.
+const DECISION_REQUESTED_WIRE =
+  '{"v":1,"type":"decision.requested","runId":"run-decision","seq":1,"ts":"2026-09-07T07:00:00.000Z","payload":{"decisionId":"decision-1","dossier":{"blastRadius":"one repository","optionsRuledOut":["auto-proceed","discard the request"],"question":"May the run execute the deployment tool?","recommendedAction":"deny unless the operator confirms the target","truncated":false},"expiresAt":"2026-09-07T07:05:00.000Z","kind":"permission","onTimeout":"deny","options":[{"id":"allow","label":"Allow once"},{"id":"deny","label":"Deny"}],"subject":"deploy"}}';
+const DECISION_ANSWERED_HUMAN_WIRE =
+  '{"v":1,"type":"decision.answered","runId":"run-decision","seq":2,"ts":"2026-09-07T07:01:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow"}}';
+const DECISION_ANSWERED_TIMEOUT_WIRE =
+  '{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}';
+
+// This value is intentionally one neither SDK will ever know. The kind
+// string and the whole canonical event must survive an older relay exactly.
+const UNKNOWN_DECISION_KIND_WIRE =
+  '{"v":1,"type":"decision.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T07:00:03.000Z","payload":{"decisionId":"decision-unknown","dossier":{"blastRadius":"none","optionsRuledOut":[],"question":"Unknown kind?","recommendedAction":"inspect"},"kind":"never-a-valid-decision-kind","options":[]}}';
+
 const PERMITTED_CONTROL_KINDS = ["interrupt", "steer"] as const;
 
 const PERMITTED_CAPTURE_REFUSAL_CAUSES = [
@@ -131,6 +154,14 @@ const PERMITTED_CAPTURE_REFUSAL_CAUSES = [
   "duplicate",
   "finished",
   "malformed",
+] as const;
+
+const PERMITTED_DECISION_KINDS = [
+  "permission",
+  "tripwire",
+  "gate_inconclusive",
+  "human_decides",
+  "budget",
 ] as const;
 
 const PERMITTED_RUN_KINDS = [
@@ -201,6 +232,12 @@ function assertRunPayloadCorrelation(event: Event<EventPayloadMap>): void {
   } else if (event.type === "capture.refused") {
     const sourceRunId: string = event.payload.sourceRunId;
     assert.equal(typeof sourceRunId, "string");
+  } else if (event.type === "decision.requested") {
+    const question: string = event.payload.dossier.question;
+    assert.equal(typeof question, "string");
+  } else if (event.type === "decision.answered") {
+    const optionId: string = event.payload.optionId;
+    assert.equal(typeof optionId, "string");
   }
 }
 
@@ -1024,6 +1061,434 @@ describe("capture.refused payload parsing (spec #15)", () => {
   });
 });
 
+describe("decision payload parsing and validation (spec #7)", () => {
+  const minimalRequest = (kind: string = "permission"): Record<string, unknown> => ({
+    decisionId: "decision-1",
+    kind,
+    dossier: {
+      question: "Proceed?",
+      optionsRuledOut: ["auto-proceed"],
+      recommendedAction: "ask the operator",
+      blastRadius: "one run",
+    },
+    options: [{ id: "allow", label: "Allow" }],
+  });
+
+  const consistencyRequest = (): DecisionRequestedPayload => ({
+    decisionId: "decision-1",
+    kind: "permission",
+    dossier: {
+      question: "Proceed?",
+      optionsRuledOut: [],
+      recommendedAction: "ask the operator",
+      blastRadius: "one run",
+    },
+    // `deny` is deliberately not a human option here, so these tests
+    // distinguish the helper's timeout-only allowance from membership.
+    options: [{ id: "allow", label: "Allow" }],
+    onTimeout: "deny",
+  });
+
+  const consistencyAnswer = (optionId: string): DecisionAnsweredPayload => ({
+    decisionId: "decision-1",
+    optionId,
+    by: "principal:user:alice",
+  });
+
+  test("accepts every permitted decision kind without onTimeout", () => {
+    assert.deepEqual(DECISION_KINDS, PERMITTED_DECISION_KINDS);
+    for (const kind of PERMITTED_DECISION_KINDS) {
+      const payload = minimalRequest(kind);
+      assert.doesNotThrow(() =>
+        parseEvent({ ...completeEvent(), type: DECISION_REQUESTED, payload }),
+      );
+      assert.doesNotThrow(() => validate(DECISION_REQUESTED, payload));
+    }
+  });
+
+  test("rejects each missing required decision.requested field", () => {
+    for (const field of ["decisionId", "kind", "dossier", "options"]) {
+      const payload = minimalRequest();
+      delete payload[field];
+
+      assert.throws(
+        () =>
+          parseEvent({ ...completeEvent(), type: DECISION_REQUESTED, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () => validate(DECISION_REQUESTED, payload),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects each missing required dossier field", () => {
+    for (const field of [
+      "question",
+      "optionsRuledOut",
+      "recommendedAction",
+      "blastRadius",
+    ]) {
+      const payload = minimalRequest();
+      delete (payload.dossier as Record<string, unknown>)[field];
+
+      assert.throws(
+        () =>
+          parseEvent({ ...completeEvent(), type: DECISION_REQUESTED, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () => validate(DECISION_REQUESTED, payload),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects each missing required option field", () => {
+    for (const field of ["id", "label"]) {
+      const payload = minimalRequest();
+      const options = payload.options as Record<string, unknown>[];
+      delete options[0]?.[field];
+
+      assert.throws(
+        () =>
+          parseEvent({ ...completeEvent(), type: DECISION_REQUESTED, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () => validate(DECISION_REQUESTED, payload),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("rejects each missing required decision.answered field", () => {
+    for (const field of ["decisionId", "optionId", "by"]) {
+      const payload: Record<string, unknown> = {
+        decisionId: "decision-1",
+        optionId: "allow",
+        by: "principal:user:alice",
+      };
+      delete payload[field];
+
+      assert.throws(
+        () =>
+          parseEvent({ ...completeEvent(), type: DECISION_ANSWERED, payload }),
+        new RegExp(field),
+      );
+      assert.throws(
+        () => validate(DECISION_ANSWERED, payload),
+        new RegExp(field),
+      );
+    }
+  });
+
+  test("parses an unknown kind verbatim, reports it, and round-trips its bytes", () => {
+    const parsed = parseEvent(JSON.parse(UNKNOWN_DECISION_KIND_WIRE) as unknown);
+    const kind = (parsed.payload as { kind: string }).kind;
+
+    assert.equal(kind, "never-a-valid-decision-kind");
+    assert.equal(JSON.stringify(kind), '"never-a-valid-decision-kind"');
+    assert.throws(
+      () => validate(DECISION_REQUESTED, parsed.payload),
+      /kind has unknown value: never-a-valid-decision-kind/,
+    );
+    assert.equal(serialiseEvent(parsed), UNKNOWN_DECISION_KIND_WIRE);
+  });
+
+  test("validate enforces the permission-only onTimeout rule", () => {
+    for (const kind of [
+      "tripwire",
+      "gate_inconclusive",
+      "human_decides",
+      "budget",
+    ]) {
+      const payload = { ...minimalRequest(kind), onTimeout: "deny" };
+      assert.throws(
+        () => validate(DECISION_REQUESTED, payload),
+        new TypeError(
+          `DecisionRequestedPayload.onTimeout is permitted only when kind is "permission"; received kind "${kind}"`,
+        ),
+      );
+    }
+
+    assert.throws(
+      () =>
+        validate(DECISION_REQUESTED, {
+          ...minimalRequest("permission"),
+          onTimeout: "allow",
+        }),
+      new TypeError(
+        'DecisionRequestedPayload.onTimeout must be "deny" when kind is "permission"; received "allow"',
+      ),
+    );
+    assert.doesNotThrow(() =>
+      validate(DECISION_REQUESTED, {
+        ...minimalRequest("permission"),
+        options: [
+          { id: "allow", label: "Allow" },
+          { id: "deny", label: "Deny" },
+        ],
+        onTimeout: "deny",
+      }),
+    );
+    for (const kind of PERMITTED_DECISION_KINDS) {
+      assert.doesNotThrow(() =>
+        validate(DECISION_REQUESTED, minimalRequest(kind)),
+      );
+    }
+  });
+
+  test("validate rejects onTimeout naming no request option", () => {
+    // minimalRequest's only option is "allow"; "deny" is permitted by the
+    // kind/value rules above but was never offered.
+    assert.throws(
+      () =>
+        validate(DECISION_REQUESTED, {
+          ...minimalRequest("permission"),
+          onTimeout: "deny",
+        }),
+      new TypeError(
+        "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"deny\"",
+      ),
+    );
+  });
+
+  test("validate accepts onTimeout naming an existing option", () => {
+    assert.doesNotThrow(() =>
+      validate(DECISION_REQUESTED, {
+        ...minimalRequest("permission"),
+        options: [
+          { id: "allow", label: "Allow" },
+          { id: "deny", label: "Deny" },
+        ],
+        onTimeout: "deny",
+      }),
+    );
+  });
+
+  test("parseEvent accepts onTimeout on a tripwire", () => {
+    // This is a producer-policy violation, but it is representable. The test
+    // fails if the rule ever leaks from validate into parsing.
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        type: DECISION_REQUESTED,
+        payload: { ...minimalRequest("tripwire"), onTimeout: "deny" },
+      }),
+    );
+  });
+
+  test("parseEvent accepts onTimeout naming no request option", () => {
+    // Naming an option the request never offered is a producer-policy
+    // violation, but the event is still representable. This fails if the
+    // options-membership rule ever leaks into parsing.
+    assert.doesNotThrow(() =>
+      parseEvent({
+        ...completeEvent(),
+        type: DECISION_REQUESTED,
+        payload: { ...minimalRequest("permission"), onTimeout: "deny" },
+      }),
+    );
+  });
+
+  test("the cross-event helper checks option, timeout, reversal, and decision id", () => {
+    const request = consistencyRequest();
+    const valid = consistencyAnswer("allow");
+    assert.doesNotThrow(() =>
+      validateDecisionAnswerAgainstRequest(request, valid),
+    );
+
+    assert.throws(
+      () =>
+        validateDecisionAnswerAgainstRequest(
+          request,
+          consistencyAnswer("missing"),
+        ),
+      /optionId/,
+    );
+
+    const timeout = { ...consistencyAnswer("deny"), byTimeout: true };
+    assert.doesNotThrow(() =>
+      validateDecisionAnswerAgainstRequest(request, timeout),
+    );
+    assert.throws(() =>
+      validateDecisionAnswerAgainstRequest(request, {
+        ...timeout,
+        byTimeout: false,
+      }),
+    );
+    const { byTimeout: _byTimeout, ...withoutByTimeout } = timeout;
+    assert.throws(() =>
+      validateDecisionAnswerAgainstRequest(request, withoutByTimeout),
+    );
+
+    assert.throws(
+      () =>
+        validateDecisionAnswerAgainstRequest(request, {
+          ...valid,
+          reversal: "missing",
+        }),
+      /reversal/,
+    );
+    assert.throws(
+      () =>
+        validateDecisionAnswerAgainstRequest(request, {
+          ...valid,
+          decisionId: "decision-2",
+        }),
+      /does not match request/,
+    );
+  });
+
+  test("dossier and option-label bounds are validation-only", () => {
+    const over = "😀".repeat(MAX_EXCERPT_SCALARS + 1);
+    const cases: readonly [Record<string, unknown>, string][] = [
+      [
+        {
+          ...minimalRequest(),
+          dossier: {
+            ...(minimalRequest().dossier as Record<string, unknown>),
+            question: over,
+          },
+        },
+        "DecisionRequestedPayload.dossier.question",
+      ],
+      [
+        {
+          ...minimalRequest(),
+          dossier: {
+            ...(minimalRequest().dossier as Record<string, unknown>),
+            optionsRuledOut: [over],
+          },
+        },
+        "DecisionRequestedPayload.dossier.optionsRuledOut[0]",
+      ],
+      [
+        {
+          ...minimalRequest(),
+          dossier: {
+            ...(minimalRequest().dossier as Record<string, unknown>),
+            recommendedAction: over,
+          },
+        },
+        "DecisionRequestedPayload.dossier.recommendedAction",
+      ],
+      [
+        {
+          ...minimalRequest(),
+          dossier: {
+            ...(minimalRequest().dossier as Record<string, unknown>),
+            blastRadius: over,
+          },
+        },
+        "DecisionRequestedPayload.dossier.blastRadius",
+      ],
+      [
+        { ...minimalRequest(), options: [{ id: "allow", label: over }] },
+        "DecisionRequestedPayload.options[0].label",
+      ],
+    ];
+
+    for (const [payload, field] of cases) {
+      assert.doesNotThrow(() =>
+        parseEvent({ ...completeEvent(), type: DECISION_REQUESTED, payload }),
+      );
+      assert.throws(
+        () => validate(DECISION_REQUESTED, payload),
+        new TypeError(
+          `${field} has ${MAX_EXCERPT_SCALARS + 1} Unicode scalar values; maximum is ${MAX_EXCERPT_SCALARS}`,
+        ),
+      );
+    }
+  });
+
+  test("decision identifiers are not excerpt-bounded", () => {
+    const identifier = "x".repeat(MAX_EXCERPT_SCALARS + 1);
+    assert.doesNotThrow(() =>
+      validate(DECISION_REQUESTED, {
+        ...minimalRequest(),
+        decisionId: identifier,
+        options: [{ id: identifier, label: "Allow" }],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      validate(DECISION_ANSWERED, {
+        decisionId: identifier,
+        optionId: identifier,
+        by: "principal:user:alice",
+        reversal: identifier,
+      }),
+    );
+  });
+
+  test("omits absent optional fields instead of writing null", () => {
+    const request = parseDecisionRequestedPayload(minimalRequest());
+    const answer = parseDecisionAnsweredPayload(consistencyAnswer("allow"));
+
+    for (const field of ["subject", "expiresAt", "onTimeout"]) {
+      assert.equal(Object.hasOwn(request, field), false);
+    }
+    assert.equal(Object.hasOwn(request.dossier, "truncated"), false);
+    for (const field of ["byTimeout", "reversal"]) {
+      assert.equal(Object.hasOwn(answer, field), false);
+    }
+    assert.ok(!JSON.stringify(request).includes(":null"));
+    assert.ok(!JSON.stringify(answer).includes(":null"));
+  });
+
+  test("retains and re-emits unknown fields at every decision payload level", () => {
+    const forwardedRequest = JSON.parse(
+      serialiseEvent(
+        parseEvent({
+          ...completeEvent(),
+          type: DECISION_REQUESTED,
+          payload: {
+            ...minimalRequest(),
+            dossier: {
+              ...(minimalRequest().dossier as Record<string, unknown>),
+              futureDossier: { value: 1 },
+            },
+            options: [
+              {
+                id: "allow",
+                label: "Allow",
+                futureOption: { value: 2 },
+              },
+            ],
+            futureRequest: { value: 3 },
+          },
+        }),
+      ),
+    ) as { payload: Record<string, unknown> };
+    const forwardedAnswer = JSON.parse(
+      serialiseEvent(
+        parseEvent({
+          ...completeEvent(),
+          type: DECISION_ANSWERED,
+          payload: {
+            ...consistencyAnswer("allow"),
+            futureAnswer: { value: 4 },
+          },
+        }),
+      ),
+    ) as { payload: Record<string, unknown> };
+
+    assert.deepEqual(forwardedRequest.payload.futureRequest, { value: 3 });
+    assert.deepEqual(
+      (forwardedRequest.payload.dossier as Record<string, unknown>).futureDossier,
+      { value: 1 },
+    );
+    assert.deepEqual(
+      (forwardedRequest.payload.options as Record<string, unknown>[])[0]
+        ?.futureOption,
+      { value: 2 },
+    );
+    assert.deepEqual(forwardedAnswer.payload.futureAnswer, { value: 4 });
+  });
+});
+
 describe("validate", () => {
   test("enforces required fields and integer bounds for known types", () => {
     assert.throws(() => validate(RUN_STARTED, {}), /required field: kind/);
@@ -1766,6 +2231,76 @@ describe("serialiseEvent payload key sorting", () => {
     }
   });
 
+  test("pins byte-identical decision events with Rust", () => {
+    const requested: Event<EventPayloadMap> = {
+      v: 1,
+      type: DECISION_REQUESTED,
+      runId: "run-decision",
+      seq: 1,
+      ts: "2026-09-07T07:00:00.000Z",
+      payload: {
+        decisionId: "decision-1",
+        kind: "permission",
+        dossier: {
+          question: "May the run execute the deployment tool?",
+          optionsRuledOut: ["auto-proceed", "discard the request"],
+          recommendedAction: "deny unless the operator confirms the target",
+          blastRadius: "one repository",
+          truncated: false,
+        },
+        options: [
+          { id: "allow", label: "Allow once" },
+          { id: "deny", label: "Deny" },
+        ],
+        subject: "deploy",
+        expiresAt: "2026-09-07T07:05:00.000Z",
+        onTimeout: "deny",
+      },
+    };
+    const human: Event<EventPayloadMap> = {
+      v: 1,
+      type: DECISION_ANSWERED,
+      runId: "run-decision",
+      seq: 2,
+      ts: "2026-09-07T07:01:00.000Z",
+      payload: {
+        decisionId: "decision-1",
+        optionId: "allow",
+        by: "principal:user:alice",
+      },
+    };
+    const timeout: Event<EventPayloadMap> = {
+      v: 1,
+      type: DECISION_ANSWERED,
+      runId: "run-decision",
+      seq: 3,
+      ts: "2026-09-07T07:05:00.000Z",
+      payload: {
+        decisionId: "decision-1",
+        optionId: "deny",
+        by: "principal:runtime:permission-timeout",
+        byTimeout: true,
+        reversal: "allow",
+      },
+    };
+
+    validate(DECISION_REQUESTED, requested.payload);
+    assert.equal(serialiseEvent(requested), DECISION_REQUESTED_WIRE);
+    assert.equal(serialiseEvent(human), DECISION_ANSWERED_HUMAN_WIRE);
+    assert.equal(serialiseEvent(timeout), DECISION_ANSWERED_TIMEOUT_WIRE);
+
+    for (const expected of [
+      DECISION_REQUESTED_WIRE,
+      DECISION_ANSWERED_HUMAN_WIRE,
+      DECISION_ANSWERED_TIMEOUT_WIRE,
+    ]) {
+      assert.equal(
+        serialiseEvent(parseEvent(JSON.parse(expected) as unknown)),
+        expected,
+      );
+    }
+  });
+
   test("sorts all amended run usage fields", () => {
     const parsed = parseEvent(JSON.parse(RUN_FINISHED_WIRE) as unknown);
     assert.equal(serialiseEvent(parsed), RUN_FINISHED_WIRE);
@@ -2178,6 +2713,49 @@ describe("InMemorySink", () => {
     );
   });
 
+  test("appendEvent refuses a real control.applied after run.finished, not a sequence gap", () => {
+    // A `control.applied` sounds like the one post-terminal event that
+    // "surely" should still be recordable — an interrupt landing just after
+    // the run ends. Ruled on umwelt#1: a closed run accepts nothing after
+    // run.finished, control events included, and this is refused the same
+    // way as any other post-terminal append: as RunClosedError, not
+    // SequenceError, even though this append's seq is otherwise the
+    // expected next value.
+    const sink = new InMemorySink(() => "unused");
+    sink.appendEvent(completeEvent());
+    sink.appendEvent({
+      ...completeEvent(),
+      type: RUN_FINISHED,
+      seq: 2,
+      payload: { outcome: "completed", durationMs: 1 },
+    });
+
+    const before = sink.events("run-1");
+
+    let closedError: unknown;
+    try {
+      sink.appendEvent({
+        ...completeEvent(),
+        type: CONTROL_APPLIED,
+        seq: 3,
+        payload: { controlId: "control-1", ok: true },
+      });
+    } catch (error) {
+      closedError = error;
+    }
+
+    assert.ok(closedError instanceof RunClosedError);
+    assert.ok(!(closedError instanceof SequenceError));
+    assert.equal((closedError as RunClosedError).runId, "run-1");
+
+    assert.deepEqual(sink.events("run-1"), before);
+    assert.equal(
+      sink.events("run-1").length,
+      2,
+      "a refused control.applied append must not consume a seq",
+    );
+  });
+
   test("a refused append leaves stored events and seq unchanged", () => {
     const sink = new InMemorySink(() => "2026-09-07T00:00:00.000Z");
     sink.appendDraft("run-1", runFinishedDraft());
@@ -2349,11 +2927,33 @@ describe("known event type constants (issue #4)", () => {
       }),
       CAPTURE_REFUSED,
     );
+    assert.equal(
+      roundTrippedType(DECISION_REQUESTED, {
+        decisionId: "decision-1",
+        kind: "permission",
+        dossier: {
+          question: "Proceed?",
+          optionsRuledOut: [],
+          recommendedAction: "ask",
+          blastRadius: "one run",
+        },
+        options: [],
+      }),
+      DECISION_REQUESTED,
+    );
+    assert.equal(
+      roundTrippedType(DECISION_ANSWERED, {
+        decisionId: "decision-1",
+        optionId: "allow",
+        by: "principal:user:alice",
+      }),
+      DECISION_ANSWERED,
+    );
   });
 
-  test("KNOWN_TYPES holds exactly the eleven recognised types, with no duplicates", () => {
-    assert.equal(KNOWN_TYPES.length, 11);
-    assert.equal(new Set(KNOWN_TYPES).size, 11);
+  test("KNOWN_TYPES holds exactly the thirteen recognised types, with no duplicates", () => {
+    assert.equal(KNOWN_TYPES.length, 13);
+    assert.equal(new Set(KNOWN_TYPES).size, 13);
     assert.deepEqual(
       new Set(KNOWN_TYPES),
       new Set([
@@ -2368,6 +2968,8 @@ describe("known event type constants (issue #4)", () => {
         CONTROL_REQUESTED,
         CONTROL_APPLIED,
         CAPTURE_REFUSED,
+        DECISION_REQUESTED,
+        DECISION_ANSWERED,
       ]),
     );
   });

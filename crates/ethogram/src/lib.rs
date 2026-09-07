@@ -35,13 +35,17 @@ pub const CONTROL_REQUESTED: &str = "control.requested";
 pub const CONTROL_APPLIED: &str = "control.applied";
 /// The wire string for a `capture.refused` event's `type` field.
 pub const CAPTURE_REFUSED: &str = "capture.refused";
+/// The wire string for a `decision.requested` event's `type` field.
+pub const DECISION_REQUESTED: &str = "decision.requested";
+/// The wire string for a `decision.answered` event's `type` field.
+pub const DECISION_ANSWERED: &str = "decision.answered";
 
 /// Every event `type` this SDK has a typed payload for. This is not a closed
 /// vocabulary: `parse_event` still accepts a type it has never heard of (see
 /// `check_known_payload_representation`'s fallthrough), and a consumer may
 /// still match a literal for vocabulary this SDK has not learned. A constant
 /// is a name for a string, not a gate.
-pub const KNOWN_TYPES: [&str; 11] = [
+pub const KNOWN_TYPES: [&str; 13] = [
     RUN_STARTED,
     RUN_FINISHED,
     AGENT_STARTED,
@@ -53,6 +57,8 @@ pub const KNOWN_TYPES: [&str; 11] = [
     CONTROL_REQUESTED,
     CONTROL_APPLIED,
     CAPTURE_REFUSED,
+    DECISION_REQUESTED,
+    DECISION_ANSWERED,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,6 +330,61 @@ impl<'de> Deserialize<'de> for CaptureRefusalCause {
             "duplicate" => Self::Duplicate,
             "finished" => Self::Finished,
             "malformed" => Self::Malformed,
+            _ => Self::Unknown(value),
+        })
+    }
+}
+
+/// A decision kind this SDK knows, or an unfamiliar wire string retained
+/// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
+/// never map it onto a known kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecisionKind {
+    Permission,
+    Tripwire,
+    GateInconclusive,
+    HumanDecides,
+    Budget,
+    /// An unfamiliar member, retained exactly as it appeared on the wire.
+    Unknown(String),
+}
+
+impl DecisionKind {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Permission => "permission",
+            Self::Tripwire => "tripwire",
+            Self::GateInconclusive => "gate_inconclusive",
+            Self::HumanDecides => "human_decides",
+            Self::Budget => "budget",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for DecisionKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DecisionKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "permission" => Self::Permission,
+            "tripwire" => Self::Tripwire,
+            "gate_inconclusive" => Self::GateInconclusive,
+            "human_decides" => Self::HumanDecides,
+            "budget" => Self::Budget,
             _ => Self::Unknown(value),
         })
     }
@@ -914,6 +975,117 @@ pub struct CaptureRefusedPayload {
     pub extra: PayloadExtension,
 }
 
+/// Bounded narration supplied with a `decision.requested`. All four content
+/// fields are checked against [`MAX_EXCERPT_SCALARS`] by [`validate`], while
+/// parsing enforces only representability so a forwarder can still carry an
+/// over-bound dossier. `truncated` applies to the dossier as a whole rather
+/// than to each narration field separately.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionDossier {
+    pub question: String,
+    pub options_ruled_out: Vec<String>,
+    pub recommended_action: String,
+    pub blast_radius: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+/// One answer a human may choose for a `decision.requested`. `id` is an
+/// unbounded identifier; `label` is bounded narration checked by [`validate`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionOption {
+    pub id: String,
+    pub label: String,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+/// Opens a decision owned by this run. The dossier and option labels carry
+/// bounded narration; `subject` is only a reference such as a PR URL, issue
+/// number, or tool name, never the subject's content.
+///
+/// `on_timeout` is enforced rather than conventional: it is allowed only for
+/// `permission`, its only permitted value is `deny`, and that value must name
+/// one of this request's own `options[].id` — a request cannot declare a
+/// timeout action it never offered. A tripwire that auto-proceeded on timeout
+/// would violate ostrom's "never auto-proceed" rule; enforcing the
+/// restriction in [`validate`] prevents a producer from shipping that mistake
+/// quietly. [`parse_event`] deliberately does not apply this policy, because
+/// a forwarder must retain any representable request.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionRequestedPayload {
+    /// Producer-assigned and unique within the run.
+    pub decision_id: String,
+    pub kind: DecisionKind,
+    pub dossier: DecisionDossier,
+    pub options: Vec<DecisionOption>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub subject: Option<String>,
+    /// Optional ISO-8601 expiry time.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at: Option<String>,
+    /// Option id applied after expiry. Absence leaves the decision open.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub on_timeout: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
+/// Records an answer only after the run that owns the decision has applied
+/// it. It is emitted by that run, never by the console that collected the
+/// answer; a consumer showing the decision as settled before this event
+/// arrives has misread the protocol.
+///
+/// `by_timeout` is semantically material. Without it, a human choosing
+/// `option_id: "deny"` is indistinguishable from a permission expiring
+/// unanswered with the same option and a runtime principal in `by`. A timeout
+/// is not a decision with a long gap; it is nobody deciding. Absence means
+/// false. `reversal` is the unbounded option identifier that undoes this
+/// answer, not prose.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionAnsweredPayload {
+    pub decision_id: String,
+    pub option_id: String,
+    /// A principal identity a consumer resolves, never a display name.
+    pub by: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub by_timeout: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reversal: Option<String>,
+    #[serde(flatten)]
+    pub extra: PayloadExtension,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventDraft<P = Value> {
@@ -1107,6 +1279,124 @@ where
             "CaptureRefusedPayload.detail",
             MAX_EXCERPT_SCALARS,
         )?;
+    } else if event_type == DECISION_REQUESTED {
+        let requested = serde_json::from_value::<DecisionRequestedPayload>(payload)?;
+        if let DecisionKind::Unknown(value) = &requested.kind {
+            return Err(de::Error::custom(format_args!(
+                "DecisionRequestedPayload.kind has unknown value: {value}"
+            )));
+        }
+
+        if let Some(on_timeout) = requested.on_timeout.as_deref() {
+            if requested.kind != DecisionKind::Permission {
+                return Err(de::Error::custom(format_args!(
+                    "DecisionRequestedPayload.onTimeout is permitted only when kind is \"permission\"; received kind \"{}\"",
+                    requested.kind.as_str()
+                )));
+            }
+            if on_timeout != "deny" {
+                return Err(de::Error::custom(format_args!(
+                    "DecisionRequestedPayload.onTimeout must be \"deny\" when kind is \"permission\"; received \"{on_timeout}\""
+                )));
+            }
+            if !requested
+                .options
+                .iter()
+                .any(|option| option.id == on_timeout)
+            {
+                return Err(de::Error::custom(format_args!(
+                    "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"{on_timeout}\""
+                )));
+            }
+        }
+
+        validate_scalar_bound(
+            Some(&requested.dossier.question),
+            "DecisionRequestedPayload.dossier.question",
+            MAX_EXCERPT_SCALARS,
+        )?;
+        for (index, ruled_out) in requested.dossier.options_ruled_out.iter().enumerate() {
+            validate_scalar_bound(
+                Some(ruled_out),
+                &format!("DecisionRequestedPayload.dossier.optionsRuledOut[{index}]"),
+                MAX_EXCERPT_SCALARS,
+            )?;
+        }
+        validate_scalar_bound(
+            Some(&requested.dossier.recommended_action),
+            "DecisionRequestedPayload.dossier.recommendedAction",
+            MAX_EXCERPT_SCALARS,
+        )?;
+        validate_scalar_bound(
+            Some(&requested.dossier.blast_radius),
+            "DecisionRequestedPayload.dossier.blastRadius",
+            MAX_EXCERPT_SCALARS,
+        )?;
+        for (index, option) in requested.options.iter().enumerate() {
+            validate_scalar_bound(
+                Some(&option.label),
+                &format!("DecisionRequestedPayload.options[{index}].label"),
+                MAX_EXCERPT_SCALARS,
+            )?;
+        }
+    } else if event_type == DECISION_ANSWERED {
+        serde_json::from_value::<DecisionAnsweredPayload>(payload).map(drop)?;
+    }
+
+    Ok(())
+}
+
+/// Checks the consistency that is visible only when a
+/// [`DecisionRequestedPayload`] and [`DecisionAnsweredPayload`] are available
+/// together. This is intentionally separate from [`validate`] and
+/// [`parse_event`]: the two events are independent on the wire, and a
+/// forwarder handling one has not necessarily observed the other.
+///
+/// The chosen `option_id` must be present in the request's options. The sole
+/// exception is the request's `on_timeout` value when `by_timeout` is true.
+///
+/// This exception has not become dead weight now that [`validate`] requires
+/// `on_timeout` to name an existing option: this function never calls
+/// `validate`, so it has no way to know whether the `request` it was handed
+/// ever passed that check. A request forwarded without validation, or
+/// emitted by a producer written before the rule existed, can still reach
+/// here with an `on_timeout` absent from its own `options` — the same shape
+/// [`parse_event`] deliberately still accepts. The exception is what lets a
+/// genuine timeout answer against such a request validate correctly instead
+/// of being misreported as an unrecognised option.
+///
+/// A `reversal`, when present, must always be an option from the request, and
+/// the two `decision_id` values must match.
+pub fn validate_decision_answer_against_request(
+    request: &DecisionRequestedPayload,
+    answer: &DecisionAnsweredPayload,
+) -> serde_json::Result<()> {
+    if request.decision_id != answer.decision_id {
+        return Err(de::Error::custom(format_args!(
+            "DecisionAnsweredPayload.decisionId does not match request: expected \"{}\"; received \"{}\"",
+            request.decision_id, answer.decision_id
+        )));
+    }
+
+    let option_exists = request
+        .options
+        .iter()
+        .any(|option| option.id == answer.option_id);
+    let is_timeout_option = answer.by_timeout == Some(true)
+        && request.on_timeout.as_deref() == Some(answer.option_id.as_str());
+    if !option_exists && !is_timeout_option {
+        return Err(de::Error::custom(format_args!(
+            "DecisionAnsweredPayload.optionId does not name a request option: \"{}\"",
+            answer.option_id
+        )));
+    }
+
+    if let Some(reversal) = answer.reversal.as_deref()
+        && !request.options.iter().any(|option| option.id == reversal)
+    {
+        return Err(de::Error::custom(format_args!(
+            "DecisionAnsweredPayload.reversal does not name a request option: \"{reversal}\""
+        )));
     }
 
     Ok(())
@@ -1170,6 +1460,10 @@ fn check_known_payload_representation(event_type: &str, payload: &Value) -> serd
         serde_json::from_value::<ControlAppliedPayload>(payload.clone()).map(drop)
     } else if event_type == CAPTURE_REFUSED {
         serde_json::from_value::<CaptureRefusedPayload>(payload.clone()).map(drop)
+    } else if event_type == DECISION_REQUESTED {
+        serde_json::from_value::<DecisionRequestedPayload>(payload.clone()).map(drop)
+    } else if event_type == DECISION_ANSWERED {
+        serde_json::from_value::<DecisionAnsweredPayload>(payload.clone()).map(drop)
     } else {
         Ok(())
     }
@@ -1791,6 +2085,17 @@ mod tests {
     // This value is intentionally one neither SDK will ever know. The cause
     // string and the whole canonical event must survive an older relay exactly.
     const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}"#;
+
+    // Cross-SDK byte identity for both decision events (spec #7). These exact
+    // literals are pasted into the TypeScript suite and asserted against
+    // events hand-built through each SDK's typed API.
+    const DECISION_REQUESTED_WIRE: &str = r#"{"v":1,"type":"decision.requested","runId":"run-decision","seq":1,"ts":"2026-09-07T07:00:00.000Z","payload":{"decisionId":"decision-1","dossier":{"blastRadius":"one repository","optionsRuledOut":["auto-proceed","discard the request"],"question":"May the run execute the deployment tool?","recommendedAction":"deny unless the operator confirms the target","truncated":false},"expiresAt":"2026-09-07T07:05:00.000Z","kind":"permission","onTimeout":"deny","options":[{"id":"allow","label":"Allow once"},{"id":"deny","label":"Deny"}],"subject":"deploy"}}"#;
+    const DECISION_ANSWERED_HUMAN_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision","seq":2,"ts":"2026-09-07T07:01:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow"}}"#;
+    const DECISION_ANSWERED_TIMEOUT_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}"#;
+
+    // This value is intentionally one neither SDK will ever know. The kind's
+    // raw bytes and the whole canonical event must survive an older relay.
+    const UNKNOWN_DECISION_KIND_WIRE: &str = r#"{"v":1,"type":"decision.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T07:00:03.000Z","payload":{"decisionId":"decision-unknown","dossier":{"blastRadius":"none","optionsRuledOut":[],"question":"Unknown kind?","recommendedAction":"inspect"},"kind":"never-a-valid-decision-kind","options":[]}}"#;
 
     fn complete_event() -> Event {
         Event {
@@ -3180,6 +3485,606 @@ mod tests {
         }
     }
 
+    // -- decision.* (spec #7) ------------------------------------------
+
+    fn minimal_decision_request(kind: &str) -> Value {
+        json!({
+            "decisionId": "decision-1",
+            "kind": kind,
+            "dossier": {
+                "question": "Proceed?",
+                "optionsRuledOut": ["auto-proceed"],
+                "recommendedAction": "ask the operator",
+                "blastRadius": "one run"
+            },
+            "options": [{ "id": "allow", "label": "Allow" }]
+        })
+    }
+
+    fn consistency_request() -> DecisionRequestedPayload {
+        DecisionRequestedPayload {
+            decision_id: "decision-1".to_owned(),
+            kind: DecisionKind::Permission,
+            dossier: DecisionDossier {
+                question: "Proceed?".to_owned(),
+                options_ruled_out: vec![],
+                recommended_action: "ask the operator".to_owned(),
+                blast_radius: "one run".to_owned(),
+                truncated: None,
+                extra: PayloadExtension::new(),
+            },
+            // `deny` is deliberately not a human option here, so the tests
+            // distinguish the helper's timeout-only allowance from ordinary
+            // option membership.
+            options: vec![DecisionOption {
+                id: "allow".to_owned(),
+                label: "Allow".to_owned(),
+                extra: PayloadExtension::new(),
+            }],
+            subject: None,
+            expires_at: None,
+            on_timeout: Some("deny".to_owned()),
+            extra: PayloadExtension::new(),
+        }
+    }
+
+    fn consistency_answer(option_id: &str) -> DecisionAnsweredPayload {
+        DecisionAnsweredPayload {
+            decision_id: "decision-1".to_owned(),
+            option_id: option_id.to_owned(),
+            by: "principal:user:alice".to_owned(),
+            by_timeout: None,
+            reversal: None,
+            extra: PayloadExtension::new(),
+        }
+    }
+
+    #[test]
+    fn accepts_every_permitted_decision_kind_without_on_timeout() {
+        for kind in [
+            "permission",
+            "tripwire",
+            "gate_inconclusive",
+            "human_decides",
+            "budget",
+        ] {
+            let payload = minimal_decision_request(kind);
+            parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload.clone())).unwrap();
+            validate(DECISION_REQUESTED, &payload).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_decision_requested_field() {
+        for field in ["decisionId", "kind", "dossier", "options"] {
+            let mut payload = minimal_decision_request("permission");
+            payload.as_object_mut().unwrap().remove(field);
+
+            let parse_error =
+                parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload.clone()))
+                    .unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for {field} was: {parse_error}"
+            );
+            let validation_error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for {field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_dossier_field() {
+        for field in [
+            "question",
+            "optionsRuledOut",
+            "recommendedAction",
+            "blastRadius",
+        ] {
+            let mut payload = minimal_decision_request("permission");
+            payload["dossier"].as_object_mut().unwrap().remove(field);
+
+            let parse_error =
+                parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload.clone()))
+                    .unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for dossier.{field} was: {parse_error}"
+            );
+            let validation_error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for dossier.{field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_option_field() {
+        for field in ["id", "label"] {
+            let mut payload = minimal_decision_request("permission");
+            payload["options"][0].as_object_mut().unwrap().remove(field);
+
+            let parse_error =
+                parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload.clone()))
+                    .unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for options[0].{field} was: {parse_error}"
+            );
+            let validation_error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for options[0].{field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_each_missing_required_decision_answered_field() {
+        for field in ["decisionId", "optionId", "by"] {
+            let mut payload = json!({
+                "decisionId": "decision-1",
+                "optionId": "allow",
+                "by": "principal:user:alice"
+            });
+            payload.as_object_mut().unwrap().remove(field);
+
+            let parse_error =
+                parse_event(&lifecycle_event_input(DECISION_ANSWERED, payload.clone()))
+                    .unwrap_err();
+            assert!(
+                parse_error.to_string().contains(field),
+                "parse error for {field} was: {parse_error}"
+            );
+            let validation_error = validate(DECISION_ANSWERED, &payload).unwrap_err();
+            assert!(
+                validation_error.to_string().contains(field),
+                "validation error for {field} was: {validation_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_an_unknown_decision_kind_verbatim_and_validate_reports_it() {
+        let event = parse_event(UNKNOWN_DECISION_KIND_WIRE).unwrap();
+        let parsed: DecisionRequestedPayload =
+            serde_json::from_value(event.payload.clone()).unwrap();
+
+        assert_eq!(
+            parsed.kind,
+            DecisionKind::Unknown("never-a-valid-decision-kind".to_owned())
+        );
+        let error = validate(DECISION_REQUESTED, &event.payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DecisionRequestedPayload.kind has unknown value: never-a-valid-decision-kind"
+        );
+        assert_eq!(parsed.kind.as_str(), "never-a-valid-decision-kind");
+        assert_eq!(
+            serde_json::to_string(&parsed.kind).unwrap(),
+            r#""never-a-valid-decision-kind""#
+        );
+        assert_eq!(serialise_event(&event).unwrap(), UNKNOWN_DECISION_KIND_WIRE);
+    }
+
+    #[test]
+    fn validate_enforces_the_permission_only_on_timeout_rule() {
+        for kind in ["tripwire", "gate_inconclusive", "human_decides", "budget"] {
+            let mut payload = minimal_decision_request(kind);
+            payload["onTimeout"] = json!("deny");
+            let error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "DecisionRequestedPayload.onTimeout is permitted only when kind is \"permission\"; received kind \"{kind}\""
+                )
+            );
+        }
+
+        let mut invalid_permission = minimal_decision_request("permission");
+        invalid_permission["onTimeout"] = json!("allow");
+        let error = validate(DECISION_REQUESTED, &invalid_permission).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DecisionRequestedPayload.onTimeout must be \"deny\" when kind is \"permission\"; received \"allow\""
+        );
+
+        let mut valid_permission = minimal_decision_request("permission");
+        valid_permission["options"] =
+            json!([{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }]);
+        valid_permission["onTimeout"] = json!("deny");
+        validate(DECISION_REQUESTED, &valid_permission).unwrap();
+
+        for kind in [
+            "permission",
+            "tripwire",
+            "gate_inconclusive",
+            "human_decides",
+            "budget",
+        ] {
+            validate(DECISION_REQUESTED, &minimal_decision_request(kind)).unwrap();
+        }
+    }
+
+    #[test]
+    fn validate_rejects_on_timeout_naming_no_request_option() {
+        // `options` here is only `allow`; `deny` is permitted by the
+        // kind/value rules above but was never offered.
+        let mut payload = minimal_decision_request("permission");
+        payload["onTimeout"] = json!("deny");
+        let error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DecisionRequestedPayload.onTimeout must name one of the request's options[].id; received \"deny\""
+        );
+    }
+
+    #[test]
+    fn validate_accepts_on_timeout_naming_an_existing_option() {
+        let mut payload = minimal_decision_request("permission");
+        payload["options"] =
+            json!([{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }]);
+        payload["onTimeout"] = json!("deny");
+        validate(DECISION_REQUESTED, &payload).unwrap();
+    }
+
+    #[test]
+    fn parse_event_accepts_on_timeout_on_a_tripwire() {
+        // `onTimeout` on a tripwire is a producer-policy violation, but it is
+        // representable. This fails if the rule ever leaks into parsing.
+        let mut payload = minimal_decision_request("tripwire");
+        payload["onTimeout"] = json!("deny");
+        parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload)).unwrap();
+    }
+
+    #[test]
+    fn parse_event_accepts_on_timeout_naming_no_request_option() {
+        // Naming an option the request never offered is a producer-policy
+        // violation, but the event is still representable. This fails if the
+        // options-membership rule ever leaks into parsing.
+        let mut payload = minimal_decision_request("permission");
+        payload["onTimeout"] = json!("deny");
+        parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload)).unwrap();
+    }
+
+    #[test]
+    fn cross_event_helper_checks_option_timeout_reversal_and_decision_id() {
+        let request = consistency_request();
+        let valid = consistency_answer("allow");
+        validate_decision_answer_against_request(&request, &valid).unwrap();
+
+        let invalid_option = consistency_answer("missing");
+        assert!(
+            validate_decision_answer_against_request(&request, &invalid_option)
+                .unwrap_err()
+                .to_string()
+                .contains("optionId")
+        );
+
+        let mut timeout = consistency_answer("deny");
+        timeout.by_timeout = Some(true);
+        validate_decision_answer_against_request(&request, &timeout).unwrap();
+
+        timeout.by_timeout = Some(false);
+        assert!(validate_decision_answer_against_request(&request, &timeout).is_err());
+        timeout.by_timeout = None;
+        assert!(validate_decision_answer_against_request(&request, &timeout).is_err());
+
+        let mut invalid_reversal = valid.clone();
+        invalid_reversal.reversal = Some("missing".to_owned());
+        assert!(
+            validate_decision_answer_against_request(&request, &invalid_reversal)
+                .unwrap_err()
+                .to_string()
+                .contains("reversal")
+        );
+
+        let mut mismatched = valid;
+        mismatched.decision_id = "decision-2".to_owned();
+        assert!(
+            validate_decision_answer_against_request(&request, &mismatched)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match request")
+        );
+    }
+
+    #[test]
+    fn decision_narration_bounds_are_validation_only() {
+        let over = "😀".repeat(MAX_EXCERPT_SCALARS + 1);
+        let cases = [
+            (
+                json!({
+                    "decisionId": "decision-1",
+                    "kind": "permission",
+                    "dossier": {
+                        "question": over,
+                        "optionsRuledOut": [],
+                        "recommendedAction": "ask",
+                        "blastRadius": "one run"
+                    },
+                    "options": []
+                }),
+                "DecisionRequestedPayload.dossier.question",
+            ),
+            (
+                json!({
+                    "decisionId": "decision-1",
+                    "kind": "permission",
+                    "dossier": {
+                        "question": "Proceed?",
+                        "optionsRuledOut": [over],
+                        "recommendedAction": "ask",
+                        "blastRadius": "one run"
+                    },
+                    "options": []
+                }),
+                "DecisionRequestedPayload.dossier.optionsRuledOut[0]",
+            ),
+            (
+                json!({
+                    "decisionId": "decision-1",
+                    "kind": "permission",
+                    "dossier": {
+                        "question": "Proceed?",
+                        "optionsRuledOut": [],
+                        "recommendedAction": over,
+                        "blastRadius": "one run"
+                    },
+                    "options": []
+                }),
+                "DecisionRequestedPayload.dossier.recommendedAction",
+            ),
+            (
+                json!({
+                    "decisionId": "decision-1",
+                    "kind": "permission",
+                    "dossier": {
+                        "question": "Proceed?",
+                        "optionsRuledOut": [],
+                        "recommendedAction": "ask",
+                        "blastRadius": over
+                    },
+                    "options": []
+                }),
+                "DecisionRequestedPayload.dossier.blastRadius",
+            ),
+            (
+                json!({
+                    "decisionId": "decision-1",
+                    "kind": "permission",
+                    "dossier": {
+                        "question": "Proceed?",
+                        "optionsRuledOut": [],
+                        "recommendedAction": "ask",
+                        "blastRadius": "one run"
+                    },
+                    "options": [{ "id": "allow", "label": over }]
+                }),
+                "DecisionRequestedPayload.options[0].label",
+            ),
+        ];
+
+        for (payload, field) in cases {
+            parse_event(&lifecycle_event_input(DECISION_REQUESTED, payload.clone())).unwrap();
+            let error = validate(DECISION_REQUESTED, &payload).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{field} has {} Unicode scalar values; maximum is {MAX_EXCERPT_SCALARS}",
+                    MAX_EXCERPT_SCALARS + 1
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn decision_identifiers_are_not_excerpt_bounded() {
+        let identifier = "x".repeat(MAX_EXCERPT_SCALARS + 1);
+        let mut request = minimal_decision_request("permission");
+        request["decisionId"] = json!(identifier);
+        request["options"][0]["id"] = json!(identifier);
+        validate(DECISION_REQUESTED, &request).unwrap();
+
+        let answer = json!({
+            "decisionId": identifier,
+            "optionId": identifier,
+            "by": "principal:user:alice",
+            "reversal": identifier
+        });
+        validate(DECISION_ANSWERED, &answer).unwrap();
+    }
+
+    #[test]
+    fn absent_optional_decision_fields_are_omitted_instead_of_null() {
+        let request = consistency_request();
+        let request = DecisionRequestedPayload {
+            on_timeout: None,
+            ..request
+        };
+        let answer = consistency_answer("allow");
+
+        let request_value = serde_json::to_value(request).unwrap();
+        for field in ["subject", "expiresAt", "onTimeout"] {
+            assert!(!request_value.as_object().unwrap().contains_key(field));
+        }
+        assert!(
+            !request_value["dossier"]
+                .as_object()
+                .unwrap()
+                .contains_key("truncated")
+        );
+
+        let answer_value = serde_json::to_value(answer).unwrap();
+        for field in ["byTimeout", "reversal"] {
+            assert!(!answer_value.as_object().unwrap().contains_key(field));
+        }
+        assert!(!request_value.to_string().contains(":null"));
+        assert!(!answer_value.to_string().contains(":null"));
+    }
+
+    #[test]
+    fn decision_payloads_retain_and_re_emit_unknown_fields_at_every_level() {
+        let request: DecisionRequestedPayload = serde_json::from_value(json!({
+            "decisionId": "decision-1",
+            "kind": "permission",
+            "dossier": {
+                "question": "Proceed?",
+                "optionsRuledOut": [],
+                "recommendedAction": "ask",
+                "blastRadius": "one run",
+                "futureDossier": { "value": 1 }
+            },
+            "options": [{
+                "id": "allow",
+                "label": "Allow",
+                "futureOption": { "value": 2 }
+            }],
+            "futureRequest": { "value": 3 }
+        }))
+        .unwrap();
+        let answer: DecisionAnsweredPayload = serde_json::from_value(json!({
+            "decisionId": "decision-1",
+            "optionId": "allow",
+            "by": "principal:user:alice",
+            "futureAnswer": { "value": 4 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request.extra.get("futureRequest"),
+            Some(&json!({ "value": 3 }))
+        );
+        assert_eq!(
+            request.dossier.extra.get("futureDossier"),
+            Some(&json!({ "value": 1 }))
+        );
+        assert_eq!(
+            request.options[0].extra.get("futureOption"),
+            Some(&json!({ "value": 2 }))
+        );
+        assert_eq!(
+            answer.extra.get("futureAnswer"),
+            Some(&json!({ "value": 4 }))
+        );
+
+        let re_emitted_request = serde_json::to_value(request).unwrap();
+        assert_eq!(re_emitted_request["futureRequest"], json!({ "value": 3 }));
+        assert_eq!(
+            re_emitted_request["dossier"]["futureDossier"],
+            json!({ "value": 1 })
+        );
+        assert_eq!(
+            re_emitted_request["options"][0]["futureOption"],
+            json!({ "value": 2 })
+        );
+        assert_eq!(
+            serde_json::to_value(answer).unwrap()["futureAnswer"],
+            json!({ "value": 4 })
+        );
+    }
+
+    #[test]
+    fn decision_events_match_the_typescript_pinned_bytes() {
+        let requested = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: DECISION_REQUESTED.to_owned(),
+            run_id: "run-decision".to_owned(),
+            seq: 1,
+            ts: "2026-09-07T07:00:00.000Z".to_owned(),
+            payload: DecisionRequestedPayload {
+                decision_id: "decision-1".to_owned(),
+                kind: DecisionKind::Permission,
+                dossier: DecisionDossier {
+                    question: "May the run execute the deployment tool?".to_owned(),
+                    options_ruled_out: vec![
+                        "auto-proceed".to_owned(),
+                        "discard the request".to_owned(),
+                    ],
+                    recommended_action: "deny unless the operator confirms the target".to_owned(),
+                    blast_radius: "one repository".to_owned(),
+                    truncated: Some(false),
+                    extra: PayloadExtension::new(),
+                },
+                options: vec![
+                    DecisionOption {
+                        id: "allow".to_owned(),
+                        label: "Allow once".to_owned(),
+                        extra: PayloadExtension::new(),
+                    },
+                    DecisionOption {
+                        id: "deny".to_owned(),
+                        label: "Deny".to_owned(),
+                        extra: PayloadExtension::new(),
+                    },
+                ],
+                subject: Some("deploy".to_owned()),
+                expires_at: Some("2026-09-07T07:05:00.000Z".to_owned()),
+                on_timeout: Some("deny".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let human = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: DECISION_ANSWERED.to_owned(),
+            run_id: "run-decision".to_owned(),
+            seq: 2,
+            ts: "2026-09-07T07:01:00.000Z".to_owned(),
+            payload: DecisionAnsweredPayload {
+                decision_id: "decision-1".to_owned(),
+                option_id: "allow".to_owned(),
+                by: "principal:user:alice".to_owned(),
+                by_timeout: None,
+                reversal: None,
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+        let timeout = Event {
+            v: EVENT_SCHEMA_VERSION,
+            event_type: DECISION_ANSWERED.to_owned(),
+            run_id: "run-decision".to_owned(),
+            seq: 3,
+            ts: "2026-09-07T07:05:00.000Z".to_owned(),
+            payload: DecisionAnsweredPayload {
+                decision_id: "decision-1".to_owned(),
+                option_id: "deny".to_owned(),
+                by: "principal:runtime:permission-timeout".to_owned(),
+                by_timeout: Some(true),
+                reversal: Some("allow".to_owned()),
+                extra: PayloadExtension::new(),
+            },
+            captured_at: None,
+        };
+
+        validate(DECISION_REQUESTED, &requested.payload).unwrap();
+        assert_eq!(
+            serialise_event(&requested).unwrap(),
+            DECISION_REQUESTED_WIRE
+        );
+        assert_eq!(
+            serialise_event(&human).unwrap(),
+            DECISION_ANSWERED_HUMAN_WIRE
+        );
+        assert_eq!(
+            serialise_event(&timeout).unwrap(),
+            DECISION_ANSWERED_TIMEOUT_WIRE
+        );
+
+        for expected in [
+            DECISION_REQUESTED_WIRE,
+            DECISION_ANSWERED_HUMAN_WIRE,
+            DECISION_ANSWERED_TIMEOUT_WIRE,
+        ] {
+            let parsed = parse_event(expected).unwrap();
+            assert_eq!(serialise_event(&parsed).unwrap(), expected);
+        }
+    }
+
     #[test]
     fn rejects_each_missing_required_envelope_field() {
         for field in ["v", "type", "runId", "seq", "ts", "payload"] {
@@ -3943,6 +4848,55 @@ mod tests {
     }
 
     #[test]
+    fn append_event_refuses_a_real_control_applied_after_run_finished() {
+        // A `control.applied` sounds like the one post-terminal event that
+        // "surely" should still be recordable — an interrupt landing just
+        // after the run ends. Ruled on umwelt#1: a closed run accepts
+        // nothing after `run.finished`, control events included, and this is
+        // refused the same way as any other post-terminal append: as
+        // `RunClosed`, not `Sequence`, even though this append's `seq` is
+        // otherwise the expected next value.
+        let mut sink = InMemorySink::new(|| "unused".to_owned());
+        sink.append_event(complete_event()).unwrap();
+        sink.append_event(Event {
+            event_type: RUN_FINISHED.to_owned(),
+            seq: 2,
+            payload: json!({ "outcome": "completed", "durationMs": 1 }),
+            ..complete_event()
+        })
+        .unwrap();
+
+        let before = sink.events("run-1").to_vec();
+
+        let error = sink
+            .append_event(Event {
+                event_type: CONTROL_APPLIED.to_owned(),
+                seq: 3,
+                payload: json!({ "controlId": "control-1", "ok": true }),
+                ..complete_event()
+            })
+            .unwrap_err();
+
+        let AppendError::RunClosed(run_closed) = error else {
+            panic!(
+                "expected AppendError::RunClosed for a control.applied appended after run.finished, got {error:?}"
+            );
+        };
+        assert_eq!(run_closed.run_id, "run-1");
+
+        assert_eq!(
+            sink.events("run-1").to_vec(),
+            before,
+            "a refused control.applied append must not change stored events"
+        );
+        assert_eq!(
+            sink.events("run-1").len(),
+            2,
+            "a refused control.applied append must not consume a seq"
+        );
+    }
+
+    #[test]
     fn refused_append_leaves_stored_events_and_seq_unchanged() {
         let mut sink = InMemorySink::new(|| "2026-09-07T00:00:00.000Z".to_owned());
         sink.append_draft(
@@ -4239,7 +5193,7 @@ mod tests {
         assert!(serde_json::from_str::<Event<RunStartedPayload>>(&input).is_ok());
     }
 
-    /// For each of the eleven known types, builds a minimally valid event of
+    /// For each of the thirteen known types, builds a minimally valid event of
     /// that type, serialises it, and parses the `type` field back out of the
     /// result — then compares that against the exported constant.
     ///
@@ -4312,11 +5266,26 @@ mod tests {
             ),
             CAPTURE_REFUSED
         );
+        assert_eq!(
+            round_tripped_type(DECISION_REQUESTED, minimal_decision_request("permission"),),
+            DECISION_REQUESTED
+        );
+        assert_eq!(
+            round_tripped_type(
+                DECISION_ANSWERED,
+                json!({
+                    "decisionId": "decision-1",
+                    "optionId": "allow",
+                    "by": "principal:user:alice"
+                }),
+            ),
+            DECISION_ANSWERED
+        );
     }
 
     #[test]
-    fn known_types_holds_exactly_the_eleven_recognised_types_with_no_duplicates() {
-        assert_eq!(KNOWN_TYPES.len(), 11);
+    fn known_types_holds_exactly_the_thirteen_recognised_types_with_no_duplicates() {
+        assert_eq!(KNOWN_TYPES.len(), 13);
 
         let unique: std::collections::HashSet<&str> = KNOWN_TYPES.iter().copied().collect();
         assert_eq!(
@@ -4338,6 +5307,8 @@ mod tests {
                 CONTROL_REQUESTED,
                 CONTROL_APPLIED,
                 CAPTURE_REFUSED,
+                DECISION_REQUESTED,
+                DECISION_ANSWERED,
             ])
         );
     }
