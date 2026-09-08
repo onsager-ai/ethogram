@@ -124,7 +124,13 @@ fn answer_ids_are_required_only_at_validation() {
 
 #[test]
 fn fields_forbidden_by_the_control_kind_are_policy_errors() {
-    for kind in ["interrupt", "steer", "teleport"] {
+    // Deliberately known kinds only: an unfamiliar kind such as "teleport"
+    // reports UnknownMember before this field-forbidden rule is ever
+    // reached, exactly like the other three closed unions check membership
+    // before any kind-conditioned rule (see `unknown_cannot_spell_any_known_control_kind_even_with_valid_fields`
+    // and `unfamiliar_control_kind_retains_exact_bytes_and_validate_reports_it`
+    // for the unfamiliar-kind coverage).
+    for kind in ["interrupt", "steer"] {
         for field in ["decisionId", "optionId"] {
             let mut payload =
                 json!({ "controlId": "c", "kind": kind, "by": "a", "text": "next turn" });
@@ -223,19 +229,36 @@ fn unknown_check_handles_borrowed_struct_map_and_transparent_payloads() {
 }
 
 #[test]
-fn unfamiliar_control_kind_retains_exact_bytes_and_validates() {
+fn unfamiliar_control_kind_retains_exact_bytes_and_validate_reports_it() {
     let raw = "future/答😀 e\u{301}\n\"";
     let mut payload = answer();
     payload.kind = ControlKind::Unknown(raw.to_owned());
     payload.decision_id = None;
     payload.option_id = None;
-    validate(CONTROL_REQUESTED, &payload).unwrap();
+    assert_eq!(
+        validate(CONTROL_REQUESTED, &payload).unwrap_err().kind,
+        ValidationErrorKind::UnknownMember {
+            path: "payload.kind".to_owned(),
+            value: raw.to_owned(),
+        }
+    );
+    // Reporting the unfamiliar kind at validation does not stop it from
+    // parsing and round-tripping byte-for-byte — those are `parse_event`'s
+    // concern, not `validate`'s.
     let wire = serialise_event(&event(CONTROL_REQUESTED, payload.clone(), 1)).unwrap();
     let parsed: Event<ControlRequestedPayload> = serde_json::from_str(&wire).unwrap();
     assert_eq!(parsed.payload, payload);
     assert_eq!(parsed.payload.kind.as_str().as_bytes(), raw.as_bytes());
     assert_eq!(serialise_event(&parsed).unwrap(), wire);
-    validate(CONTROL_REQUESTED, &parse_event(&wire).unwrap().payload).unwrap();
+    assert_eq!(
+        validate(CONTROL_REQUESTED, &parse_event(&wire).unwrap().payload)
+            .unwrap_err()
+            .kind,
+        ValidationErrorKind::UnknownMember {
+            path: "payload.kind".to_owned(),
+            value: raw.to_owned(),
+        }
+    );
 }
 
 #[test]

@@ -82,7 +82,12 @@ test("answer IDs are required only at validation", () => {
 });
 
 test("fields forbidden by the control kind are Policy errors", () => {
-  for (const kind of ["interrupt", "steer", "teleport"]) {
+  // Deliberately known kinds only: an unfamiliar kind such as "teleport"
+  // reports UnknownMember before this field-forbidden rule is ever reached,
+  // exactly like the other three closed unions check membership before any
+  // kind-conditioned rule (see "unfamiliar control kind retains exact bytes
+  // and validate reports it" below for the unfamiliar-kind coverage).
+  for (const kind of ["interrupt", "steer"]) {
     for (const field of ["decisionId", "optionId"]) {
       const payload = { controlId: "c", kind, by: "a", text: "next turn", [field]: "" };
       assertParseable(CONTROL_REQUESTED, payload);
@@ -116,15 +121,22 @@ test("a known spelling always receives the known control kind rules", () => {
   assert.equal(wrapped.details.path, "payload.kind");
 });
 
-test("unfamiliar control kind retains exact bytes and validates", () => {
+test("unfamiliar control kind retains exact bytes and validate reports it", () => {
   const raw = 'future/答😀 e\u0301\n"';
   const payload = { controlId: "c", kind: raw, by: "a" };
-  validate(CONTROL_REQUESTED, payload);
+  assert.deepEqual(failure(CONTROL_REQUESTED, payload).details, {
+    kind: "UnknownMember", path: "payload.kind", value: raw,
+  });
+  // Reporting the unfamiliar kind at validation does not stop it from
+  // parsing and round-tripping byte-for-byte -- that is parseEvent's
+  // concern, not validate's.
   const wire = serialiseEvent(event({ type: CONTROL_REQUESTED, payload }));
   const parsed = parseControlRequestedPayload(parseEvent(JSON.parse(wire)).payload);
   assert.deepEqual(Buffer.from(parsed.kind), Buffer.from(raw));
   assert.equal(serialiseEvent(parseEvent(JSON.parse(wire))), wire);
-  validate(CONTROL_REQUESTED, parsed);
+  assert.deepEqual(failure(CONTROL_REQUESTED, parsed).details, {
+    kind: "UnknownMember", path: "payload.kind", value: raw,
+  });
 });
 
 test("reason is required for a negative echo and optional for a positive one", () => {

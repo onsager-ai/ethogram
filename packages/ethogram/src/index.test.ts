@@ -902,7 +902,7 @@ describe("control payload parsing (spec #8)", () => {
     );
   });
 
-  test("parses an unknown control kind verbatim and validate accepts it", () => {
+  test("parses an unknown control kind verbatim and validate reports it", () => {
     // "teleport" is a value neither SDK will ever know, matching issue #12's
     // own example. There is deliberately no "pause" member either (see
     // ControlKind's doc comment), but that is a closed-vocabulary fact, not
@@ -914,7 +914,10 @@ describe("control payload parsing (spec #8)", () => {
     });
 
     assert.equal((event.payload as { kind: string }).kind, "teleport");
-    assert.doesNotThrow(() => validate(CONTROL_REQUESTED, event.payload));
+    assert.throws(
+      () => validate(CONTROL_REQUESTED, event.payload),
+      /kind has unknown value: teleport/,
+    );
   });
 
   test("unknown control kind keeps cross-version byte identity with Rust and the input", () => {

@@ -278,8 +278,10 @@ impl<'de> Deserialize<'de> for RunOutcome {
 /// A control kind this SDK knows, or an unfamiliar wire string retained
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
-/// Unfamiliar strings validate, but `Unknown` spelling any known kind is
-/// malformed at validation: parsing that string would yield the known variant.
+/// An unfamiliar wire string is `UnknownMember` at validation, exactly like
+/// the other three closed unions; `Unknown` spelling any known kind is
+/// `Malformed` at validation instead, because parsing that string would have
+/// yielded the known variant.
 ///
 /// There is deliberately no `Pause` member: no harness the operator uses can
 /// pause headlessly, and a verb the runtime cannot honour is a lie in a type.
@@ -1454,6 +1456,20 @@ where
         )?;
     } else if event_type == CONTROL_REQUESTED {
         let requested = decode_payload::<ControlRequestedPayload>(payload)?;
+        // Checked before any kind-conditioned business rule below, exactly
+        // as the other three closed unions check membership before their own
+        // conditioned rules: those rules (decisionId/optionId only for
+        // "answer", text required for "steer") only have anything to say
+        // about a kind this SDK recognises.
+        if let ControlKind::Unknown(value) = &requested.kind {
+            return Err(ValidationError::new(
+                ValidationErrorKind::UnknownMember {
+                    path: "payload.kind".to_owned(),
+                    value: value.to_owned(),
+                },
+                format!("ControlRequestedPayload.kind has unknown value: {value}"),
+            ));
+        }
         for (field, value) in [
             ("decisionId", &requested.decision_id),
             ("optionId", &requested.option_id),
@@ -3770,7 +3786,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_an_unknown_control_kind_verbatim_and_validate_accepts_it() {
+    fn parses_an_unknown_control_kind_verbatim_and_validate_reports_it() {
         // "teleport" is a value neither SDK will ever know, matching issue
         // #12's own example. There is deliberately no `pause` member either
         // (see `ControlKind`'s doc comment), but that is a closed-vocabulary
@@ -3785,8 +3801,20 @@ mod tests {
             serde_json::from_value(event.payload.clone()).unwrap();
         assert_eq!(parsed.kind, ControlKind::Unknown("teleport".to_owned()));
 
-        validate(CONTROL_REQUESTED, &event.payload).unwrap();
-        validate(CONTROL_REQUESTED, &parsed).unwrap();
+        let error = validate(CONTROL_REQUESTED, &event.payload).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ControlRequestedPayload.kind has unknown value: teleport"),
+            "error was: {error}"
+        );
+        let error = validate(CONTROL_REQUESTED, &parsed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ControlRequestedPayload.kind has unknown value: teleport"),
+            "error was: {error}"
+        );
     }
 
     #[test]

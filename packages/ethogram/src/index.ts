@@ -805,6 +805,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
+const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
 const CONTROL_APPLIED_REASON_VALUES = new Set<string>(CONTROL_APPLIED_REASONS);
 const CAPTURE_REFUSAL_CAUSE_VALUES = new Set<string>(CAPTURE_REFUSAL_CAUSES);
 const DECISION_KIND_VALUES = new Set<string>(DECISION_KINDS);
@@ -1918,6 +1919,17 @@ function validatePayload(eventType: string, payload: unknown): void {
     }
     case CONTROL_REQUESTED: {
       const requested = parsed as ControlRequestedPayload;
+      // Checked before any kind-conditioned business rule below, exactly as
+      // the other three closed unions check membership before their own
+      // conditioned rules: those rules (decisionId/optionId only for
+      // "answer", text required for "steer") only have anything to say about
+      // a kind this SDK recognises.
+      if (!CONTROL_KIND_VALUES.has(requested.kind)) {
+        throw new ValidationError(
+          { kind: "UnknownMember", path: "payload.kind", value: requested.kind },
+          `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
+        );
+      }
       for (const field of ["decisionId", "optionId"] as const) {
         if (requested.kind === "answer") {
           if (requested[field] === undefined) {
