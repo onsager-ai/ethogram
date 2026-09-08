@@ -303,11 +303,11 @@ unsafe integer, or an input that cannot be serialised each carry a
 `Malformed` path and their original diagnostic. Parsing still checks
 representability without applying capture bounds or producer policy.
 An in-memory `Unknown` spelling a known member of `RunKind`, `RunOutcome`,
-`ControlKind`, or `CaptureRefusalCause` is also `Malformed`: it cannot
-round-trip as that variant, because parsing its string yields the known
-variant. This check runs only in validation, before JSON conversion would
-erase the distinction. Serialisation still emits the exact string, and
-unfamiliar strings still report `UnknownMember` for all four unions.
+`ControlKind`, `CaptureRefusalCause`, or `DecisionKind` is also `Malformed`:
+it cannot round-trip as that variant, because parsing its string yields the
+known variant. This check runs only in validation, before JSON conversion
+would erase the distinction. Serialisation still emits the exact string, and
+unfamiliar strings still report `UnknownMember` for all five unions.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8

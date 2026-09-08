@@ -57,6 +57,7 @@ register_unions! {
     RunOutcome => (RUN_FINISHED, RunFinishedPayload, "outcome"),
     ControlKind => (CONTROL_REQUESTED, ControlRequestedPayload, "kind"),
     CaptureRefusalCause => (CAPTURE_REFUSED, CaptureRefusedPayload, "cause"),
+    DecisionKind => (DECISION_REQUESTED, DecisionRequestedPayload, "kind"),
 }
 
 impl ser::Error for ValidationError {

@@ -84,7 +84,7 @@ test("answer IDs are required only at validation", () => {
 test("fields forbidden by the control kind are Policy errors", () => {
   // Deliberately known kinds only: an unfamiliar kind such as "teleport"
   // reports UnknownMember before this field-forbidden rule is ever reached,
-  // exactly like the other three closed unions check membership before any
+  // exactly like the other four closed unions check membership before any
   // kind-conditioned rule (see "unfamiliar control kind retains exact bytes
   // and validate reports it" below for the unfamiliar-kind coverage).
   for (const kind of ["interrupt", "steer"]) {

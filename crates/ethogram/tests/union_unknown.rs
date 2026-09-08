@@ -1,7 +1,8 @@
 use ethogram::{
     CAPTURE_REFUSED, CONTROL_REQUESTED, CaptureRefusalCause, CaptureRefusedPayload, ControlKind,
-    ControlRequestedPayload, RUN_FINISHED, RUN_STARTED, RunFinishedPayload, RunKind, RunOutcome,
-    RunStartedPayload, ValidationErrorKind, validate,
+    ControlRequestedPayload, DECISION_REQUESTED, DecisionKind, DecisionRequestedPayload,
+    RUN_FINISHED, RUN_STARTED, RunFinishedPayload, RunKind, RunOutcome, RunStartedPayload,
+    ValidationErrorKind, validate,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -41,6 +42,24 @@ fn refused(cause: CaptureRefusalCause) -> CaptureRefusedPayload {
     CaptureRefusedPayload {
         cause,
         ..serde_json::from_value(json!({ "cause": "gap", "sourceRunId": "r" })).unwrap()
+    }
+}
+
+fn decision(kind: DecisionKind) -> DecisionRequestedPayload {
+    DecisionRequestedPayload {
+        kind,
+        ..serde_json::from_value(json!({
+            "decisionId": "d",
+            "kind": "permission",
+            "dossier": {
+                "question": "Proceed?",
+                "optionsRuledOut": [],
+                "recommendedAction": "ask the operator",
+                "blastRadius": "one run"
+            },
+            "options": []
+        }))
+        .unwrap()
     }
 }
 
@@ -179,6 +198,37 @@ fn capture_refusal_cause_unknown_cannot_spell_known_member() {
     }
 }
 
+#[test]
+fn decision_kind_unknown_cannot_spell_known_member() {
+    for known in [
+        DecisionKind::Permission,
+        DecisionKind::Tripwire,
+        DecisionKind::GateInconclusive,
+        DecisionKind::HumanDecides,
+        DecisionKind::Budget,
+    ] {
+        let raw = known.as_str();
+        let payload = decision(DecisionKind::Unknown(raw.to_owned()));
+        assert_eq!(
+            validate(DECISION_REQUESTED, &payload)
+                .expect_err("DecisionKind::Unknown spelling a known member must be Malformed")
+                .kind,
+            ValidationErrorKind::Malformed {
+                path: "payload.kind".to_owned(),
+                message: format!(
+                    "DecisionRequestedPayload.kind cannot use Unknown for known value: {raw}"
+                ),
+            }
+        );
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire, serde_json::to_value(decision(known.clone())).unwrap());
+        validate(DECISION_REQUESTED, &wire).unwrap();
+        validate(DECISION_REQUESTED, &decision(known.clone())).unwrap();
+        let parsed: DecisionRequestedPayload = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed.kind, known);
+    }
+}
+
 const UNFAMILIAR: &str = "future/答😀 e\u{301}\n\"";
 
 #[test]
@@ -254,6 +304,25 @@ fn capture_refusal_cause_unfamiliar_string_remains_unknown_member() {
         validate(CAPTURE_REFUSED, &payload)
     );
     let parsed: CaptureRefusedPayload = serde_json::from_value(wire).unwrap();
+    assert_eq!(parsed, payload);
+}
+
+#[test]
+fn decision_kind_unfamiliar_string_remains_unknown_member() {
+    let payload = decision(DecisionKind::Unknown(UNFAMILIAR.to_owned()));
+    assert_eq!(
+        validate(DECISION_REQUESTED, &payload).unwrap_err().kind,
+        ValidationErrorKind::UnknownMember {
+            path: "payload.kind".to_owned(),
+            value: UNFAMILIAR.to_owned(),
+        }
+    );
+    let wire = serde_json::to_value(&payload).unwrap();
+    assert_eq!(
+        validate(DECISION_REQUESTED, &wire),
+        validate(DECISION_REQUESTED, &payload)
+    );
+    let parsed: DecisionRequestedPayload = serde_json::from_value(wire).unwrap();
     assert_eq!(parsed, payload);
 }
 

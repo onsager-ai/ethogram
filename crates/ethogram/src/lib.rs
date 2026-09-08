@@ -265,7 +265,7 @@ impl<'de> Deserialize<'de> for RunOutcome {
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
 /// An unfamiliar wire string is `UnknownMember` at validation, exactly like
-/// the other three closed unions; `Unknown` spelling any known kind is
+/// the other four closed unions; `Unknown` spelling any known kind is
 /// `Malformed` at validation instead, because parsing that string would have
 /// yielded the known variant.
 ///
@@ -426,6 +426,8 @@ impl<'de> Deserialize<'de> for CaptureRefusalCause {
 /// A decision kind this SDK knows, or an unfamiliar wire string retained
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
+/// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
+/// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecisionKind {
     Permission,
@@ -449,15 +451,6 @@ impl DecisionKind {
             Self::Budget => "budget",
             Self::Unknown(value) => value,
         }
-    }
-}
-
-impl Serialize for DecisionKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -1319,10 +1312,11 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 
 /// Validates whether a producer should emit `payload` for `event_type`.
 ///
-/// Typed `Unknown` values in [`RunKind`], [`RunOutcome`], [`ControlKind`], and
-/// [`CaptureRefusalCause`] must not spell a known member. These are `Malformed`
-/// and checked before JSON conversion, which would erase the variant. Their
-/// unfamiliar strings remain `UnknownMember` under closed-union validation.
+/// Typed `Unknown` values in [`RunKind`], [`RunOutcome`], [`ControlKind`],
+/// [`CaptureRefusalCause`], and [`DecisionKind`] must not spell a known
+/// member. These are `Malformed` and checked before JSON conversion, which
+/// would erase the variant. Their unfamiliar strings remain `UnknownMember`
+/// under closed-union validation.
 ///
 /// After the typed check, two universal bounds (issue #28) apply to **every** event
 /// regardless of whether `event_type` is recognised: every string leaf
@@ -1424,7 +1418,7 @@ where
     } else if event_type == CONTROL_REQUESTED {
         let requested = decode_payload::<ControlRequestedPayload>(payload)?;
         // Checked before any kind-conditioned business rule below, exactly
-        // as the other three closed unions check membership before their own
+        // as the other four closed unions check membership before their own
         // conditioned rules: those rules (decisionId/optionId only for
         // "answer", text required for "steer") only have anything to say
         // about a kind this SDK recognises.
