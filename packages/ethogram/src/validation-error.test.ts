@@ -70,7 +70,6 @@ test("UnknownMember reports each closed union and retains the value", () => {
   const cases: [string, unknown, string][] = [
     [RUN_STARTED, { kind: 'unknown"😀', actor: "a", harness: "h" }, "payload.kind"],
     [RUN_FINISHED, { outcome: 'unknown"😀', durationMs: 1 }, "payload.outcome"],
-    [CONTROL_REQUESTED, { controlId: "c", kind: 'unknown"😀', by: "a" }, "payload.kind"],
     [CAPTURE_REFUSED, { cause: 'unknown"😀', sourceRunId: "r" }, "payload.cause"],
     [DECISION_REQUESTED, decision, "payload.kind"],
   ];

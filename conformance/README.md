@@ -2,8 +2,9 @@
 
 Canonical event fixtures. **Both SDKs must agree on the compact canonical
 serialisation of every fixture in the versioned corpus directories**, and both
-CIs run the corpus. `handwritten-validation-inputs/` is a separate harness
-input set, described below, and is not part of the captured corpus.
+CIs run the corpus. `handwritten-validation-inputs/` and
+`handwritten-agreement-inputs/` are separate harness input sets, described
+below, and are not part of the captured corpus.
 
 This is the mechanism behind principle 1. Two hand-written implementations in
 different languages are only one definition if something mechanical proves they
@@ -164,11 +165,30 @@ used for event payloads. The original diagnostic is included only where it
 is a field of the kind (`Policy.message`); stacks and SDK-specific display
 metadata are excluded.
 
-`run.sh` checks separate fixture and error-output counts in each manifest,
-then runs its existing recursive byte diff across both output directories.
+`run.sh` checks separate fixture, error-output, and agreement-input counts in
+each manifest, then runs its existing recursive byte diff across both output
+directories.
 A kind, path, count, or other field disagreement therefore fails through
 the same comparison as an event serialisation disagreement. The driver
-reports captured fixtures and validation inputs as separate counts.
+reports captured fixtures, validation error cases, and agreement inputs as
+three separate counts.
+
+## Handwritten agreement inputs
+
+[`handwritten-agreement-inputs/`](handwritten-agreement-inputs/README.md)
+contains valid hand-written event envelopes for vocabulary without a producer
+capture yet. These are not captures, are not subject to corpus immutability,
+and must be superseded by real fixtures when a producer emits the events.
+The corpus generator does not read them.
+
+Every input must validate cleanly in both SDKs, the mirror of the validation
+directory's required-error assertion. Each SDK writes its production
+canonical serialisation to `agreement/<input-name>.json`; the same recursive
+byte diff used for the corpus compares these outputs. Counts are checked
+independently, so dropping an input from one set cannot be hidden by adding
+an input to another. The first five shapes cover the answer control verb and
+its echoes (#38); both SDK suites also pin their exact bytes from hand-built
+typed events.
 
 ## Library views
 

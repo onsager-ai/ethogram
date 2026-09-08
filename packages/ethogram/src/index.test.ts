@@ -172,7 +172,7 @@ const DECISION_ANSWERED_ACTION_REVERSAL_WIRE =
 const UNKNOWN_DECISION_KIND_WIRE =
   '{"v":1,"type":"decision.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T07:00:03.000Z","payload":{"decisionId":"decision-unknown","dossier":{"blastRadius":"none","optionsRuledOut":[],"question":"Unknown kind?","recommendedAction":"inspect"},"kind":"never-a-valid-decision-kind","options":[]}}';
 
-const PERMITTED_CONTROL_KINDS = ["interrupt", "steer"] as const;
+const PERMITTED_CONTROL_KINDS = ["interrupt", "steer", "answer"] as const;
 
 const PERMITTED_CAPTURE_REFUSAL_CAUSES = [
   "over_bound",
@@ -902,7 +902,7 @@ describe("control payload parsing (spec #8)", () => {
     );
   });
 
-  test("parses an unknown control kind verbatim and validate reports it", () => {
+  test("parses an unknown control kind verbatim and validate accepts it", () => {
     // "teleport" is a value neither SDK will ever know, matching issue #12's
     // own example. There is deliberately no "pause" member either (see
     // ControlKind's doc comment), but that is a closed-vocabulary fact, not
@@ -914,15 +914,7 @@ describe("control payload parsing (spec #8)", () => {
     });
 
     assert.equal((event.payload as { kind: string }).kind, "teleport");
-    assert.throws(
-      () =>
-        validate("control.requested", {
-          controlId: "control-3",
-          kind: "teleport",
-          by: "operator",
-        }),
-      /kind has unknown value: teleport/,
-    );
+    assert.doesNotThrow(() => validate(CONTROL_REQUESTED, event.payload));
   });
 
   test("unknown control kind keeps cross-version byte identity with Rust and the input", () => {

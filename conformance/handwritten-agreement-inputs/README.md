@@ -1,0 +1,21 @@
+# Handwritten agreement inputs
+
+These are hand-written, valid events for cross-SDK agreement before a producer
+has emitted the corresponding vocabulary. They are **not captures**, are not
+part of `v1/`, and are **not subject to the corpus immutability rule**. They
+must be superseded by real captured fixtures when a producer emits these
+events; the first expected producer for the answer control verb is ostrom#510.
+
+The five inputs cover an answer request, a positive control echo, and negative
+echoes for `no-such-decision`, `already-answered`, and `option-not-offered`.
+Both SDK test suites also hand-build these shapes and pin identical canonical
+JSON literals independently of these files.
+
+The conformance harness asserts that every input here validates cleanly, then
+compares both SDKs' production canonical serialisation byte for byte under
+`agreement/`. It reports this input count separately from captured fixtures
+and validation error cases. The corpus generator never reads this directory.
+
+`../handwritten-validation-inputs/` has the opposite invariant: every input
+there must produce its declared validation error. Keep the two sets separate
+so an unexpected pass or failure remains visible.

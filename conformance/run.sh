@@ -24,6 +24,8 @@ fixture_count="$(find "$repository_root/conformance/v1" -maxdepth 1 -type f -nam
 fixture_count="${fixture_count//[[:space:]]/}"
 error_count="$(find "$repository_root/conformance/handwritten-validation-inputs" -maxdepth 1 -type f -name '*.json' | wc -l)"
 error_count="${error_count//[[:space:]]/}"
+agreement_count="$(find "$repository_root/conformance/handwritten-agreement-inputs" -maxdepth 1 -type f -name '*.json' | wc -l)"
+agreement_count="${agreement_count//[[:space:]]/}"
 typescript_count="$(find "$typescript_output" -maxdepth 1 -type f -name '*.json' ! -name '_harness.json' | wc -l)"
 typescript_count="${typescript_count//[[:space:]]/}"
 rust_count="$(find "$rust_output" -maxdepth 1 -type f -name '*.json' ! -name '_harness.json' | wc -l)"
@@ -32,7 +34,11 @@ typescript_error_count="$(find "$typescript_output/errors" -maxdepth 1 -type f -
 typescript_error_count="${typescript_error_count//[[:space:]]/}"
 rust_error_count="$(find "$rust_output/errors" -maxdepth 1 -type f -name '*.json' | wc -l)"
 rust_error_count="${rust_error_count//[[:space:]]/}"
-expected_manifest="{\"errorCases\":$error_count,\"fixtures\":$fixture_count,\"schemaVersion\":1}"
+typescript_agreement_count="$(find "$typescript_output/agreement" -maxdepth 1 -type f -name '*.json' | wc -l)"
+typescript_agreement_count="${typescript_agreement_count//[[:space:]]/}"
+rust_agreement_count="$(find "$rust_output/agreement" -maxdepth 1 -type f -name '*.json' | wc -l)"
+rust_agreement_count="${rust_agreement_count//[[:space:]]/}"
+expected_manifest="{\"agreementInputs\":$agreement_count,\"errorCases\":$error_count,\"fixtures\":$fixture_count,\"schemaVersion\":1}"
 test "$(<"$typescript_output/_harness.json")" = "$expected_manifest"
 test "$(<"$rust_output/_harness.json")" = "$expected_manifest"
 test "$typescript_count" = "$fixture_count"
@@ -40,6 +46,9 @@ test "$rust_count" = "$fixture_count"
 test "$error_count" -gt 0
 test "$typescript_error_count" = "$error_count"
 test "$rust_error_count" = "$error_count"
+test "$agreement_count" -gt 0
+test "$typescript_agreement_count" = "$agreement_count"
+test "$rust_agreement_count" = "$agreement_count"
 
 diff --recursive --unified "$typescript_output" "$rust_output"
 
@@ -49,3 +58,4 @@ else
   echo "Conformance: compared $fixture_count fixtures across TypeScript and Rust."
 fi
 echo "Conformance: compared $error_count validation error cases across TypeScript and Rust."
+echo "Conformance: compared $agreement_count agreement inputs across TypeScript and Rust."

@@ -399,7 +399,7 @@ export interface AgentWarningPayload {
   message: string;
 }
 
-export const CONTROL_KINDS = ["interrupt", "steer"] as const;
+export const CONTROL_KINDS = ["interrupt", "steer", "answer"] as const;
 
 export type KnownControlKind = (typeof CONTROL_KINDS)[number];
 
@@ -407,6 +407,8 @@ export type KnownControlKind = (typeof CONTROL_KINDS)[number];
  * A control kind this SDK knows, or an unfamiliar wire string retained
  * verbatim for a newer vocabulary. Consumers must handle the unfamiliar-string
  * case explicitly and must never map it onto a known kind.
+ * A string spelling a known kind always receives that kind's validation
+ * rules; TypeScript has no separate runtime Unknown wrapper.
  *
  * There is deliberately no `"pause"` member: no harness the operator uses can
  * pause headlessly, and a verb the runtime cannot honour is a lie in a type.
@@ -414,21 +416,25 @@ export type KnownControlKind = (typeof CONTROL_KINDS)[number];
 export type ControlKind = KnownControlKind | (string & {});
 
 /**
- * Requests that the run's runtime interrupt or steer the run. Emitted by the
- * run's runtime, never by the console: a console that shows a run as
+ * Requests that the runtime interrupt, steer, or answer a waiting decision.
+ * Emitted by the run's runtime, never by the console: a console that shows a run as
  * interrupted before the corresponding `control.applied` arrives has misread
  * the protocol.
  */
 export interface ControlRequestedPayload {
   controlId: string;
   kind: ControlKind;
+  /** Required for `answer` and absent for every other kind, at validation. */
+  decisionId?: string;
+  /** Required for `answer` and absent for every other kind, at validation. */
+  optionId?: string;
   /**
    * For `steer`, the message queued for the run's next turn. Bounded at
    * capture to `MAX_EXCERPT_SCALARS`, per `truncated` below. `steer` is
    * between turns: mid-turn injection is not available headlessly on Claude
    * Code or Codex, and the protocol does not pretend otherwise. A runtime
    * honours `steer` by resuming the session with this text as the next user
-   * turn.
+   * turn. Absent on `answer`.
    */
   text?: string;
   truncated?: boolean;
@@ -445,14 +451,28 @@ export interface ControlAppliedPayload {
   controlId: string;
   ok: boolean;
   /**
-   * When `ok` is false: `not-live`, `unsupported`, or a harness message.
-   * Bounded at capture, per `truncated` below.
+   * Required when `ok` is false; also permitted on a positive echo.
+   * Unknown explanations are bounded at capture, per `truncated` below.
    */
-  reason?: string;
+  reason?: ControlAppliedReason;
   truncated?: boolean;
   /** For an `interrupt`, the `toolUseId` the kill landed inside, if any. */
   landedIn?: string;
 }
+
+export const CONTROL_APPLIED_REASONS = [
+  "no-such-decision",
+  "already-answered",
+  "option-not-offered",
+  "unsupported",
+  "not-live",
+  "rejected",
+] as const;
+
+export type KnownControlAppliedReason = (typeof CONTROL_APPLIED_REASONS)[number];
+
+/** Open at parse and validation; unfamiliar explanations retain their exact string. */
+export type ControlAppliedReason = KnownControlAppliedReason | (string & {});
 
 export const CAPTURE_REFUSAL_CAUSES = [
   "over_bound",
@@ -785,7 +805,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const RUN_KIND_VALUES = new Set<string>(RUN_KINDS);
 const RUN_OUTCOME_VALUES = new Set<string>(RUN_OUTCOMES);
-const CONTROL_KIND_VALUES = new Set<string>(CONTROL_KINDS);
+const CONTROL_APPLIED_REASON_VALUES = new Set<string>(CONTROL_APPLIED_REASONS);
 const CAPTURE_REFUSAL_CAUSE_VALUES = new Set<string>(CAPTURE_REFUSAL_CAUSES);
 const DECISION_KIND_VALUES = new Set<string>(DECISION_KINDS);
 const KNOWN_TYPE_VALUES = new Set<string>(KNOWN_TYPES);
@@ -878,6 +898,8 @@ const AGENT_WARNING_FIELDS = new Set<string>(["stage", "message"]);
 const CONTROL_REQUESTED_FIELDS = new Set<string>([
   "controlId",
   "kind",
+  "decisionId",
+  "optionId",
   "text",
   "truncated",
   "by",
@@ -1411,12 +1433,16 @@ export function parseControlRequestedPayload(
 
   const controlId = requiredString(value, "controlId", name);
   const kind = requiredString(value, "kind", name);
+  const decisionId = optionalString(value, "decisionId", name);
+  const optionId = optionalString(value, "optionId", name);
   const text = optionalString(value, "text", name);
   const truncated = optionalBoolean(value, "truncated", name);
   const by = requiredString(value, "by", name);
   return {
     controlId,
     kind: kind as ControlKind,
+    ...(decisionId === undefined ? {} : { decisionId }),
+    ...(optionId === undefined ? {} : { optionId }),
     ...(text === undefined ? {} : { text }),
     ...(truncated === undefined ? {} : { truncated }),
     by,
@@ -1892,10 +1918,25 @@ function validatePayload(eventType: string, payload: unknown): void {
     }
     case CONTROL_REQUESTED: {
       const requested = parsed as ControlRequestedPayload;
-      if (!CONTROL_KIND_VALUES.has(requested.kind)) {
-        throw new ValidationError(
-          { kind: "UnknownMember", path: "payload.kind", value: requested.kind },
-          `ControlRequestedPayload.kind has unknown value: ${requested.kind}`,
+      for (const field of ["decisionId", "optionId"] as const) {
+        if (requested.kind === "answer") {
+          if (requested[field] === undefined) {
+            throw new ValidationError(
+              { kind: "MissingField", path: `payload.${field}` },
+              `ControlRequestedPayload.${field} is required when kind is "answer"`,
+            );
+          }
+        } else if (requested[field] !== undefined) {
+          throw policyError(
+            `payload.${field}`,
+            `ControlRequestedPayload.${field} is permitted only when kind is "answer"`,
+          );
+        }
+      }
+      if (requested.kind === "answer" && requested.text !== undefined) {
+        throw policyError(
+          "payload.text",
+          'ControlRequestedPayload.text must be absent when kind is "answer"',
         );
       }
       // A `steer` is an instruction queued for the run's next turn; one
@@ -1920,11 +1961,22 @@ function validatePayload(eventType: string, payload: unknown): void {
     }
     case CONTROL_APPLIED: {
       const applied = parsed as ControlAppliedPayload;
-      validateScalarBound(
-        applied.reason,
-        "ControlAppliedPayload.reason",
-        MAX_EXCERPT_SCALARS,
-      );
+      if (!applied.ok && applied.reason === undefined) {
+        throw new ValidationError(
+          { kind: "MissingField", path: "payload.reason" },
+          "ControlAppliedPayload.reason is required when ok is false",
+        );
+      }
+      if (
+        applied.reason !== undefined &&
+        !CONTROL_APPLIED_REASON_VALUES.has(applied.reason)
+      ) {
+        validateScalarBound(
+          applied.reason,
+          "ControlAppliedPayload.reason",
+          MAX_EXCERPT_SCALARS,
+        );
+      }
       return;
     }
     case CAPTURE_REFUSED: {

@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "control.applied",
+  "runId": "run-control-answer",
+  "seq": 3,
+  "ts": "2026-09-08T00:00:00.000Z",
+  "payload": {
+    "controlId": "control-answer-1",
+    "ok": false,
+    "reason": "no-such-decision"
+  }
+}

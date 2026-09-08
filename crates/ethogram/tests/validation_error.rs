@@ -146,11 +146,6 @@ fn unknown_member_reports_each_closed_union_and_retains_the_value() {
             "payload.outcome",
         ),
         (
-            CONTROL_REQUESTED,
-            json!({ "controlId": "c", "kind": "unknown\"😀", "by": "a" }),
-            "payload.kind",
-        ),
-        (
             CAPTURE_REFUSED,
             json!({ "cause": "unknown\"😀", "sourceRunId": "r" }),
             "payload.cause",

@@ -37,11 +37,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let error_directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../conformance/handwritten-validation-inputs");
     let error_cases = fixture_paths(&error_directory)?;
+    let agreement_directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../conformance/handwritten-agreement-inputs");
+    let agreement_inputs = fixture_paths(&agreement_directory)?;
 
     fs::create_dir_all(&output_directory)?;
     for fixture in &fixtures {
         let source = fs::read_to_string(fixture)?;
         let event = parse_event(&source)?;
+        validate(&event.event_type, &event.payload)?;
         let compact = serialise_event(&event)?;
         let output_name = fixture.file_name().ok_or("fixture path has no file name")?;
         fs::write(output_directory.join(output_name), compact)?;
@@ -77,19 +81,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
 
+    fs::create_dir_all(output_directory.join("agreement"))?;
+    for input in &agreement_inputs {
+        let event = parse_event(&fs::read_to_string(input)?)?;
+        validate(&event.event_type, &event.payload).map_err(|error| {
+            format!(
+                "agreement input {} failed validation: {error}",
+                input.display()
+            )
+        })?;
+        let output_name = input
+            .file_name()
+            .ok_or("agreement input has no file name")?;
+        fs::write(
+            output_directory.join("agreement").join(output_name),
+            serialise_event(&event)?,
+        )?;
+    }
+
     fs::write(
         output_directory.join("_harness.json"),
         serde_json::to_string(&json!({
+            "agreementInputs": agreement_inputs.len(),
             "errorCases": error_cases.len(),
             "fixtures": fixtures.len(),
             "schemaVersion": EVENT_SCHEMA_VERSION
         }))?,
     )?;
     println!(
-        "Rust conformance: prepared {} fixture{} and {} error cases for comparison.",
+        "Rust conformance: prepared {} fixture{}, {} validation error cases, and {} agreement inputs for comparison.",
         fixtures.len(),
         if fixtures.len() == 1 { "" } else { "s" },
-        error_cases.len()
+        error_cases.len(),
+        agreement_inputs.len()
     );
     Ok(())
 }
