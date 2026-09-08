@@ -69,6 +69,10 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         raw_json: include_str!("../../../conformance/v1/control-requested-steer.json"),
     },
     Fixture {
+        name: "decision-answered-excuse-requested-run.json",
+        raw_json: include_str!("../../../conformance/v1/decision-answered-excuse-requested-run.json"),
+    },
+    Fixture {
         name: "decision-answered-excuse.json",
         raw_json: include_str!("../../../conformance/v1/decision-answered-excuse.json"),
     },

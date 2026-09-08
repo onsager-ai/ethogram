@@ -34,6 +34,17 @@ from the other.
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
 - Every payload variant gets at least one fixture. A payload with no fixture is
   a payload the two implementations have never been shown to agree about.
+- **The corpus deliberately holds more than one shape of the same event type.**
+  When a payload gains an optional field, the earlier capture stays and a new
+  capture joins it, so the corpus keeps proving that both SDKs still read an
+  event emitted before the field existed. That is **backward compatibility**,
+  and it is a different property from the cross-SDK agreement above: agreement
+  asks whether two implementations read one document alike, backward
+  compatibility asks whether one implementation still reads a document its own
+  producer would no longer write. A corpus holding only the newest shape of
+  each type silently stops testing the second. `decision-answered-excuse.json`
+  and `decision-answered-excuse-requested-run.json` are the first such pair,
+  differing by one line.
 - Narration fields carry placeholder content only. The corpus is public and
   permanent; real transcripts are neither.
 
