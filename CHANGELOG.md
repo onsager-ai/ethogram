@@ -1,0 +1,68 @@
+# Changelog
+
+Consumers pin this repository **by git revision**, not by version — see the
+`rev = "…"` in ostrom's and umwelt's `Cargo.toml`. So the useful unit here is
+the commit, and each entry names the revision a consumer would pin to reach it.
+
+Nothing has been published to crates.io or npm. Both crates carry
+`publish = false` and both packages `"private": true`, and the package and crate
+names remain provisional pending the principal's confirmation before any first
+publish (recorded on #10). The version below has therefore never been released;
+it is the version a first release would carry, not a marker that one happened.
+
+## Unreleased
+
+Pin `9e3cd37` to take everything below.
+
+### The `answer` control verb (#38, #39)
+
+`ControlKind` gains `Answer`, so a hub can deliver a principal's decision to a
+waiting pass. Until now ostrom refused `kind: "answer"` as
+`capture.refused{malformed}`, which is the defect ostrom#510 exists to remove.
+
+`control.requested` gains `decisionId` and `optionId`, **required when the kind
+is `answer` and forbidden otherwise**, with `text` forbidden on an answer.
+Enforced at `validate`, never at parse.
+
+`Unknown(String)` is deliberately not a transport for a verb a runtime
+understands. A typed `Unknown` spelling a known kind is now `Malformed`, because
+it cannot round-trip as the variant it names.
+
+**`ControlKind` stays closed at `validate`.** An unfamiliar kind still parses,
+still round-trips byte-for-byte, and is still reported as `UnknownMember` — the
+same rule the other three unions follow. A revision of #39 briefly opened it;
+that was a regression, caught in review and restored before merge.
+
+### A `reason` on a negative echo (#38, #39)
+
+`control.applied.reason` becomes an open union: `no-such-decision`,
+`already-answered`, `option-not-offered`, plus the existing `unsupported`,
+`not-live` and `rejected`, with an unknown value retained and still bounded.
+`validate` requires it when `ok` is false, and deliberately does not forbid it
+when `ok` is true — a runtime may explain a positive echo.
+
+### Everything else since the corpus crate
+
+- **`decision.*`** (#24), and its emitter corrected: an answer is emitted by the
+  invocation that applies it, on its own run, because the raising run has usually
+  finished and a sink refuses appends to a closed run (#34). `reversal` accepts
+  an action id such as `revoke:required_checks`, not only an offered option (#35).
+- **`capture.refused`** (#22), carrying the bound and the count but never the
+  content that breached it.
+- **`control.*`** (#21) and **`run.*`** outcomes `blocked` and `unstarted` (#32).
+- **A structured `ValidationError`** (#33) with `OverBound`, `PayloadTooLarge`,
+  `UnknownMember`, `MissingField`, `Policy` and `Malformed`, so a sink fills
+  `capture.refused` without parsing English.
+- **Universal bounds in `validate`** (#30): every string leaf at most
+  `MAX_TEXT_SCALARS`, every payload at most `MAX_PAYLOAD_BYTES`, applied before
+  the known-type branch so an unrecognised type is bounded too.
+- **The corpus** grew to 24 fixtures, every one from a real capture, plus
+  hand-written validation and agreement inputs kept deliberately outside it.
+
+## Provenance
+
+Fixtures in `conformance/v1/` come only from real captures. Hand-written events
+live in `conformance/handwritten-validation-inputs/` and
+`conformance/handwritten-agreement-inputs/`, which are not the corpus and are not
+immutable. That distinction is why this repository has twice withdrawn a fixture
+rather than correcting it.
