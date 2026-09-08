@@ -5,7 +5,7 @@ use std::fmt::{self, Display, Formatter};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 
-mod control_kind_validation;
+mod union_unknown_validation;
 mod validation;
 
 use validation::decode_payload;
@@ -141,6 +141,8 @@ const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 /// A run kind this SDK knows, or an unfamiliar wire string retained verbatim
 /// in `Unknown`. Consumers must handle `Unknown` explicitly and must never map
 /// it onto a known kind.
+/// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
+/// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunKind {
     Loop,
@@ -170,15 +172,6 @@ impl RunKind {
     }
 }
 
-impl Serialize for RunKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for RunKind {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -200,6 +193,8 @@ impl<'de> Deserialize<'de> for RunKind {
 /// A run outcome this SDK knows, or an unfamiliar wire string retained
 /// verbatim in `Unknown`. Consumers acting on an outcome must treat `Unknown`
 /// as "not this", never as one of the known outcomes.
+/// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
+/// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOutcome {
     Completed,
@@ -244,15 +239,6 @@ impl RunOutcome {
     }
 }
 
-impl Serialize for RunOutcome {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for RunOutcome {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -279,7 +265,7 @@ impl<'de> Deserialize<'de> for RunOutcome {
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
 /// An unfamiliar wire string is `UnknownMember` at validation, exactly like
-/// the other three closed unions; `Unknown` spelling any known kind is
+/// every other closed union; `Unknown` spelling any known kind is
 /// `Malformed` at validation instead, because parsing that string would have
 /// yielded the known variant.
 ///
@@ -320,22 +306,6 @@ impl ControlKind {
             "steer" => Self::Steer,
             "answer" => Self::Answer,
             _ => Self::Unknown(value),
-        }
-    }
-}
-
-impl Serialize for ControlKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            // JSON serialisers transparently emit the inner string. The
-            // validation-only probe can still see the Rust variant before
-            // conversion to Value would erase it.
-            Self::Unknown(value) => serializer
-                .serialize_newtype_struct(control_kind_validation::UNKNOWN_CONTROL_KIND, value),
-            _ => serializer.serialize_str(self.as_str()),
         }
     }
 }
@@ -403,6 +373,8 @@ impl<'de> Deserialize<'de> for ControlAppliedReason {
 /// A capture-refusal cause this SDK knows, or an unfamiliar wire string
 /// retained verbatim in `Unknown`. Consumers must handle `Unknown` explicitly
 /// and must never map it onto a known cause.
+/// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
+/// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureRefusalCause {
     /// The refused event exceeded a capture bound.
@@ -434,15 +406,6 @@ impl CaptureRefusalCause {
     }
 }
 
-impl Serialize for CaptureRefusalCause {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for CaptureRefusalCause {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -463,6 +426,8 @@ impl<'de> Deserialize<'de> for CaptureRefusalCause {
 /// A decision kind this SDK knows, or an unfamiliar wire string retained
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
+/// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
+/// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecisionKind {
     Permission,
@@ -486,15 +451,6 @@ impl DecisionKind {
             Self::Budget => "budget",
             Self::Unknown(value) => value,
         }
-    }
-}
-
-impl Serialize for DecisionKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -1356,7 +1312,13 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 
 /// Validates whether a producer should emit `payload` for `event_type`.
 ///
-/// Two universal bounds (issue #28) are checked first, for **every** event
+/// Typed `Unknown` values in [`RunKind`], [`RunOutcome`], [`ControlKind`],
+/// [`CaptureRefusalCause`], and [`DecisionKind`] must not spell a known
+/// member. These are `Malformed` and checked before JSON conversion, which
+/// would erase the variant. Their unfamiliar strings remain `UnknownMember`
+/// under closed-union validation.
+///
+/// After the typed check, two universal bounds (issue #28) apply to **every** event
 /// regardless of whether `event_type` is recognised: every string leaf
 /// anywhere in the payload — nested objects at any depth, strings inside
 /// arrays, strings inside objects nested inside arrays, and a known type's
@@ -1380,9 +1342,8 @@ pub fn validate<P>(event_type: &str, payload: &P) -> Result<(), ValidationError>
 where
     P: Serialize + ?Sized,
 {
-    if event_type == CONTROL_REQUESTED {
-        control_kind_validation::check(payload)?;
-    }
+    // Inspect typed Unknown variants before JSON conversion erases them.
+    union_unknown_validation::check(event_type, payload)?;
     // The payload itself failed to serialise: a representation failure, not
     // a stated rule broken by an otherwise representable value.
     let payload = serde_json::to_value(payload)
@@ -1457,7 +1418,7 @@ where
     } else if event_type == CONTROL_REQUESTED {
         let requested = decode_payload::<ControlRequestedPayload>(payload)?;
         // Checked before any kind-conditioned business rule below, exactly
-        // as the other three closed unions check membership before their own
+        // as every other closed union checks membership before its own
         // conditioned rules: those rules (decisionId/optionId only for
         // "answer", text required for "steer") only have anything to say
         // about a kind this SDK recognises.
@@ -3474,6 +3435,21 @@ mod tests {
 
         assert_eq!(serialise_event(&started).unwrap(), RELAY_CEILINGS_WIRE);
         assert_eq!(serialise_event(&finished).unwrap(), CAPPED_OUTCOME_WIRE);
+
+        // Typed Unknown still emits the existing cross-SDK literals; only
+        // validation refuses a known spelling carried as that Rust variant.
+        let mut retained_started = started;
+        retained_started.payload.kind = RunKind::Unknown("relay".to_owned());
+        assert_eq!(
+            serialise_event(&retained_started).unwrap(),
+            RELAY_CEILINGS_WIRE
+        );
+        let mut retained_finished = finished;
+        retained_finished.payload.outcome = RunOutcome::Unknown("capped".to_owned());
+        assert_eq!(
+            serialise_event(&retained_finished).unwrap(),
+            CAPPED_OUTCOME_WIRE
+        );
     }
 
     #[test]
@@ -4284,6 +4260,13 @@ mod tests {
             CAPTURE_REFUSED_OVER_BOUND_WIRE
         );
         assert_eq!(serialise_event(&gap).unwrap(), CAPTURE_REFUSED_GAP_WIRE);
+
+        let mut retained = gap;
+        retained.payload.cause = CaptureRefusalCause::Unknown("gap".to_owned());
+        assert_eq!(
+            serialise_event(&retained).unwrap(),
+            CAPTURE_REFUSED_GAP_WIRE
+        );
 
         for expected in [CAPTURE_REFUSED_OVER_BOUND_WIRE, CAPTURE_REFUSED_GAP_WIRE] {
             let parsed = parse_event(expected).unwrap();
