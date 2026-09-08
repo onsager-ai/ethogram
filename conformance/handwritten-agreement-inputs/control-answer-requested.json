@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "control.requested",
+  "runId": "run-control-answer",
+  "seq": 1,
+  "ts": "2026-09-08T00:00:00.000Z",
+  "payload": {
+    "by": "principal:user:alice",
+    "controlId": "control-answer-1",
+    "decisionId": "decision-1",
+    "kind": "answer",
+    "optionId": "allow"
+  }
+}

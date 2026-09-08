@@ -210,13 +210,33 @@ because a forwarder must still be able to relay it.
 
 | type | required payload | optional payload | meaning |
 |---|---|---|---|
-| `control.requested` | `controlId`, `kind`, `by` | `text`, `truncated` | Records a request to interrupt or steer the run, naming the requesting principal. |
+| `control.requested` | `controlId`, `kind`, `by` | `decisionId`, `optionId`, `text`, `truncated` | Records a request to interrupt or steer the run, or answer a waiting decision, naming the requesting principal. |
 | `control.applied` | `controlId`, `ok` | `reason`, `truncated`, `landedIn` | Records whether the runtime honoured the request, and where a hard kill landed. |
 
-`kind` is one of `interrupt` or `steer`, closed at validation and open and
-retaining at parse like `run.*`'s own closed unions. There is deliberately no
-`pause` member: no harness the operator uses can pause headlessly, and a verb
-the runtime cannot honour is a lie in a type.
+The known `kind` values are `interrupt`, `steer`, and `answer`. Unfamiliar
+strings are retained exactly at parse and accepted at validation, subject to
+the field rules and universal bounds. A known verb must use its known variant:
+Rust's `Unknown(s)` is rejected by `validate` as `Malformed` when `s` spells
+any known control kind. JSON strings always receive the rules of the kind
+they spell; TypeScript has no distinct runtime `Unknown` wrapper. There is
+deliberately no `pause` member: no harness the operator uses can pause
+headlessly, and a verb the runtime cannot honour is a lie in a type.
+
+`answer` delivers the principal's choice to a waiting pass. `decisionId` and
+`optionId` are optional in the payload type but both are required by
+`validate` for `answer` (`MissingField` if absent). Both must be absent for
+every other kind (`Policy` if present). `text` must be absent on `answer`,
+including an empty string (`Policy` if present). These are validation rules;
+parsing still carries every representable request. The identifiers are not
+excerpt-bounded, though the universal payload bounds apply.
+
+`control.applied.reason` is an open string union: `no-such-decision`,
+`already-answered`, `option-not-offered`, `unsupported`, `not-live`, and
+`rejected`, with unfamiliar strings retained exactly. The existing 4,096-scalar
+excerpt bound still applies to unknown reasons, where producer prose can
+arrive. `validate` requires a reason when `ok` is `false` (`MissingField` if
+absent), and permits a reason when `ok` is `true` so a runtime can explain a
+positive echo. Parsing does not enforce this presence rule.
 
 `steer` is **between turns**. Mid-turn injection is not available headlessly
 on Claude Code or Codex, and the protocol does not pretend otherwise; a
@@ -273,6 +293,7 @@ exposes the tag. The class extends `TypeError`, retaining its `name` and
 original `message`, so existing `TypeError` checks and message matches hold.
 
 `Policy` means a producer broke a stated rule: steer without nonempty text,
+answer text, answer-only identifiers on another control kind,
 and all existing `onTimeout` checks (permission only, deny only, and
 membership in the request's options). `Malformed` means the opposite kind of
 defect — the value sent could not be represented at all, distinct from a
@@ -281,6 +302,10 @@ missing fields aside (their own `MissingField` kind), a wrong-typed value, an
 unsafe integer, or an input that cannot be serialised each carry a
 `Malformed` path and their original diagnostic. Parsing still checks
 representability without applying capture bounds or producer policy.
+An in-memory `ControlKind::Unknown` spelling a known kind is also `Malformed`:
+it cannot round-trip as that variant, because parsing its string yields the
+known variant. This check runs only in validation, before JSON conversion
+would erase the distinction.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8
@@ -369,7 +394,7 @@ fixture exists. All three are now settled and remain here with their reasons:
 ## Layout
 
 ```
-conformance/   captured versioned fixtures and separate handwritten validation inputs
+conformance/   captured versioned fixtures and separate handwritten validation/agreement inputs
 packages/      TypeScript SDK
 crates/        Rust SDK
 ```

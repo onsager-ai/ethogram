@@ -172,7 +172,7 @@ const DECISION_ANSWERED_ACTION_REVERSAL_WIRE =
 const UNKNOWN_DECISION_KIND_WIRE =
   '{"v":1,"type":"decision.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T07:00:03.000Z","payload":{"decisionId":"decision-unknown","dossier":{"blastRadius":"none","optionsRuledOut":[],"question":"Unknown kind?","recommendedAction":"inspect"},"kind":"never-a-valid-decision-kind","options":[]}}';
 
-const PERMITTED_CONTROL_KINDS = ["interrupt", "steer"] as const;
+const PERMITTED_CONTROL_KINDS = ["interrupt", "steer", "answer"] as const;
 
 const PERMITTED_CAPTURE_REFUSAL_CAUSES = [
   "over_bound",
@@ -915,12 +915,7 @@ describe("control payload parsing (spec #8)", () => {
 
     assert.equal((event.payload as { kind: string }).kind, "teleport");
     assert.throws(
-      () =>
-        validate("control.requested", {
-          controlId: "control-3",
-          kind: "teleport",
-          by: "operator",
-        }),
+      () => validate(CONTROL_REQUESTED, event.payload),
       /kind has unknown value: teleport/,
     );
   });

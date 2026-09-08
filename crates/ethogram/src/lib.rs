@@ -5,6 +5,7 @@ use std::fmt::{self, Display, Formatter};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 
+mod control_kind_validation;
 mod validation;
 
 use validation::decode_payload;
@@ -277,6 +278,10 @@ impl<'de> Deserialize<'de> for RunOutcome {
 /// A control kind this SDK knows, or an unfamiliar wire string retained
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
+/// An unfamiliar wire string is `UnknownMember` at validation, exactly like
+/// the other three closed unions; `Unknown` spelling any known kind is
+/// `Malformed` at validation instead, because parsing that string would have
+/// yielded the known variant.
 ///
 /// There is deliberately no `Pause` member: no harness the operator uses can
 /// pause headlessly, and a verb the runtime cannot honour is a lie in a type.
@@ -291,6 +296,8 @@ pub enum ControlKind {
     /// runtime honours `steer` by resuming the session with `text` as the
     /// next user turn.
     Steer,
+    /// Delivers the principal's choice for a waiting decision.
+    Answer,
     /// An unfamiliar member, retained exactly as it appeared on the wire.
     Unknown(String),
 }
@@ -302,7 +309,17 @@ impl ControlKind {
         match self {
             Self::Interrupt => "interrupt",
             Self::Steer => "steer",
+            Self::Answer => "answer",
             Self::Unknown(value) => value,
+        }
+    }
+
+    fn from_wire(value: String) -> Self {
+        match value.as_str() {
+            "interrupt" => Self::Interrupt,
+            "steer" => Self::Steer,
+            "answer" => Self::Answer,
+            _ => Self::Unknown(value),
         }
     }
 }
@@ -312,7 +329,14 @@ impl Serialize for ControlKind {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.as_str())
+        match self {
+            // JSON serialisers transparently emit the inner string. The
+            // validation-only probe can still see the Rust variant before
+            // conversion to Value would erase it.
+            Self::Unknown(value) => serializer
+                .serialize_newtype_struct(control_kind_validation::UNKNOWN_CONTROL_KIND, value),
+            _ => serializer.serialize_str(self.as_str()),
+        }
     }
 }
 
@@ -322,9 +346,55 @@ impl<'de> Deserialize<'de> for ControlKind {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
+        Ok(Self::from_wire(value))
+    }
+}
+
+/// An explanation of a control echo, open at parse and validation. Unknown
+/// values retain their exact string and remain subject to the excerpt bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlAppliedReason {
+    NoSuchDecision,
+    AlreadyAnswered,
+    OptionNotOffered,
+    Unsupported,
+    NotLive,
+    Rejected,
+    Unknown(String),
+}
+
+impl ControlAppliedReason {
+    /// Returns the exact wire string, including an unfamiliar value verbatim.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::NoSuchDecision => "no-such-decision",
+            Self::AlreadyAnswered => "already-answered",
+            Self::OptionNotOffered => "option-not-offered",
+            Self::Unsupported => "unsupported",
+            Self::NotLive => "not-live",
+            Self::Rejected => "rejected",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl Serialize for ControlAppliedReason {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlAppliedReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
-            "interrupt" => Self::Interrupt,
-            "steer" => Self::Steer,
+            "no-such-decision" => Self::NoSuchDecision,
+            "already-answered" => Self::AlreadyAnswered,
+            "option-not-offered" => Self::OptionNotOffered,
+            "unsupported" => Self::Unsupported,
+            "not-live" => Self::NotLive,
+            "rejected" => Self::Rejected,
             _ => Self::Unknown(value),
         })
     }
@@ -912,8 +982,8 @@ pub struct AgentWarningPayload {
     pub extra: PayloadExtension,
 }
 
-/// Requests that the run's runtime interrupt or steer the run. Emitted by the
-/// run's runtime, never by the console: a console that shows a run as
+/// Requests that the runtime interrupt, steer, or answer a waiting decision.
+/// Emitted by the run's runtime, never by the console: a console that shows a run as
 /// interrupted before the corresponding `control.applied` arrives has
 /// misread the protocol.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -921,8 +991,22 @@ pub struct AgentWarningPayload {
 pub struct ControlRequestedPayload {
     pub control_id: String,
     pub kind: ControlKind,
+    /// Required for `answer` and absent for every other kind, at validation.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub decision_id: Option<String>,
+    /// Required for `answer` and absent for every other kind, at validation.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub option_id: Option<String>,
     /// For `steer`, the message queued for the run's next turn. Bounded at
-    /// capture to `MAX_EXCERPT_SCALARS`, per `truncated` below.
+    /// capture to `MAX_EXCERPT_SCALARS`, per `truncated` below. Absent on `answer`.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -949,14 +1033,14 @@ pub struct ControlRequestedPayload {
 pub struct ControlAppliedPayload {
     pub control_id: String,
     pub ok: bool,
-    /// When `ok` is false: `not-live`, `unsupported`, or a harness message.
-    /// Bounded at capture, per `truncated` below.
+    /// Required when `ok` is false; also permitted on a positive echo.
+    /// Unknown explanations are bounded at capture, per `truncated` below.
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
-    pub reason: Option<String>,
+    pub reason: Option<ControlAppliedReason>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -1296,6 +1380,9 @@ pub fn validate<P>(event_type: &str, payload: &P) -> Result<(), ValidationError>
 where
     P: Serialize + ?Sized,
 {
+    if event_type == CONTROL_REQUESTED {
+        control_kind_validation::check(payload)?;
+    }
     // The payload itself failed to serialise: a representation failure, not
     // a stated rule broken by an otherwise representable value.
     let payload = serde_json::to_value(payload)
@@ -1369,13 +1456,48 @@ where
         )?;
     } else if event_type == CONTROL_REQUESTED {
         let requested = decode_payload::<ControlRequestedPayload>(payload)?;
-        if let ControlKind::Unknown(value) = requested.kind {
+        // Checked before any kind-conditioned business rule below, exactly
+        // as the other three closed unions check membership before their own
+        // conditioned rules: those rules (decisionId/optionId only for
+        // "answer", text required for "steer") only have anything to say
+        // about a kind this SDK recognises.
+        if let ControlKind::Unknown(value) = &requested.kind {
             return Err(ValidationError::new(
                 ValidationErrorKind::UnknownMember {
                     path: "payload.kind".to_owned(),
                     value: value.to_owned(),
                 },
                 format!("ControlRequestedPayload.kind has unknown value: {value}"),
+            ));
+        }
+        for (field, value) in [
+            ("decisionId", &requested.decision_id),
+            ("optionId", &requested.option_id),
+        ] {
+            if requested.kind == ControlKind::Answer {
+                if value.is_none() {
+                    return Err(ValidationError::new(
+                        ValidationErrorKind::MissingField {
+                            path: format!("payload.{field}"),
+                        },
+                        format!(
+                            "ControlRequestedPayload.{field} is required when kind is \"answer\""
+                        ),
+                    ));
+                }
+            } else if value.is_some() {
+                return Err(ValidationError::policy(
+                    format!("payload.{field}"),
+                    format!(
+                        "ControlRequestedPayload.{field} is permitted only when kind is \"answer\""
+                    ),
+                ));
+            }
+        }
+        if requested.kind == ControlKind::Answer && requested.text.is_some() {
+            return Err(ValidationError::policy(
+                "payload.text",
+                "ControlRequestedPayload.text must be absent when kind is \"answer\"",
             ));
         }
         // A `steer` is an instruction queued for the run's next turn; one
@@ -1400,11 +1522,21 @@ where
         )?;
     } else if event_type == CONTROL_APPLIED {
         let applied = decode_payload::<ControlAppliedPayload>(payload)?;
-        validate_scalar_bound(
-            applied.reason.as_deref(),
-            "ControlAppliedPayload.reason",
-            MAX_EXCERPT_SCALARS,
-        )?;
+        if !applied.ok && applied.reason.is_none() {
+            return Err(ValidationError::new(
+                ValidationErrorKind::MissingField {
+                    path: "payload.reason".to_owned(),
+                },
+                "ControlAppliedPayload.reason is required when ok is false",
+            ));
+        }
+        if let Some(ControlAppliedReason::Unknown(reason)) = &applied.reason {
+            validate_scalar_bound(
+                Some(reason),
+                "ControlAppliedPayload.reason",
+                MAX_EXCERPT_SCALARS,
+            )?;
+        }
     } else if event_type == CAPTURE_REFUSED {
         let refused = decode_payload::<CaptureRefusedPayload>(payload)?;
         if let CaptureRefusalCause::Unknown(value) = refused.cause {
@@ -3602,7 +3734,7 @@ mod tests {
         // producer error, but a forwarder must still be able to relay it.
         // This is the test that would fail if someone later "helpfully"
         // moved the steer-needs-text rule into the parser.
-        for kind in ["interrupt", "steer"] {
+        for kind in ["interrupt", "steer", "answer"] {
             let payload = json!({ "controlId": "control-1", "kind": kind, "by": "operator" });
             let input = lifecycle_event_input("control.requested", payload);
             parse_event(&input).unwrap();
@@ -3670,6 +3802,13 @@ mod tests {
         assert_eq!(parsed.kind, ControlKind::Unknown("teleport".to_owned()));
 
         let error = validate(CONTROL_REQUESTED, &event.payload).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ControlRequestedPayload.kind has unknown value: teleport"),
+            "error was: {error}"
+        );
+        let error = validate(CONTROL_REQUESTED, &parsed).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -3751,6 +3890,8 @@ mod tests {
         let requested = ControlRequestedPayload {
             control_id: "control-1".to_owned(),
             kind: ControlKind::Interrupt,
+            decision_id: None,
+            option_id: None,
             text: None,
             truncated: None,
             by: "operator".to_owned(),
@@ -3786,6 +3927,8 @@ mod tests {
             payload: ControlRequestedPayload {
                 control_id: "control-1".to_owned(),
                 kind: ControlKind::Steer,
+                decision_id: None,
+                option_id: None,
                 text: Some("take point on the next turn".to_owned()),
                 truncated: Some(false),
                 by: "operator".to_owned(),
@@ -3802,7 +3945,7 @@ mod tests {
             payload: ControlAppliedPayload {
                 control_id: "control-1".to_owned(),
                 ok: false,
-                reason: Some("not-live".to_owned()),
+                reason: Some(ControlAppliedReason::NotLive),
                 truncated: None,
                 landed_in: None,
                 extra: PayloadExtension::new(),

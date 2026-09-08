@@ -35,11 +35,21 @@ async function main(): Promise<void> {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => entry.name)
     .sort();
+  const agreementDirectory = join(
+    repositoryRoot,
+    "conformance",
+    "handwritten-agreement-inputs",
+  );
+  const agreementInputs = (await readdir(agreementDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort();
 
   await mkdir(outputDirectory, { recursive: true });
   for (const fixture of fixtures) {
     const source = await readFile(join(corpusDirectory, fixture), "utf8");
     const event = parseEvent(JSON.parse(source) as unknown);
+    validate(event.type, event.payload);
     const compact = serialiseEvent(event);
     await writeFile(join(outputDirectory, fixture), compact, "utf8");
   }
@@ -75,9 +85,26 @@ async function main(): Promise<void> {
     );
   }
 
+  await mkdir(join(outputDirectory, "agreement"), { recursive: true });
+  for (const name of agreementInputs) {
+    const source = await readFile(join(agreementDirectory, name), "utf8");
+    const event = parseEvent(JSON.parse(source) as unknown);
+    try {
+      validate(event.type, event.payload);
+    } catch (error) {
+      throw new Error(`agreement input ${name} failed validation`, { cause: error });
+    }
+    await writeFile(
+      join(outputDirectory, "agreement", name),
+      serialiseEvent(event),
+      "utf8",
+    );
+  }
+
   await writeFile(
     join(outputDirectory, "_harness.json"),
     JSON.stringify({
+      agreementInputs: agreementInputs.length,
       errorCases: errorCases.length,
       fixtures: fixtures.length,
       schemaVersion: EVENT_SCHEMA_VERSION,
@@ -85,7 +112,7 @@ async function main(): Promise<void> {
     "utf8",
   );
   console.log(
-    `TypeScript conformance: prepared ${fixtures.length} fixture${fixtures.length === 1 ? "" : "s"} and ${errorCases.length} error cases for comparison.`,
+    `TypeScript conformance: prepared ${fixtures.length} fixture${fixtures.length === 1 ? "" : "s"}, ${errorCases.length} validation error cases, and ${agreementInputs.length} agreement inputs for comparison.`,
   );
 }
 
