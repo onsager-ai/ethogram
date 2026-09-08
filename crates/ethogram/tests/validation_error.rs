@@ -299,40 +299,51 @@ fn policy_reports_steer_and_all_three_timeout_rules() {
 }
 
 #[test]
-fn representation_failures_are_structured_without_changing_the_serde_message() {
-    for (event_type, payload, path) in [
+fn representation_failures_carry_the_authored_message_and_path() {
+    for (event_type, payload, path, message) in [
         (
             AGENT_COMPLETED,
             json!({ "sessionId": 7 }),
             "payload.sessionId",
+            "AgentCompletedPayload.sessionId must be a string when present",
         ),
         (
             AGENT_COMPLETED,
             json!({ "usage": { "inputTokens": -1 } }),
             "payload.usage.inputTokens",
+            "AgentCompletedPayload.usage.inputTokens must be a non-negative safe integer when present",
         ),
         (
             AGENT_COMPLETED,
             json!({ "extra": [9007199254740992_u64] }),
             "payload.extra[0]",
+            "payload.extra[0] is an integral number whose magnitude exceeds the safe integer bound: actual 9007199254740992; maximum 9007199254740991; a value that needs more precision must be carried as a string",
         ),
-        (AGENT_TEXT, json!(false), "payload"),
+        (
+            AGENT_TEXT,
+            json!(false),
+            "payload",
+            "AgentTextPayload must be an object",
+        ),
     ] {
         let error = validate(event_type, &payload).unwrap_err();
+        assert_eq!(error.to_string(), message);
         assert_eq!(
             error.kind,
             ValidationErrorKind::Malformed {
                 path: path.to_owned(),
-                message: error.to_string()
+                message: message.to_owned()
             }
         );
     }
     // An invalid present value must win over a missing field, just as serde
     // did before this change; a separate missing-field preflight would drift.
     let payload = json!({ "actor": 7 });
-    let old = serde_json::from_value::<ethogram::RunStartedPayload>(payload.clone()).unwrap_err();
     let error = validate(RUN_STARTED, &payload).unwrap_err();
-    assert_eq!(error.to_string(), old.to_string());
+    assert_eq!(
+        error.to_string(),
+        "RunStartedPayload.actor must be a string"
+    );
     assert!(matches!(error.kind, ValidationErrorKind::Malformed { .. }));
 
     struct Unserialisable;

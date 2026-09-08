@@ -42,9 +42,9 @@ pub enum ValidationErrorKind {
     },
 }
 
-/// A structured validation failure with the original diagnostic preserved.
-/// Match `kind` to choose a refusal cause; `Display` remains compatible with
-/// the messages emitted before structured errors were introduced.
+/// A structured validation failure. Match `kind` to choose a refusal cause;
+/// `Display` carries the diagnostic, with wrong-type messages authored by the
+/// decoder to match TypeScript rather than exposing serde's prose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidationError {
     pub kind: ValidationErrorKind,
@@ -127,13 +127,9 @@ impl Serialize for ValidationError {
 }
 
 impl de::Error for ValidationError {
-    // Serde routes every unclassified deserialisation failure through this
-    // generic entry point, including the two overrides below (`invalid_type`,
-    // `invalid_value`) and `deserialize_safe_u64`'s explicit out-of-range
-    // message in `lib.rs`. Every message that reaches here — a wrong-typed
-    // value, an invalid value, or an unsafe integer — describes a value that
-    // could not be represented at all, never a stated rule broken by an
-    // otherwise representable one, so it is `Malformed` rather than `Policy`.
+    // Unclassified serde failures and explicit representation checks are
+    // Malformed. Known payload types are checked in LocatedValue's typed
+    // deserializer methods below, before serde can author a wrong-type message.
     fn custom<T: Display>(message: T) -> Self {
         Self::malformed("", message.to_string())
     }
@@ -149,8 +145,6 @@ impl de::Error for ValidationError {
     }
 
     fn invalid_type(unexpected: de::Unexpected<'_>, expected: &dyn de::Expected) -> Self {
-        // serde_json spells unit as null and formats floats itself. Keep
-        // those diagnostics, including their punctuation, exactly intact.
         Self::custom(<serde_json::Error as de::Error>::invalid_type(
             unexpected, expected,
         ))
@@ -170,12 +164,53 @@ pub(crate) fn decode_payload<T: DeserializeOwned>(value: Value) -> Result<T, Val
     T::deserialize(LocatedValue {
         value,
         path: "payload".to_owned(),
+        // Only the SDK's concrete payload structs enter here. Their declared
+        // names are also TypeScript's diagnostic prefixes; nested labels keep
+        // this root name, including for RunUsage shared by two payloads.
+        name: std::any::type_name::<T>()
+            .rsplit("::")
+            .next()
+            .expect("a payload type has a name"),
+        optional: false,
     })
 }
 
 struct LocatedValue {
     value: Value,
     path: String,
+    name: &'static str,
+    optional: bool,
+}
+
+impl LocatedValue {
+    fn wrong_type(&self, expected: &str) -> ValidationError {
+        // TypeScript's object parsers omit the suffix even for optional
+        // objects (ceilings and usage). Array items are required values.
+        let suffix = if self.optional && expected != "an object" {
+            " when present"
+        } else {
+            ""
+        };
+        let field = self.path.strip_prefix("payload").expect("payload path");
+        ValidationError::malformed(
+            &self.path,
+            format!("{}{field} must be {expected}{suffix}", self.name),
+        )
+    }
+}
+
+// The requested serde type supplies the expectation, not a parsed diagnostic
+// or a second field schema. Check before visiting so nested failures retain
+// their own message and location instead of becoming a parent object's error.
+macro_rules! typed_value {
+    ($method:ident, $check:ident, $expected:literal) => {
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            if !self.value.$check() {
+                return Err(self.wrong_type($expected));
+            }
+            self.deserialize_any(visitor)
+        }
+    };
 }
 
 impl<'de> IntoDeserializer<'de, ValidationError> for LocatedValue {
@@ -188,6 +223,13 @@ impl<'de> IntoDeserializer<'de, ValidationError> for LocatedValue {
 
 impl<'de> Deserializer<'de> for LocatedValue {
     type Error = ValidationError;
+
+    typed_value!(deserialize_bool, is_boolean, "a boolean");
+    typed_value!(deserialize_string, is_string, "a string");
+    typed_value!(deserialize_f64, is_number, "a finite number");
+    typed_value!(deserialize_u64, is_u64, "a non-negative safe integer");
+    typed_value!(deserialize_seq, is_array, "an array");
+    typed_value!(deserialize_map, is_object, "an object");
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let path = self.path;
@@ -208,6 +250,8 @@ impl<'de> Deserializer<'de> for LocatedValue {
                 let values = values.into_iter().enumerate().map(|(index, value)| Self {
                     value,
                     path: format!("{path}[{index}]"),
+                    name: self.name,
+                    optional: false,
                 });
                 let mut sequence = de::value::SeqDeserializer::new(values);
                 visitor.visit_seq(&mut sequence).and_then(|value| {
@@ -220,6 +264,8 @@ impl<'de> Deserializer<'de> for LocatedValue {
                     let child = Self {
                         value,
                         path: format!("{path}.{key}"),
+                        name: self.name,
+                        optional: false,
                     };
                     (key, child)
                 });
@@ -234,11 +280,11 @@ impl<'de> Deserializer<'de> for LocatedValue {
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if self.value.is_null() {
-            visitor.visit_none()
-        } else {
-            visitor.visit_some(self)
-        }
+        // A present null is still a wrong-typed value, never absence.
+        visitor.visit_some(Self {
+            optional: true,
+            ..self
+        })
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
@@ -253,8 +299,17 @@ impl<'de> Deserializer<'de> for LocatedValue {
         visitor.visit_unit()
     }
 
+    fn deserialize_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        self.deserialize_map(visitor)
+    }
+
     serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf unit unit_struct seq tuple tuple_struct map struct enum identifier
+        i8 i16 i32 i64 i128 u8 u16 u32 u128 f32 char str
+        bytes byte_buf unit unit_struct tuple tuple_struct enum identifier
     }
 }

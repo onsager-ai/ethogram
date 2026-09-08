@@ -1,0 +1,5 @@
+{
+  "type": "agent.text",
+  "payload": false,
+  "expectedKind": "Malformed"
+}

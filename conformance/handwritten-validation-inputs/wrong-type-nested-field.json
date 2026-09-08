@@ -1,0 +1,12 @@
+{
+  "type": "run.started",
+  "payload": {
+    "kind": "loop",
+    "actor": "a",
+    "harness": "h",
+    "ceilings": {
+      "tokens": "1"
+    }
+  },
+  "expectedKind": "Malformed"
+}

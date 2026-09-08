@@ -1,0 +1,23 @@
+{
+  "type": "decision.requested",
+  "payload": {
+    "decisionId": "d",
+    "kind": "permission",
+    "dossier": {
+      "question": "?",
+      "optionsRuledOut": [
+        "auto-proceed",
+        1
+      ],
+      "recommendedAction": "ask",
+      "blastRadius": "one run"
+    },
+    "options": [
+      {
+        "id": "allow",
+        "label": "Allow"
+      }
+    ]
+  },
+  "expectedKind": "Malformed"
+}
