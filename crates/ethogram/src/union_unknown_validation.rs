@@ -2,12 +2,19 @@
 //! Serde's transparent newtype name preserves the Unknown variant for this
 //! probe while ordinary JSON serialisation still emits exactly one string.
 //! Only the registered event's top-level union field is inspected; wire values
-//! and unfamiliar strings use the existing checks in `validate`.
+//! use the existing checks in `validate`. Closedness is a separate policy,
+//! checked after decoding at the same point as before the probe existed.
 
 use serde::ser::{self, Serialize, Serializer};
 use serde::{Deserialize, de::value::StrDeserializer};
 
-use crate::ValidationError;
+use crate::{ValidationError, ValidationErrorKind};
+
+#[derive(PartialEq, Eq)]
+enum Membership {
+    Open,
+    Closed,
+}
 
 struct UnionRule {
     event_type: &'static str,
@@ -15,14 +22,17 @@ struct UnionRule {
     path: &'static str,
     label: &'static str,
     unknown_marker: &'static str,
+    membership: Membership,
     is_known: fn(&str) -> Result<bool, ValidationError>,
 }
 
 // One declaration registers both the transparent Unknown marker and its probe
-// rule. Membership comes from the union's existing deserializer, so adding a
-// known variant cannot leave a separate validation vocabulary behind.
+// rule. Every entry checks representability; membership policy is mandatory
+// and has no default, so registering an open union cannot implicitly close it.
+// Known values come from the union's existing deserializer, so adding a known
+// variant cannot leave a separate validation vocabulary behind.
 macro_rules! register_unions {
-    ($($union:ident => ($event:ident, $payload:ident, $field:literal)),* $(,)?) => {
+    ($($union:ident [$membership:ident] => ($event:ident, $payload:ident, $field:literal)),* $(,)?) => {
         $(impl Serialize for crate::$union {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 match self {
@@ -41,6 +51,7 @@ macro_rules! register_unions {
                 path: concat!("payload.", $field),
                 label: concat!(stringify!($payload), ".", $field),
                 unknown_marker: concat!("ethogram::", stringify!($union), "::Unknown"),
+                membership: Membership::$membership,
                 is_known: |raw| {
                     let member = crate::$union::deserialize(
                         StrDeserializer::<ValidationError>::new(raw),
@@ -49,15 +60,36 @@ macro_rules! register_unions {
                 },
             }),*
         ];
+
+        #[cfg(test)]
+        const REGISTERED_UNIONS: &[&str] = &[$(stringify!($union)),*];
     };
 }
 
 register_unions! {
-    RunKind => (RUN_STARTED, RunStartedPayload, "kind"),
-    RunOutcome => (RUN_FINISHED, RunFinishedPayload, "outcome"),
-    ControlKind => (CONTROL_REQUESTED, ControlRequestedPayload, "kind"),
-    CaptureRefusalCause => (CAPTURE_REFUSED, CaptureRefusedPayload, "cause"),
-    DecisionKind => (DECISION_REQUESTED, DecisionRequestedPayload, "kind"),
+    RunKind [Closed] => (RUN_STARTED, RunStartedPayload, "kind"),
+    RunOutcome [Closed] => (RUN_FINISHED, RunFinishedPayload, "outcome"),
+    ControlKind [Closed] => (CONTROL_REQUESTED, ControlRequestedPayload, "kind"),
+    ControlAppliedReason [Open] => (CONTROL_APPLIED, ControlAppliedPayload, "reason"),
+    CaptureRefusalCause [Closed] => (CAPTURE_REFUSED, CaptureRefusedPayload, "cause"),
+    DecisionKind [Closed] => (DECISION_REQUESTED, DecisionRequestedPayload, "kind"),
+}
+
+pub(crate) fn check_closedness(event_type: &str, raw: &str) -> Result<(), ValidationError> {
+    if let Some(rule) = RULES
+        .iter()
+        .find(|rule| rule.event_type == event_type && rule.membership == Membership::Closed)
+        && !(rule.is_known)(raw)?
+    {
+        return Err(ValidationError::new(
+            ValidationErrorKind::UnknownMember {
+                path: rule.path.to_owned(),
+                value: raw.to_owned(),
+            },
+            format!("{} has unknown value: {raw}", rule.label),
+        ));
+    }
+    Ok(())
 }
 
 impl ser::Error for ValidationError {
@@ -66,7 +98,7 @@ impl ser::Error for ValidationError {
     }
 }
 
-pub(crate) fn check<P: Serialize + ?Sized>(
+pub(crate) fn check_representability<P: Serialize + ?Sized>(
     event_type: &str,
     payload: &P,
 ) -> Result<(), ValidationError> {
@@ -285,5 +317,80 @@ impl ser::SerializeMap for MapProbe {
     }
     fn end(self) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::REGISTERED_UNIONS;
+
+    #[test]
+    fn every_enum_with_unknown_string_is_registered() {
+        // Scan declarations independently of the registration. These enums
+        // use plain `enum Name { ... }` syntax; skip line comments and count
+        // braces so a struct variant cannot hide a later Unknown(String).
+        let source = include_str!("lib.rs")
+            .lines()
+            .map(|line| line.split("//").next().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut discovered = BTreeSet::new();
+        for declaration in source.split("enum ").skip(1) {
+            let (header, body) = declaration.split_once('{').expect("enum has a body");
+            let name = header.split_whitespace().next().expect("enum has a name");
+            let mut depth = 1;
+            let end = body
+                .char_indices()
+                .find_map(|(index, character)| {
+                    match character {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(index)
+                })
+                .expect("enum body closes");
+            let body: String = body[..end]
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            if body.contains("Unknown(String)") {
+                discovered.insert(name);
+            }
+        }
+        assert!(
+            !discovered.is_empty(),
+            "source scan found no typed Unknown unions"
+        );
+
+        // Any exemption must name the enum and explain why it is outside
+        // representability validation. Remove it when the enum is registered
+        // or disappears; stale exemptions must not silently accumulate.
+        const EXEMPTIONS: &[(&str, &str)] = &[];
+        for &(name, reason) in EXEMPTIONS {
+            assert!(
+                !reason.trim().is_empty(),
+                "{name}: exemption needs a reason"
+            );
+            assert!(discovered.contains(name), "{name}: stale exemption");
+            assert!(
+                !REGISTERED_UNIONS.contains(&name),
+                "{name}: registered union no longer needs an exemption"
+            );
+        }
+        let missing: Vec<_> = discovered
+            .into_iter()
+            .filter(|name| {
+                !REGISTERED_UNIONS.contains(name)
+                    && !EXEMPTIONS.iter().any(|(exempt, _)| exempt == name)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "enums declaring Unknown(String) missing from union_unknown_validation registration: {}; register each union or name an exemption with a reason",
+            missing.join(", ")
+        );
     }
 }
