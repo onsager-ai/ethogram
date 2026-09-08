@@ -214,8 +214,8 @@ because a forwarder must still be able to relay it.
 | `control.applied` | `controlId`, `ok` | `reason`, `truncated`, `landedIn` | Records whether the runtime honoured the request, and where a hard kill landed. |
 
 The known `kind` values are `interrupt`, `steer`, and `answer`. Unfamiliar
-strings are retained exactly at parse and accepted at validation, subject to
-the field rules and universal bounds. A known verb must use its known variant:
+strings are retained exactly at parse and reported as `UnknownMember` at
+validation. A known verb must use its known variant:
 Rust's `Unknown(s)` is rejected by `validate` as `Malformed` when `s` spells
 any known control kind. JSON strings always receive the rules of the kind
 they spell; TypeScript has no distinct runtime `Unknown` wrapper. There is
@@ -302,10 +302,12 @@ missing fields aside (their own `MissingField` kind), a wrong-typed value, an
 unsafe integer, or an input that cannot be serialised each carry a
 `Malformed` path and their original diagnostic. Parsing still checks
 representability without applying capture bounds or producer policy.
-An in-memory `ControlKind::Unknown` spelling a known kind is also `Malformed`:
-it cannot round-trip as that variant, because parsing its string yields the
-known variant. This check runs only in validation, before JSON conversion
-would erase the distinction.
+An in-memory `Unknown` spelling a known member of `RunKind`, `RunOutcome`,
+`ControlKind`, or `CaptureRefusalCause` is also `Malformed`: it cannot
+round-trip as that variant, because parsing its string yields the known
+variant. This check runs only in validation, before JSON conversion would
+erase the distinction. Serialisation still emits the exact string, and
+unfamiliar strings still report `UnknownMember` for all four unions.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8

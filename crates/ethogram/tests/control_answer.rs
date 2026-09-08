@@ -58,6 +58,13 @@ fn answer_events_match_the_typescript_pinned_bytes() {
         CONTROL_ANSWER_REQUESTED_WIRE
     );
 
+    let mut retained = requested;
+    retained.payload.kind = ControlKind::Unknown("answer".to_owned());
+    assert_eq!(
+        serialise_event(&retained).unwrap(),
+        CONTROL_ANSWER_REQUESTED_WIRE
+    );
+
     for (seq, reason, wire) in [
         (2, None, CONTROL_ANSWER_APPLIED_WIRE),
         (

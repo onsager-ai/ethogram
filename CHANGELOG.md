@@ -12,6 +12,18 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Typed `Unknown` across four unions (#41)
+
+Rust now rejects a typed `Unknown` spelling a known member of `RunKind`,
+`RunOutcome`, or `CaptureRefusalCause` as `Malformed`, matching `ControlKind`.
+Such a value cannot round-trip as its named variant: parsing its wire string
+yields the known member. One registered Serde probe checks all four before
+JSON conversion erases that distinction.
+
+Unfamiliar strings remain `UnknownMember` at validation. TypeScript behaviour,
+the 24 captured fixtures, and all serialised wire strings are unchanged. Pin
+the revision introducing this entry to take this change.
+
 ### Shared wrong-type diagnostics (#42)
 
 Rust now authors wrong-typed payload messages in TypeScript's existing form,

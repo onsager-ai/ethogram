@@ -1,14 +1,63 @@
-//! Inspect the typed control kind before `validate` converts it to JSON.
+//! Inspect typed union members before `validate` converts the payload to JSON.
 //! Serde's transparent newtype name preserves the Unknown variant for this
 //! probe while ordinary JSON serialisation still emits exactly one string.
-//! Only the payload's `kind` is inspected; wire values and other unions use
-//! the existing representation and policy checks in `validate`.
+//! Only the registered event's top-level union field is inspected; wire values
+//! and unfamiliar strings use the existing checks in `validate`.
 
 use serde::ser::{self, Serialize, Serializer};
+use serde::{Deserialize, de::value::StrDeserializer};
 
-use crate::{ControlKind, ValidationError};
+use crate::ValidationError;
 
-pub(crate) const UNKNOWN_CONTROL_KIND: &str = "ethogram::ControlKind::Unknown";
+struct UnionRule {
+    event_type: &'static str,
+    field: &'static str,
+    path: &'static str,
+    label: &'static str,
+    unknown_marker: &'static str,
+    is_known: fn(&str) -> Result<bool, ValidationError>,
+}
+
+// One declaration registers both the transparent Unknown marker and its probe
+// rule. Membership comes from the union's existing deserializer, so adding a
+// known variant cannot leave a separate validation vocabulary behind.
+macro_rules! register_unions {
+    ($($union:ident => ($event:ident, $payload:ident, $field:literal)),* $(,)?) => {
+        $(impl Serialize for crate::$union {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self {
+                    Self::Unknown(value) => serializer.serialize_newtype_struct(
+                        concat!("ethogram::", stringify!($union), "::Unknown"), value,
+                    ),
+                    _ => serializer.serialize_str(self.as_str()),
+                }
+            }
+        })*
+
+        const RULES: &[UnionRule] = &[
+            $(UnionRule {
+                event_type: crate::$event,
+                field: $field,
+                path: concat!("payload.", $field),
+                label: concat!(stringify!($payload), ".", $field),
+                unknown_marker: concat!("ethogram::", stringify!($union), "::Unknown"),
+                is_known: |raw| {
+                    let member = crate::$union::deserialize(
+                        StrDeserializer::<ValidationError>::new(raw),
+                    )?;
+                    Ok(!matches!(member, crate::$union::Unknown(_)))
+                },
+            }),*
+        ];
+    };
+}
+
+register_unions! {
+    RunKind => (RUN_STARTED, RunStartedPayload, "kind"),
+    RunOutcome => (RUN_FINISHED, RunFinishedPayload, "outcome"),
+    ControlKind => (CONTROL_REQUESTED, ControlRequestedPayload, "kind"),
+    CaptureRefusalCause => (CAPTURE_REFUSED, CaptureRefusedPayload, "cause"),
+}
 
 impl ser::Error for ValidationError {
     fn custom<T: std::fmt::Display>(message: T) -> Self {
@@ -16,21 +65,29 @@ impl ser::Error for ValidationError {
     }
 }
 
-pub(crate) fn check<P: Serialize + ?Sized>(payload: &P) -> Result<(), ValidationError> {
-    payload.serialize(Probe::Payload)
+pub(crate) fn check<P: Serialize + ?Sized>(
+    event_type: &str,
+    payload: &P,
+) -> Result<(), ValidationError> {
+    if let Some(rule) = RULES.iter().find(|rule| rule.event_type == event_type) {
+        payload.serialize(Probe::Payload(rule))?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
 enum Probe {
-    Payload,
-    Kind,
+    Payload(&'static UnionRule),
+    Member(&'static UnionRule),
     Ignore,
 }
 
 impl Probe {
     fn field(&self, key: &str) -> Self {
-        if matches!(self, Self::Payload) && key == "kind" {
-            Self::Kind
+        if let Self::Payload(rule) = self
+            && key == rule.field
+        {
+            Self::Member(rule)
         } else {
             Self::Ignore
         }
@@ -77,20 +134,20 @@ impl Serializer for Probe {
         name: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        if matches!(self, Self::Kind) && name == UNKNOWN_CONTROL_KIND {
+        if let Self::Member(rule) = self
+            && name == rule.unknown_marker
+        {
+            // The marker has already established that this is a typed Unknown.
+            // Only now convert its inner string; converting the payload first
+            // would erase the marker and silently accept known spellings.
             let raw = serde_json::to_value(value)
-                .map_err(|error| ValidationError::malformed("payload.kind", error.to_string()))?;
+                .map_err(|error| ValidationError::malformed(rule.path, error.to_string()))?;
             if let Some(raw) = raw.as_str()
-                && !matches!(
-                    ControlKind::from_wire(raw.to_owned()),
-                    ControlKind::Unknown(_)
-                )
+                && (rule.is_known)(raw)?
             {
                 return Err(ValidationError::malformed(
-                    "payload.kind",
-                    format!(
-                        "ControlRequestedPayload.kind cannot use Unknown for known value: {raw}"
-                    ),
+                    rule.path,
+                    format!("{} cannot use Unknown for known value: {raw}", rule.label),
                 ));
             }
             return Ok(());
@@ -172,8 +229,8 @@ impl ser::SerializeStruct for Probe {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        if matches!(self.field(key), Self::Kind) {
-            value.serialize(Self::Kind)?;
+        if let member @ Self::Member(_) = self.field(key) {
+            value.serialize(member)?;
         }
         Ok(())
     }
@@ -197,7 +254,7 @@ impl ser::SerializeStructVariant for Probe {
     }
 }
 
-// `#[serde(flatten)]` makes a typed ControlRequestedPayload use SerializeMap;
+// `#[serde(flatten)]` makes the SDK's typed payloads use SerializeMap;
 // a wrapper struct without flatten uses SerializeStruct. Cover both paths.
 struct MapProbe {
     parent: Probe,
@@ -209,7 +266,7 @@ impl ser::SerializeMap for MapProbe {
     type Error = ValidationError;
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), Self::Error> {
         self.next = Probe::Ignore;
-        if matches!(self.parent, Probe::Payload) {
+        if matches!(self.parent, Probe::Payload(_)) {
             let key = serde_json::to_value(key)
                 .map_err(|error| ValidationError::malformed("payload", error.to_string()))?;
             if let Some(key) = key.as_str() {
@@ -219,7 +276,7 @@ impl ser::SerializeMap for MapProbe {
         Ok(())
     }
     fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
-        if matches!(self.next, Probe::Kind) {
+        if matches!(self.next, Probe::Member(_)) {
             value.serialize(self.next)?;
         }
         self.next = Probe::Ignore;
