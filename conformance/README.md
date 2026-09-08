@@ -147,9 +147,10 @@ Waiting cost time once; an invented fixture would have been wrong permanently.
 
 ## Handwritten validation inputs
 
-`handwritten-validation-inputs/*.json` exercises `validate` with one input
-per structured error kind. These are deliberately invented invalid inputs,
-not captured events: the path explicitly says handwritten inputs, is outside
+`handwritten-validation-inputs/*.json` exercises `validate` with inputs for
+every structured error kind and wrong-typed payload fields. These are
+deliberately invented invalid inputs, not captured events: the path explicitly
+says handwritten inputs, is outside
 every versioned corpus directory, and is never read by the corpus generator.
 Each contains `type`, `payload`, and `expectedKind`, without a stamped event
 envelope. The harness passes the payload directly to `validate` so a missing
@@ -162,8 +163,23 @@ the SDK's existing output directory using `serialise_validation_error` /
 `serialiseValidationError`. These production helpers emit only `kind` and
 its fields, with the same recursive UTF-8 key sorting and number handling
 used for event payloads. The original diagnostic is included only where it
-is a field of the kind (`Policy.message`); stacks and SDK-specific display
-metadata are excluded.
+is a field of the kind (`Policy.message` or `Malformed.message`); stacks and
+SDK-specific display metadata are excluded.
+
+`capture.refused.detail` remains **non-authoritative**: the countable facts
+are the typed fields, per #15, and consumers must not key on diagnostic prose.
+But where both SDKs produce `detail`, they produce the **same bytes** (#42).
+The harness compares the structured diagnostic messages from which a relay
+excerpts that detail, including wrong-type failures.
+
+Rust authors wrong-type messages in TypeScript's existing form:
+`<Payload>.<field> must be a <type>`, with ` when present` for optional
+strings, booleans, finite numbers, and non-negative safe integers. Objects
+use `must be an object` without the suffix even when optional; arrays use
+`must be an array`. Nested labels retain the parent payload name and array
+indices, such as `DecisionRequestedPayload.options[1].label`. A wrong-typed
+payload itself uses `<Payload> must be an object`. Serde's wrong-type prose
+must never replace these messages in the compared output.
 
 `run.sh` checks separate fixture, error-output, and agreement-input counts in
 each manifest, then runs its existing recursive byte diff across both output

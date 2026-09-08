@@ -1,0 +1,7 @@
+{
+  "type": "agent.started",
+  "payload": {
+    "pid": "1"
+  },
+  "expectedKind": "Malformed"
+}

@@ -1735,31 +1735,57 @@ fn payload_path(field: &str) -> String {
 /// independent literal left to drift out of step.
 fn check_known_payload_representation(event_type: &str, payload: &Value) -> serde_json::Result<()> {
     if event_type == RUN_STARTED {
-        serde_json::from_value::<RunStartedPayload>(payload.clone()).map(drop)
+        decode_payload::<RunStartedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == RUN_FINISHED {
-        serde_json::from_value::<RunFinishedPayload>(payload.clone()).map(drop)
+        decode_payload::<RunFinishedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_STARTED {
-        serde_json::from_value::<AgentStartedPayload>(payload.clone()).map(drop)
+        decode_payload::<AgentStartedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_TEXT {
-        serde_json::from_value::<AgentTextPayload>(payload.clone()).map(drop)
+        decode_payload::<AgentTextPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_TOOL_USE {
-        serde_json::from_value::<AgentToolUsePayload>(payload.clone()).map(drop)
+        decode_payload::<AgentToolUsePayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_TOOL_RESULT {
-        serde_json::from_value::<AgentToolResultPayload>(payload.clone()).map(drop)
+        decode_payload::<AgentToolResultPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_COMPLETED {
-        serde_json::from_value::<AgentCompletedPayload>(payload.clone()).map(drop)
+        decode_payload::<AgentCompletedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == AGENT_WARNING {
-        serde_json::from_value::<AgentWarningPayload>(payload.clone()).map(drop)
+        decode_payload::<AgentWarningPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == CONTROL_REQUESTED {
-        serde_json::from_value::<ControlRequestedPayload>(payload.clone()).map(drop)
+        decode_payload::<ControlRequestedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == CONTROL_APPLIED {
-        serde_json::from_value::<ControlAppliedPayload>(payload.clone()).map(drop)
+        decode_payload::<ControlAppliedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == CAPTURE_REFUSED {
-        serde_json::from_value::<CaptureRefusedPayload>(payload.clone()).map(drop)
+        decode_payload::<CaptureRefusedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == DECISION_REQUESTED {
-        serde_json::from_value::<DecisionRequestedPayload>(payload.clone()).map(drop)
+        decode_payload::<DecisionRequestedPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else if event_type == DECISION_ANSWERED {
-        serde_json::from_value::<DecisionAnsweredPayload>(payload.clone()).map(drop)
+        decode_payload::<DecisionAnsweredPayload>(payload.clone())
+            .map(drop)
+            .map_err(Into::into)
     } else {
         Ok(())
     }
@@ -2196,7 +2222,31 @@ where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    T::deserialize(deserializer).map(Some)
+    struct Present<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> de::Visitor<'de> for Present<T> {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a non-null value")
+        }
+
+        fn visit_some<D: Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
+            T::deserialize(deserializer).map(Some)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            // Direct serde callers still reject null through T's visitor.
+            T::deserialize(de::value::UnitDeserializer::new()).map(Some)
+        }
+    }
+
+    // Expose optionality to the located decoder without accepting null as
+    // None. Absence is supplied only by the field's #[serde(default)].
+    deserializer.deserialize_option(Present(std::marker::PhantomData))
 }
 
 /// Deserializes a `u64` and rejects a magnitude beyond
@@ -2238,7 +2288,10 @@ fn deserialize_optional_safe_u64<'de, D>(deserializer: D) -> Result<Option<u64>,
 where
     D: Deserializer<'de>,
 {
-    deserialize_safe_u64(deserializer).map(Some)
+    #[derive(Deserialize)]
+    struct SafeU64(#[serde(deserialize_with = "deserialize_safe_u64")] u64);
+
+    deserialize_optional::<D, SafeU64>(deserializer).map(|value| value.map(|value| value.0))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2734,18 +2787,31 @@ mod tests {
 
     #[test]
     fn rejects_non_string_required_agent_payload_fields() {
-        for (event_type, field) in [
-            ("agent.text", "text"),
-            ("agent.tool_use", "tool"),
-            ("agent.tool_result", "tool"),
-            ("agent.warning", "message"),
+        for (event_type, field, message) in [
+            (
+                "agent.text",
+                "text",
+                "AgentTextPayload.text must be a string",
+            ),
+            (
+                "agent.tool_use",
+                "tool",
+                "AgentToolUsePayload.tool must be a string",
+            ),
+            (
+                "agent.tool_result",
+                "tool",
+                "AgentToolResultPayload.tool must be a string",
+            ),
+            (
+                "agent.warning",
+                "message",
+                "AgentWarningPayload.message must be a string",
+            ),
         ] {
             let error =
                 parse_event(&lifecycle_event_input(event_type, json!({ (field): 7 }))).unwrap_err();
-            assert!(
-                error.to_string().contains("expected a string"),
-                "error for {event_type}.{field} was: {error}"
-            );
+            assert_eq!(error.to_string(), message);
         }
     }
 
@@ -3641,9 +3707,9 @@ mod tests {
     #[test]
     fn validate_rejects_a_non_string_session_id_on_agent_completed() {
         let error = validate(AGENT_COMPLETED, &json!({ "sessionId": 7 })).unwrap_err();
-        assert!(
-            error.to_string().contains("expected a string"),
-            "error was: {error}"
+        assert_eq!(
+            error.to_string(),
+            "AgentCompletedPayload.sessionId must be a string when present"
         );
     }
 
@@ -4922,9 +4988,9 @@ mod tests {
             "requestedRunId": 7
         });
         let error = validate(DECISION_ANSWERED, &payload).unwrap_err();
-        assert!(
-            error.to_string().contains("expected a string"),
-            "error was: {error}"
+        assert_eq!(
+            error.to_string(),
+            "DecisionAnsweredPayload.requestedRunId must be a string when present"
         );
     }
 
@@ -4988,9 +5054,9 @@ mod tests {
         let input = lifecycle_event_input("run.started", payload);
 
         let error = parse_event(&input).unwrap_err();
-        assert!(
-            error.to_string().contains("expected a string"),
-            "error was: {error}"
+        assert_eq!(
+            error.to_string(),
+            "RunStartedPayload.parentRunId must be a string when present"
         );
     }
 
@@ -5001,11 +5067,9 @@ mod tests {
         let input = lifecycle_event_input("agent.completed", json!({ "turns": null }));
 
         let error = parse_event(&input).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("invalid type: null, expected u64"),
-            "error was: {error}"
+        assert_eq!(
+            error.to_string(),
+            "AgentCompletedPayload.turns must be a non-negative safe integer when present"
         );
     }
 
@@ -5016,9 +5080,9 @@ mod tests {
             lifecycle_event_input("agent.text", json!({ "text": "hello", "truncated": null }));
 
         let error = parse_event(&input).unwrap_err();
-        assert!(
-            error.to_string().contains("expected a boolean"),
-            "error was: {error}"
+        assert_eq!(
+            error.to_string(),
+            "AgentTextPayload.truncated must be a boolean when present"
         );
     }
 

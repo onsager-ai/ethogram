@@ -12,7 +12,18 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
-Pin `9e3cd37` to take everything below.
+### Shared wrong-type diagnostics (#42)
+
+Rust now authors wrong-typed payload messages in TypeScript's existing form,
+including nested paths and optional-field wording, so relays refusing the
+same field can emit identical `capture.refused.detail`. Detail remains
+non-authoritative; consumers count the typed fields, never the prose.
+
+Sixteen new handwritten validation inputs bring wrong-type failures into the
+harness's byte comparison. The 24 captured fixtures and event wire bytes are
+unchanged. Pin the revision introducing this entry to take this change.
+
+The entries below are available from revision `9e3cd37`.
 
 ### The `answer` control verb (#38, #39)
 
