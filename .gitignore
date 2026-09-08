@@ -1,2 +1,6 @@
 node_modules/
 target/
+# Working notes for a PR's description, written by the implementer and never
+# committed. It entered the tree once through a `git add -A`; ignoring it means
+# that cannot happen again rather than relying on remembering.
+PR-BODY.md
