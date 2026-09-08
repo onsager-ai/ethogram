@@ -265,7 +265,7 @@ impl<'de> Deserialize<'de> for RunOutcome {
 /// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
 /// never map it onto a known kind.
 /// An unfamiliar wire string is `UnknownMember` at validation, exactly like
-/// the other four closed unions; `Unknown` spelling any known kind is
+/// every other closed union; `Unknown` spelling any known kind is
 /// `Malformed` at validation instead, because parsing that string would have
 /// yielded the known variant.
 ///
@@ -1418,7 +1418,7 @@ where
     } else if event_type == CONTROL_REQUESTED {
         let requested = decode_payload::<ControlRequestedPayload>(payload)?;
         // Checked before any kind-conditioned business rule below, exactly
-        // as the other four closed unions check membership before their own
+        // as every other closed union checks membership before its own
         // conditioned rules: those rules (decisionId/optionId only for
         // "answer", text required for "steer") only have anything to say
         // about a kind this SDK recognises.

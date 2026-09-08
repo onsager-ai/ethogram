@@ -1920,7 +1920,7 @@ function validatePayload(eventType: string, payload: unknown): void {
     case CONTROL_REQUESTED: {
       const requested = parsed as ControlRequestedPayload;
       // Checked before any kind-conditioned business rule below, exactly as
-      // the other four closed unions check membership before their own
+      // every other closed union checks membership before its own
       // conditioned rules: those rules (decisionId/optionId only for
       // "answer", text required for "steer") only have anything to say about
       // a kind this SDK recognises.

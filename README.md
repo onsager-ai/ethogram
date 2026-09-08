@@ -302,12 +302,18 @@ missing fields aside (their own `MissingField` kind), a wrong-typed value, an
 unsafe integer, or an input that cannot be serialised each carry a
 `Malformed` path and their original diagnostic. Parsing still checks
 representability without applying capture bounds or producer policy.
-An in-memory `Unknown` spelling a known member of `RunKind`, `RunOutcome`,
-`ControlKind`, `CaptureRefusalCause`, or `DecisionKind` is also `Malformed`:
-it cannot round-trip as that variant, because parsing its string yields the
-known variant. This check runs only in validation, before JSON conversion
-would erase the distinction. Serialisation still emits the exact string, and
-unfamiliar strings still report `UnknownMember` for all five unions.
+An in-memory `Unknown` spelling a known member is also `Malformed`: it cannot
+round-trip as that variant, because parsing its string yields the known
+variant. The rule is stated as a property rather than a list — **every closed
+union carrying a typed `Unknown`** — because a list stops being true the day a
+union is added and nothing fails when it does. Today that property holds of
+`RunKind`, `RunOutcome`, `ControlKind`, `CaptureRefusalCause` and
+`DecisionKind`; the registration in `union_unknown_validation` is the one place
+that set is written down, so a new union joins it by declaration.
+
+This check runs only in validation, before JSON conversion would erase the
+distinction. Serialisation still emits the exact string, and an unfamiliar
+string still reports `UnknownMember` wherever the union is closed.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8
