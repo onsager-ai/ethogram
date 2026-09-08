@@ -66,6 +66,10 @@ export const V1_FIXTURES = [
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.requested\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 3,\n  \"ts\": \"2026-09-07T07:45:03.000Z\",\n  \"payload\": {\n    \"by\": \"capture-driver\",\n    \"controlId\": \"capture-steer-1\",\n    \"kind\": \"steer\",\n    \"text\": \"Continue with a short summary on the next turn.\",\n    \"truncated\": false\n  }\n}\n",
   },
   {
+    name: "decision-answered-excuse-requested-run.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.answered\",\n  \"runId\": \"judgment-20300102T030405000Z-fixture-0\",\n  \"seq\": 2,\n  \"ts\": \"2030-01-02T03:04:05.000Z\",\n  \"payload\": {\n    \"by\": \"github:user:42\",\n    \"decisionId\": \"gate_inconclusive-d660b87e278b7967dbb8627bde6724fcaf13adad6d03dba9ef9b4c13d5165ad0\",\n    \"optionId\": \"excuse:required_checks\",\n    \"requestedRunId\": \"gate\",\n    \"reversal\": \"revoke:required_checks\"\n  }\n}\n",
+  },
+  {
     name: "decision-answered-excuse.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.answered\",\n  \"runId\": \"judgment-20300102T030405000Z-fixture-0\",\n  \"seq\": 2,\n  \"ts\": \"2030-01-02T03:04:05.000Z\",\n  \"payload\": {\n    \"by\": \"github:user:42\",\n    \"decisionId\": \"gate_inconclusive-d660b87e278b7967dbb8627bde6724fcaf13adad6d03dba9ef9b4c13d5165ad0\",\n    \"optionId\": \"excuse:required_checks\",\n    \"reversal\": \"revoke:required_checks\"\n  }\n}\n",
   },
