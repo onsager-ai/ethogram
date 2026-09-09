@@ -12,6 +12,18 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The `non_exhaustive` question, answered once (#67)
+
+The README now states the rule the `by` change raised: payload structs are
+deliberately **not** `#[non_exhaustive]`, so an additive wire field is a
+source-visible change for a Rust producer building a payload by literal. That
+is the intended prompt — a producer must decide what the new field holds, and
+the compile error is the only moment that decision is unavoidable. Consumers
+that read or deserialise are unaffected, and nothing on the wire changes.
+
+Documentation only. It exists so the next additive field does not re-argue
+it, and so the reasoning is not left in a review thread.
+
 ### `control.applied` gains a known `by` (#67)
 
 `by` names the principal identity that applied the control, with the same

@@ -191,6 +191,17 @@ it carries. Closed-union membership and capture bounds are enforced by
 `validate`, not parsing, so a forwarder can faithfully carry a producer's
 invalid event. Unknown event `type`s remain open, as they always were.
 
+**Additive on the wire is deliberately not additive in Rust source (ruled on
+#67).** The payload structs are not `#[non_exhaustive]`, so adding an optional
+field breaks any `Payload { … }` literal until it names the new field. That is
+the intent, not an oversight: a **producer** building a payload by literal
+must decide what the new field should hold, and a compile error is the only
+moment that decision is unavoidable. A **consumer** that reads or
+deserialises is unaffected, and so is anything on the wire — an older
+producer that never sets the field emits exactly what it emitted before. The
+rule holds for every payload field added from here, so it does not need
+re-arguing each time.
+
 **Opening those unions this way only stays safe because of a consumer rule
 (ruled on #12), and this repository is where that rule has to be written
 down.** An unfamiliar member of any union that retains unknown strings — every
