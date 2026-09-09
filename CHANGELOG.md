@@ -12,6 +12,29 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Consumer rule for unknown members, stated once (#54)
+
+The README's tolerant-reader paragraph and all six retaining unions'
+doc comments — `RunKind`, `ControlKind`, `CaptureRefusalCause`,
+`DecisionKind`, `RunOutcome`, `ControlAppliedReason`, in both SDKs — now
+state the same three-clause rule (ruled on #12) a consumer must follow for
+an unfamiliar member: render it with its raw value, never map it onto a
+known member, and, when acting on it (a sink deciding a run is finished, a
+hub deciding a decision is pending), treat it as "not this", never as a
+default. `ControlAppliedReason`'s note says plainly that an unfamiliar
+reason there is the expected case, not the exceptional one, since it stays
+open at validation too.
+
+A source-scan test in each SDK discovers every such union from its own
+declaration shape — `enum … Unknown(String)` in Rust, `KnownX | (string &
+{})` in TypeScript — and fails, naming the union, if its doc comment lacks
+the rule. No hand-maintained list of union names; a seventh union added
+later without the sentence fails the same way. No exemption was needed.
+
+No fixture, wire string, or SDK behaviour changed. Pin the revision
+introducing this entry to take the documentation and the two scan tests; a
+consumer repin requires no adaptation beyond reading the now-stated rule.
+
 ### Independent corpus envelopes (#46)
 
 The corpus libraries now state at their collection APIs that fixtures are
