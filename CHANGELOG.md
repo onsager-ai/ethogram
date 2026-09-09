@@ -12,6 +12,33 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The notation band enters the harness (#53)
+
+Two hand-written agreement inputs. `run-finished-band-cost.json` carries a
+`costUsd` of `2.5e-6`, inside the one decade where `serde_json` and
+ECMAScript disagreed about notation for the same double (#9, class 4); both
+SDKs must emit `0.0000025`, and reverting Rust's notation branch now fails
+the cross-SDK byte diff instead of only two unit tests. No corpus fixture
+can carry this value — fixtures are captures, and no capture has produced a
+cost in the band.
+
+`run-started-unknown-fields.json` carries unfamiliar payload keys sorting
+before the first known key and after the last, plus a nested object and an
+array.
+
+**A boundary this exposed, now written down.** Rust's `parse_event` returns
+an `Event` whose payload is a `serde_json::Value` and never constructs the
+typed payload structs; TypeScript's `parseEvent` routes a known `type`
+through its typed parser. So the harness — for agreement inputs and for
+every corpus fixture — compares Rust's untyped path against TypeScript's
+typed one. Canonicalisation is compared in full; Rust's
+`#[serde(flatten)]` retention of unknown fields is not reachable from it,
+and remains covered by its own suite. Issue #57 carries that gap, and the
+tolerance clause owed from #12 is still owed.
+
+No wire byte, fixture or behaviour changed. A consumer repin takes two more
+harness inputs and nothing else.
+
 ### Negative zero asserted on both sides (#52)
 
 Class 2 of #9 — negative zero serialises as `0` — was pinned in Rust and

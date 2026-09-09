@@ -221,7 +221,18 @@ byte diff used for the corpus compares these outputs. Counts are checked
 independently, so dropping an input from one set cannot be hidden by adding
 an input to another. The first five shapes cover the answer control verb and
 its echoes (#38); both SDK suites also pin their exact bytes from hand-built
-typed events.
+typed events. Two more cover number notation and unfamiliar payload keys
+(#53), described in that directory's README.
+
+**These inputs compare Rust's untyped path against TypeScript's typed one**,
+and so does the corpus. `parse_event` in Rust returns an `Event` whose
+payload is a `serde_json::Value` and never constructs `RunStartedPayload` or
+its siblings, while TypeScript's `parseEvent` routes a known `type` through
+its typed payload parser. Everything both sides canonicalise — key order,
+number notation, envelope shape — is compared here regardless. What is *not*
+compared is Rust's typed payload layer: its `#[serde(flatten)]` retention of
+unknown fields is exercised only by its own suite, because nothing in this
+harness deserialises into those structs. Issue #57 carries that gap.
 
 ## Library views
 

@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "type": "run.started",
+  "runId": "run-unknown-fields",
+  "seq": 1,
+  "ts": "2026-09-09T00:00:00.000Z",
+  "payload": {
+    "0alpha": "before-actor",
+    "actor": "builder",
+    "harness": "codex",
+    "kind": "loop",
+    "list": [{ "zebra": 1, "apple": 2 }, 3, "text"],
+    "nested": { "zebra": 1, "apple": 2 },
+    "zzzTail": "after-kind"
+  }
+}
