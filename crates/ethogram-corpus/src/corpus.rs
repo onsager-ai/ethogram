@@ -53,12 +53,20 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         raw_json: include_str!("../../../conformance/v1/agent-warning.json"),
     },
     Fixture {
+        name: "control-applied-answer.json",
+        raw_json: include_str!("../../../conformance/v1/control-applied-answer.json"),
+    },
+    Fixture {
         name: "control-applied-interrupt.json",
         raw_json: include_str!("../../../conformance/v1/control-applied-interrupt.json"),
     },
     Fixture {
         name: "control-applied-not-live.json",
         raw_json: include_str!("../../../conformance/v1/control-applied-not-live.json"),
+    },
+    Fixture {
+        name: "control-requested-answer.json",
+        raw_json: include_str!("../../../conformance/v1/control-requested-answer.json"),
     },
     Fixture {
         name: "control-requested-interrupt.json",
@@ -77,6 +85,14 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
         raw_json: include_str!("../../../conformance/v1/decision-answered-excuse.json"),
     },
     Fixture {
+        name: "decision-answered-permission-timeout.json",
+        raw_json: include_str!("../../../conformance/v1/decision-answered-permission-timeout.json"),
+    },
+    Fixture {
+        name: "decision-answered-permission.json",
+        raw_json: include_str!("../../../conformance/v1/decision-answered-permission.json"),
+    },
+    Fixture {
         name: "decision-requested-budget.json",
         raw_json: include_str!("../../../conformance/v1/decision-requested-budget.json"),
     },
@@ -91,6 +107,10 @@ pub(crate) static V1_FIXTURES: &[Fixture] = &[
     Fixture {
         name: "decision-requested-human-decides.json",
         raw_json: include_str!("../../../conformance/v1/decision-requested-human-decides.json"),
+    },
+    Fixture {
+        name: "decision-requested-permission.json",
+        raw_json: include_str!("../../../conformance/v1/decision-requested-permission.json"),
     },
     Fixture {
         name: "decision-requested-tripwire.json",

@@ -5,9 +5,9 @@ captures**, are not part of `v1/`, and are **not subject to the corpus
 immutability rule**.
 
 **The supersession rule applies to some of them and not others, and the
-difference is not cosmetic.** Five stand in for vocabulary a producer has not
-emitted yet, and a real captured fixture replaces them when one does. The
-other three can never be superseded, because no producer emits their shape:
+difference is not cosmetic.** Some stand in for vocabulary a producer has not
+emitted yet, and a real captured fixture replaces them when one does. Three
+others can never be superseded, because no producer emits their shape:
 each exists to hold a property the corpus cannot hold. Retiring all eight
 together on the supersession rule would leave every remaining test green while
 removing the only band pin in the byte diff, the only cross-SDK check of
@@ -18,11 +18,23 @@ three goes missing, with the reason it was there.
 
 ## Superseded by a real capture
 
-Five inputs cover an answer request, a positive control echo, and negative
+Five inputs covered an answer request, a positive control echo, and negative
 echoes for `no-such-decision`, `already-answered`, and `option-not-offered`.
 Both SDK test suites also hand-build these shapes and pin identical canonical
-JSON literals independently of these files. The first expected producer for
-the answer control verb is ostrom#510.
+JSON literals independently of these files.
+
+**Two of the five are now superseded and gone**: ostrom#541 produced the first
+real permission exchange, so `control-requested-answer.json` and
+`control-applied-answer.json` in `v1/` replace the hand-written answer request
+and positive echo.
+
+**The three negative echoes stay**, and not because the rule spared them: no
+capture has produced them. They are refusal paths — an answer naming an unknown
+decision, one answering a decision twice, one naming an option that was never
+offered — and reaching them needs a supervisor that answers wrongly during a
+real pass, which nothing has yet done. They are superseded when a capture
+produces them, and not before. Retiring them now would remove the only
+cross-SDK coverage of those reasons and replace it with nothing.
 
 ## Permanent — no producer can supersede these
 

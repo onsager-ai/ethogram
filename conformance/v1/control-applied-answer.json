@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "control.applied",
+  "runId": "builder-20260909T091631822Z-1098540-0",
+  "seq": 10,
+  "ts": "2026-09-09T09:16:37.692Z",
+  "payload": {
+    "by": "spawning-supervisor",
+    "controlId": "first-permission-answer",
+    "ok": true
+  }
+}

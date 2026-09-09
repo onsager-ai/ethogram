@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "decision.answered",
+  "runId": "builder-20260909T091631822Z-1098540-0",
+  "seq": 9,
+  "ts": "2026-09-09T09:16:37.690Z",
+  "payload": {
+    "by": "spawning-supervisor",
+    "byTimeout": false,
+    "decisionId": "toolu_0133eqDxMxwumxSsmAiYZyWS",
+    "optionId": "allow",
+    "requestedRunId": "builder-20260909T091631822Z-1098540-0"
+  }
+}
