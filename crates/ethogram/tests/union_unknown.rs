@@ -1,8 +1,9 @@
 use ethogram::{
-    CAPTURE_REFUSED, CONTROL_REQUESTED, CaptureRefusalCause, CaptureRefusedPayload, ControlKind,
+    CAPTURE_REFUSED, CONTROL_APPLIED, CONTROL_REQUESTED, CaptureRefusalCause,
+    CaptureRefusedPayload, ControlAppliedPayload, ControlAppliedReason, ControlKind,
     ControlRequestedPayload, DECISION_REQUESTED, DecisionKind, DecisionRequestedPayload,
-    RUN_FINISHED, RUN_STARTED, RunFinishedPayload, RunKind, RunOutcome, RunStartedPayload,
-    ValidationErrorKind, validate,
+    MAX_EXCERPT_SCALARS, RUN_FINISHED, RUN_STARTED, RunFinishedPayload, RunKind, RunOutcome,
+    RunStartedPayload, ValidationErrorKind, validate,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -42,6 +43,13 @@ fn refused(cause: CaptureRefusalCause) -> CaptureRefusedPayload {
     CaptureRefusedPayload {
         cause,
         ..serde_json::from_value(json!({ "cause": "gap", "sourceRunId": "r" })).unwrap()
+    }
+}
+
+fn applied(reason: ControlAppliedReason) -> ControlAppliedPayload {
+    ControlAppliedPayload {
+        reason: Some(reason),
+        ..serde_json::from_value(json!({ "controlId": "c", "ok": false })).unwrap()
     }
 }
 
@@ -166,6 +174,40 @@ fn control_kind_unknown_cannot_spell_known_member() {
 }
 
 #[test]
+fn control_applied_reason_unknown_cannot_spell_known_member() {
+    for known in [
+        ControlAppliedReason::NoSuchDecision,
+        ControlAppliedReason::AlreadyAnswered,
+        ControlAppliedReason::OptionNotOffered,
+        ControlAppliedReason::Unsupported,
+        ControlAppliedReason::NotLive,
+        ControlAppliedReason::Rejected,
+    ] {
+        let raw = known.as_str();
+        let payload = applied(ControlAppliedReason::Unknown(raw.to_owned()));
+        assert_eq!(
+            validate(CONTROL_APPLIED, &payload)
+                .expect_err(
+                    "ControlAppliedReason::Unknown spelling a known member must be Malformed"
+                )
+                .kind,
+            ValidationErrorKind::Malformed {
+                path: "payload.reason".to_owned(),
+                message: format!(
+                    "ControlAppliedPayload.reason cannot use Unknown for known value: {raw}"
+                ),
+            }
+        );
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire, serde_json::to_value(applied(known.clone())).unwrap());
+        validate(CONTROL_APPLIED, &wire).unwrap();
+        validate(CONTROL_APPLIED, &applied(known.clone())).unwrap();
+        let parsed: ControlAppliedPayload = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed.reason, Some(known));
+    }
+}
+
+#[test]
 fn capture_refusal_cause_unknown_cannot_spell_known_member() {
     for known in [
         CaptureRefusalCause::Gap,
@@ -230,6 +272,46 @@ fn decision_kind_unknown_cannot_spell_known_member() {
 }
 
 const UNFAMILIAR: &str = "future/答😀 e\u{301}\n\"";
+
+#[test]
+fn control_applied_reason_unfamiliar_string_remains_accepted() {
+    for ok in [false, true] {
+        let mut payload = applied(ControlAppliedReason::Unknown(UNFAMILIAR.to_owned()));
+        payload.ok = ok;
+        validate(CONTROL_APPLIED, &payload).unwrap();
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire["reason"], UNFAMILIAR);
+        validate(CONTROL_APPLIED, &wire).unwrap();
+        let parsed: ControlAppliedPayload = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, payload);
+    }
+}
+
+#[test]
+fn control_applied_reason_unfamiliar_string_remains_excerpt_bounded() {
+    let payload = applied(ControlAppliedReason::Unknown(
+        "😀".repeat(MAX_EXCERPT_SCALARS),
+    ));
+    validate(CONTROL_APPLIED, &payload).unwrap();
+    validate(CONTROL_APPLIED, &serde_json::to_value(&payload).unwrap()).unwrap();
+
+    let payload = applied(ControlAppliedReason::Unknown(
+        "😀".repeat(MAX_EXCERPT_SCALARS + 1),
+    ));
+    let error = validate(CONTROL_APPLIED, &payload).unwrap_err();
+    assert_eq!(
+        error.kind,
+        ValidationErrorKind::OverBound {
+            path: "payload.reason".to_owned(),
+            count: MAX_EXCERPT_SCALARS + 1,
+            max: MAX_EXCERPT_SCALARS,
+        }
+    );
+    let wire = serde_json::to_value(&payload).unwrap();
+    assert_eq!(validate(CONTROL_APPLIED, &wire).unwrap_err(), error);
+    let parsed: ControlAppliedPayload = serde_json::from_value(wire).unwrap();
+    assert_eq!(parsed, payload);
+}
 
 #[test]
 fn run_kind_unfamiliar_string_remains_unknown_member() {

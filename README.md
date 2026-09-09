@@ -302,18 +302,32 @@ missing fields aside (their own `MissingField` kind), a wrong-typed value, an
 unsafe integer, or an input that cannot be serialised each carry a
 `Malformed` path and their original diagnostic. Parsing still checks
 representability without applying capture bounds or producer policy.
-An in-memory `Unknown` spelling a known member is also `Malformed`: it cannot
-round-trip as that variant, because parsing its string yields the known
-variant. The rule is stated as a property rather than a list — **every closed
-union carrying a typed `Unknown`** — because a list stops being true the day a
-union is added and nothing fails when it does. Today that property holds of
-`RunKind`, `RunOutcome`, `ControlKind`, `CaptureRefusalCause` and
-`DecisionKind`; the registration in `union_unknown_validation` is the one place
-that set is written down, so a new union joins it by declaration.
 
-This check runs only in validation, before JSON conversion would erase the
-distinction. Serialisation still emits the exact string, and an unfamiliar
-string still reports `UnknownMember` wherever the union is closed.
+**Representability and closedness are separate rules.** Representability
+requires **every union carrying a typed `Unknown`**, open or closed, to use the
+known variant for a known spelling. An in-memory `Unknown("rejected")` cannot
+round-trip as itself: parsing its string yields the known variant, so
+`validate` reports `Malformed`. Today this applies to `RunKind`, `RunOutcome`,
+`ControlKind`, `ControlAppliedReason`, `CaptureRefusalCause` and `DecisionKind`.
+
+Closedness instead determines which strings the protocol accepts: an
+*unfamiliar* string is `UnknownMember` only for the five closed unions,
+`RunKind`, `RunOutcome`, `ControlKind`, `CaptureRefusalCause` and `DecisionKind`.
+`ControlAppliedReason` stays open: unfamiliar strings are accepted and retained
+exactly, subject to the 4,096-scalar excerpt bound.
+
+The registration in
+[`union_unknown_validation`](crates/ethogram/src/union_unknown_validation.rs)
+declares both sets. Every entry receives the representability check and must
+explicitly choose `Open` or `Closed` membership. A source test scans `lib.rs`
+for every enum declaring `Unknown(String)` and requires its registration or a
+named exemption with a reason, so adding a union cannot silently escape the
+check. No enums are currently exempt.
+
+The typed representability check runs only in validation, before JSON
+conversion would erase the distinction. Serialisation still emits the exact
+string. TypeScript has no typed `Unknown` wrapper; its strings receive the
+rules of the member they spell.
 
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8

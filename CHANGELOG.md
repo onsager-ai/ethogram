@@ -12,6 +12,22 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Representability independent of closedness (#48)
+
+Rust now rejects `ControlAppliedReason::Unknown` spelling a known reason as
+`Malformed`, because it cannot round-trip as itself. Representability applies
+to every union carrying a typed `Unknown`, including open unions.
+`ControlAppliedReason` still accepts unfamiliar strings within the excerpt
+bound; the five closed unions still report unfamiliar strings as `UnknownMember`.
+
+The registration explicitly selects open or closed membership for each union,
+and a source test discovers every enum declaring `Unknown(String)` to catch
+missing registrations. Any exemption must name the enum and give a reason;
+none is needed today.
+
+TypeScript behaviour, the 25 captured fixtures, and all serialised wire strings
+are unchanged. Pin the revision introducing this entry to take this change.
+
 ### Typed `Unknown` across five unions (#41)
 
 Rust now rejects a typed `Unknown` spelling a known member of `RunKind`,

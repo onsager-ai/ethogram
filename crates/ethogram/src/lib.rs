@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
 mod union_unknown_validation;
@@ -322,6 +322,8 @@ impl<'de> Deserialize<'de> for ControlKind {
 
 /// An explanation of a control echo, open at parse and validation. Unknown
 /// values retain their exact string and remain subject to the excerpt bound.
+/// A typed `Unknown` spelling a known member is `Malformed` at validation:
+/// representability applies even though unfamiliar strings are accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlAppliedReason {
     NoSuchDecision,
@@ -346,12 +348,6 @@ impl ControlAppliedReason {
             Self::Rejected => "rejected",
             Self::Unknown(value) => value,
         }
-    }
-}
-
-impl Serialize for ControlAppliedReason {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -1312,11 +1308,13 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 
 /// Validates whether a producer should emit `payload` for `event_type`.
 ///
-/// Typed `Unknown` values in [`RunKind`], [`RunOutcome`], [`ControlKind`],
-/// [`CaptureRefusalCause`], and [`DecisionKind`] must not spell a known
-/// member. These are `Malformed` and checked before JSON conversion, which
-/// would erase the variant. Their unfamiliar strings remain `UnknownMember`
-/// under closed-union validation.
+/// Every union carrying a typed `Unknown` must use its known variant for a
+/// known spelling. Otherwise the value is `Malformed`: it cannot round-trip
+/// as itself. This representability check runs before JSON conversion erases
+/// the variant, including for the open [`ControlAppliedReason`] union.
+/// Closedness is separate: unfamiliar strings are `UnknownMember` only for
+/// [`RunKind`], [`RunOutcome`], [`ControlKind`], [`CaptureRefusalCause`], and
+/// [`DecisionKind`]. Both sets are declared in `union_unknown_validation`.
 ///
 /// After the typed check, two universal bounds (issue #28) apply to **every** event
 /// regardless of whether `event_type` is recognised: every string leaf
@@ -1343,7 +1341,7 @@ where
     P: Serialize + ?Sized,
 {
     // Inspect typed Unknown variants before JSON conversion erases them.
-    union_unknown_validation::check(event_type, payload)?;
+    union_unknown_validation::check_representability(event_type, payload)?;
     // The payload itself failed to serialise: a representation failure, not
     // a stated rule broken by an otherwise representable value.
     let payload = serde_json::to_value(payload)
@@ -1362,26 +1360,10 @@ where
 
     if event_type == RUN_STARTED {
         let started = decode_payload::<RunStartedPayload>(payload)?;
-        if let RunKind::Unknown(value) = started.kind {
-            return Err(ValidationError::new(
-                ValidationErrorKind::UnknownMember {
-                    path: "payload.kind".to_owned(),
-                    value: value.to_owned(),
-                },
-                format!("RunStartedPayload.kind has unknown value: {value}"),
-            ));
-        }
+        union_unknown_validation::check_closedness(event_type, started.kind.as_str())?;
     } else if event_type == RUN_FINISHED {
         let finished = decode_payload::<RunFinishedPayload>(payload)?;
-        if let RunOutcome::Unknown(value) = finished.outcome {
-            return Err(ValidationError::new(
-                ValidationErrorKind::UnknownMember {
-                    path: "payload.outcome".to_owned(),
-                    value: value.to_owned(),
-                },
-                format!("RunFinishedPayload.outcome has unknown value: {value}"),
-            ));
-        }
+        union_unknown_validation::check_closedness(event_type, finished.outcome.as_str())?;
         validate_scalar_bound(
             finished.reason.as_deref(),
             "RunFinishedPayload.reason",
@@ -1422,15 +1404,7 @@ where
         // conditioned rules: those rules (decisionId/optionId only for
         // "answer", text required for "steer") only have anything to say
         // about a kind this SDK recognises.
-        if let ControlKind::Unknown(value) = &requested.kind {
-            return Err(ValidationError::new(
-                ValidationErrorKind::UnknownMember {
-                    path: "payload.kind".to_owned(),
-                    value: value.to_owned(),
-                },
-                format!("ControlRequestedPayload.kind has unknown value: {value}"),
-            ));
-        }
+        union_unknown_validation::check_closedness(event_type, requested.kind.as_str())?;
         for (field, value) in [
             ("decisionId", &requested.decision_id),
             ("optionId", &requested.option_id),
@@ -1491,6 +1465,9 @@ where
                 "ControlAppliedPayload.reason is required when ok is false",
             ));
         }
+        if let Some(reason) = &applied.reason {
+            union_unknown_validation::check_closedness(event_type, reason.as_str())?;
+        }
         if let Some(ControlAppliedReason::Unknown(reason)) = &applied.reason {
             validate_scalar_bound(
                 Some(reason),
@@ -1500,15 +1477,7 @@ where
         }
     } else if event_type == CAPTURE_REFUSED {
         let refused = decode_payload::<CaptureRefusedPayload>(payload)?;
-        if let CaptureRefusalCause::Unknown(value) = refused.cause {
-            return Err(ValidationError::new(
-                ValidationErrorKind::UnknownMember {
-                    path: "payload.cause".to_owned(),
-                    value: value.to_owned(),
-                },
-                format!("CaptureRefusedPayload.cause has unknown value: {value}"),
-            ));
-        }
+        union_unknown_validation::check_closedness(event_type, refused.cause.as_str())?;
         validate_scalar_bound(
             refused.detail.as_deref(),
             "CaptureRefusedPayload.detail",
@@ -1516,15 +1485,7 @@ where
         )?;
     } else if event_type == DECISION_REQUESTED {
         let requested = decode_payload::<DecisionRequestedPayload>(payload)?;
-        if let DecisionKind::Unknown(value) = &requested.kind {
-            return Err(ValidationError::new(
-                ValidationErrorKind::UnknownMember {
-                    path: "payload.kind".to_owned(),
-                    value: value.to_owned(),
-                },
-                format!("DecisionRequestedPayload.kind has unknown value: {value}"),
-            ));
-        }
+        union_unknown_validation::check_closedness(event_type, requested.kind.as_str())?;
 
         if let Some(on_timeout) = requested.on_timeout.as_deref() {
             if requested.kind != DecisionKind::Permission {
@@ -4019,6 +3980,13 @@ mod tests {
         assert_eq!(
             serialise_event(&applied_interrupt).unwrap(),
             CONTROL_APPLIED_INTERRUPT_WIRE
+        );
+
+        let mut retained = applied_failed;
+        retained.payload.reason = Some(ControlAppliedReason::Unknown("not-live".to_owned()));
+        assert_eq!(
+            serialise_event(&retained).unwrap(),
+            CONTROL_APPLIED_FAILED_WIRE
         );
     }
 
