@@ -2451,7 +2451,7 @@ export interface FoldedRun {
  * a change to a consumer's rendering, not to an example.
  *
  * It folds **one** run. The corpus is a set of independent envelopes and must
- * not be grouped by `runId` and fed to this — see `@onsager-ai/ethogram-corpus`.
+ * not be grouped by `runId` and fed to this — see `conformance/README.md`.
  */
 export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
   let run: FoldedRun | undefined;

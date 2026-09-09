@@ -39,14 +39,21 @@ from the other.
   synthesised id collided — which is why the fixtures under one `runId` are
   still not a stream even when they do come from one run. The inventory test
   `every_run_id_belongs_to_exactly_one_capture` in
-  [`crates/ethogram-corpus/tests/corpus.rs`](../crates/ethogram-corpus/tests/corpus.rs)
+  [`crates/ethogram/tests/corpus_inventory.rs`](../crates/ethogram/tests/corpus_inventory.rs)
   pins every `runId` carrying more than one fixture, with its exact
   `(fixture, seq)` set, and fails by name on a new capture reusing one, on a
   fixture joining a group, and on an entry left stale by a withdrawal.
 - A fixture is **immutable once published**. Correcting a fixture changes what
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
 - Every payload variant gets at least one fixture. A payload with no fixture is
-  a payload the two implementations have never been shown to agree about.
+  a payload the two implementations have never been shown to agree about. The
+  harness reading `conformance/v1` directly, rather than a generated view of
+  it, is now the only mechanical check that a fixture was not forgotten, and
+  it is a stronger one than the regenerate-and-diff step it replaced: that
+  step could only prove a fixture's name appeared in two committed copies of
+  a list, while the harness proves both SDKs actually parse and agree on the
+  file itself. A fixture that reaches the harness cannot be forgotten,
+  because it is compared.
 - **A new fixture says what it is the first to pin**, in the PR that adds it:
   a payload shape, a union member, or a boundary no existing fixture reaches.
   The corpus already holds five fixtures that pin a shape another fixture
@@ -292,22 +299,3 @@ single way (#60). Unknown types are open by design, which makes this both
 the shape the protocol promises most about and the one a consumer is
 likeliest to meet from a newer producer — worth an input rather than an
 arithmetic identity.
-
-## Library views
-
-The `ethogram-corpus` crate and `@onsager-ai/ethogram-corpus` package expose
-the canonical files to consumers without requiring them to know this
-repository's layout. They are separate libraries that depend on the SDKs; the
-SDKs never depend on the corpus.
-
-Their committed generated modules are views of this directory, not independent
-fixture definitions. After adding a captured `v1/*.json` fixture, run:
-
-```sh
-pnpm run generate:corpus
-```
-
-The generator sorts file names by UTF-8 bytes and rewrites both language
-modules deterministically. CI reruns it and rejects any working-tree diff, so
-a directory fixture missing from either module and a stale module entry whose
-file was removed both fail the same check.

@@ -13,7 +13,7 @@ together on the supersession rule would leave every remaining test green while
 removing the only band pin in the byte diff, the only cross-SDK check of
 Rust's typed retention, and the only input on the harness's untyped-only
 branch. `the_permanent_agreement_inputs_are_still_present` in
-`crates/ethogram-corpus/tests/corpus.rs` fails by file name if one of the
+`crates/ethogram/tests/corpus_inventory.rs` fails by file name if one of the
 three goes missing, with the reason it was there.
 
 ## Superseded by a real capture

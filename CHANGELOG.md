@@ -12,6 +12,32 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The corpus libraries are deleted (#70)
+
+`ethogram-corpus` (the crate and the `@onsager-ai/ethogram-corpus` package)
+exposed the canonical `conformance/v1` files to consumers as generated views,
+kept in sync with a `generate:corpus` script and a CI diff check. The audit on
+#70 found zero dependents across ostrom, umwelt, chreode and ostrom-hub — six
+grep patterns, zero files — so nothing a consumer used is lost.
+
+Both libraries, the generator script, and the "Check generated corpus views"
+CI step are gone. The two tests that enforce real corpus rules,
+`every_run_id_belongs_to_exactly_one_capture` and
+`the_permanent_agreement_inputs_are_still_present`, never touched the library
+API — they read `conformance/v1` and `conformance/handwritten-agreement-inputs`
+through `std::fs` and call `ethogram::parse_event` — so they move, verbatim,
+to `crates/ethogram/tests/corpus_inventory.rs`.
+
+The repository gains a stronger guarantee in the same stroke: the conformance
+harness reading `conformance/v1` directly is now the only mechanical check
+that a fixture was not forgotten, and it proves more than the step it
+replaces did. The generator-and-diff check could only prove a fixture's name
+appeared in two committed copies of a list; the harness proves both SDKs
+actually parse and agree on the file itself. A fixture that reaches the
+harness cannot be forgotten, because it is compared.
+
+No wire byte, fixture, or SDK behaviour changed.
+
 ### Three descriptions corrected by the audit (#70)
 
 `foldRun` was documented as a reference implementation "not a consumer-facing
