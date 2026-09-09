@@ -8,7 +8,7 @@ immutability rule**.
 difference is not cosmetic.** Some stand in for vocabulary a producer has not
 emitted yet, and a real captured fixture replaces them when one does. Three
 others can never be superseded, because no producer emits their shape:
-each exists to hold a property the corpus cannot hold. Retiring all eight
+each exists to hold a property the corpus cannot hold. Retiring all six
 together on the supersession rule would leave every remaining test green while
 removing the only band pin in the byte diff, the only cross-SDK check of
 Rust's typed retention, and the only input on the harness's untyped-only
