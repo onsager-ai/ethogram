@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "run.finished",
+  "runId": "run-band-cost",
+  "seq": 2,
+  "ts": "2026-09-09T00:00:01.000Z",
+  "payload": {
+    "costUsd": 2.5e-6,
+    "durationMs": 1200,
+    "outcome": "completed"
+  }
+}

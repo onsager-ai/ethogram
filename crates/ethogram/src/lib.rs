@@ -5982,6 +5982,16 @@ mod tests {
         // keeps its own wire representation (or, for the integral float,
         // takes the same integer form a *known* integral field would) rather
         // than drifting into a different one.
+        //
+        // The `fraction` case sits inside the band `[1e-6, 1e-5)` where the
+        // two SDKs' notation diverged before the canonicaliser (issue #9,
+        // class 4). That band is now pinned by the harness as well, in
+        // `conformance/handwritten-agreement-inputs/run-finished-band-cost.json`,
+        // rather than only by this literal and its TypeScript twin. This test
+        // still earns its place, and is not superseded: it reaches the number
+        // through the typed payload's `#[serde(flatten)]` buffering layer,
+        // which the harness never touches because `parse_event` keeps the
+        // payload as a `Value` (issue #57).
         let input = r#"{"kind":"loop","actor":"builder","harness":"codex","bigInt":9007199254740991,"smallInt":1,"integralFloat":2.0,"fraction":0.000001}"#;
 
         assert_eq!(

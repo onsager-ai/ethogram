@@ -3042,6 +3042,15 @@ describe("payload tolerance (issue #12)", () => {
     // the safe bound, a small integer, an integral-valued float, and a
     // non-integral value must each keep their own canonical representation
     // (issue #9) after passing through as an unrecognised field.
+    //
+    // The `fraction` case sits inside the band `[1e-6, 1e-5)` where the two
+    // SDKs' notation diverged before the canonicaliser (issue #9, class 4).
+    // That band is now pinned by the harness as well, in
+    // `conformance/handwritten-agreement-inputs/run-finished-band-cost.json`,
+    // rather than only by this literal and its Rust twin. The pair is kept
+    // rather than retired: each half covers its own SDK's typed payload
+    // parser, and on the Rust side the harness cannot reach that parser at
+    // all (issue #57).
     const raw = {
       v: 1,
       type: "run.started",
