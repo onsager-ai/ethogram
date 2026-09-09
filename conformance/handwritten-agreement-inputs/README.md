@@ -25,21 +25,36 @@ been asserting separately (#53):
 - **`run-started-unknown-fields.json`** carries unfamiliar payload keys
   sorting both before the first known key (`0alpha`) and after the last
   (`zzzTail`), plus a nested object and an array, so key ordering is compared
-  across the boundary rather than only at the end.
+  across the boundary rather than only at the end. It also carries four
+  number shapes (issue #57): a large integer just inside the safe bound
+  (`bigInt`), a small integer (`smallInt`), an integral-valued float
+  (`integralFloat`, stored as `2.0`), and a non-integral value inside the
+  divergent `[1e-6, 1e-5)` band (`fraction`, stored as `0.000001`).
 
-  **Read what this second one proves narrowly.** It catches TypeScript
-  dropping an unknown field, because `parseEvent` there routes a known `type`
-  through its typed payload parser. It does **not** catch Rust dropping one:
-  Rust's `parse_event` keeps the payload as a `serde_json::Value` and never
-  constructs `RunStartedPayload`, so its `#[serde(flatten)]` retention is not
-  on this path at all. Removing that retention leaves this input green. The
-  tolerance clause owed from #12 is therefore still owed, and issue #57
-  carries the harness gap behind it.
+  **This input now catches Rust dropping an unknown field, too.** The Rust
+  conformance binary deserialises this input's payload into
+  `RunStartedPayload` and re-serialises it through the same canonicaliser as
+  a third, typed column (issue #57), compared against both Rust's untyped
+  column and TypeScript's. Reverting `RunStartedPayload.extra`'s
+  `#[serde(flatten)]` to `#[serde(skip)]` now fails `./conformance/run.sh`,
+  naming this input, where it previously stayed green — this input's earlier
+  README note said exactly the opposite, and issue #57 is what closed the
+  gap. The four number shapes above replace two hand-synced unit tests that
+  used to be the only thing checking that `#[serde(flatten)]`'s internal
+  buffering does not perturb a number's wire representation: Rust's
+  `unknown_payload_numbers_round_trip_byte_identically` and TypeScript's
+  `"unknown payload numbers round-trip byte-identically"`. Both were removed
+  once the typed column was confirmed, by the same revert-and-check above,
+  to reach these numbers through this input.
 
 The conformance harness asserts that every input here validates cleanly, then
 compares both SDKs' production canonical serialisation byte for byte under
-`agreement/`. It reports this input count separately from captured fixtures
-and validation error cases. The corpus generator never reads this directory.
+`agreement/`. For an input whose `type` Rust recognises, it also compares a
+third, typed Rust column produced the same way as for the corpus (see the
+top-level `conformance/README.md`); an input of an unrecognised type is
+untyped-only, by design, and is reported as such. It reports this input
+count separately from captured fixtures and validation error cases. The
+corpus generator never reads this directory.
 
 `../handwritten-validation-inputs/` has the opposite invariant: every input
 there must produce its declared validation error. Keep the two sets separate

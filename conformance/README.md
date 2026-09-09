@@ -224,15 +224,37 @@ its echoes (#38); both SDK suites also pin their exact bytes from hand-built
 typed events. Two more cover number notation and unfamiliar payload keys
 (#53), described in that directory's README.
 
-**These inputs compare Rust's untyped path against TypeScript's typed one**,
-and so does the corpus. `parse_event` in Rust returns an `Event` whose
-payload is a `serde_json::Value` and never constructs `RunStartedPayload` or
-its siblings, while TypeScript's `parseEvent` routes a known `type` through
-its typed payload parser. Everything both sides canonicalise — key order,
-number notation, envelope shape — is compared here regardless. What is *not*
-compared is Rust's typed payload layer: its `#[serde(flatten)]` retention of
-unknown fields is exercised only by its own suite, because nothing in this
-harness deserialises into those structs. Issue #57 carries that gap.
+**Rust produces a third column here, and for the corpus (issue #57).**
+`parse_event` in Rust returns an `Event` whose payload is a
+`serde_json::Value`. It *does* construct `RunStartedPayload` or its sibling
+on the way, to check representability — but drops the result, so the typed
+value never reaches a serialiser and what that layer would **write** was
+never observable. TypeScript's `parseEvent` always routes a known `type`
+through its typed payload parser, so it has only ever had one column to
+compare. For
+every input whose `type` Rust recognises, the Rust conformance binary also
+deserialises the payload into that type's struct and re-serialises it
+through the same canonicaliser, writing the result to a second, typed
+output directory that mirrors the untyped one's layout. `run.sh` then
+compares three ways per such input — TypeScript, Rust untyped, Rust
+typed — rather than two: TypeScript vs. Rust untyped still proves the two
+hand-written implementations agree on the wire; Rust typed vs. Rust untyped
+additionally proves Rust's typed payload layer, including every payload's
+`#[serde(flatten)] extra` retention, can never quietly hold a different
+opinion of a payload than the wire does; and Rust typed vs. TypeScript
+closes the loop.
+
+An input whose `type` Rust does not recognise stays untyped-only by
+design — there is no typed struct to deserialise it into — and this is
+reported per input rather than left to be inferred from a count: the Rust
+binary's `_typed.json` inventory in the typed output directory records,
+for every fixture and agreement input, its path, its `type`, and whether a
+typed column was produced, and `run.sh` prints one line per input naming
+which comparisons ran. A reach assertion on both sides — inside the driver,
+and again in `run.sh` from the typed output directory's actual contents —
+fails by input name if that bookkeeping and the typed output directory ever
+disagree, rather than silently comparing fewer columns than an input
+warrants.
 
 ## Library views
 

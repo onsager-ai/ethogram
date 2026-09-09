@@ -5971,36 +5971,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_payload_numbers_round_trip_byte_identically() {
-        // The hazard named in the follow-up brief: `#[serde(flatten)]` routes
-        // deserialised values through serde's internal buffering layer, and
-        // that layer is known in some cases to change how a number is
-        // represented. Measured here: it does not, for any of the four
-        // shapes this protocol's number canonicalisation cares about
-        // (issue #9) — a large integer just inside the safe bound, a small
-        // integer, an integral-valued float, and a non-integral value. Each
-        // keeps its own wire representation (or, for the integral float,
-        // takes the same integer form a *known* integral field would) rather
-        // than drifting into a different one.
-        //
-        // The `fraction` case sits inside the band `[1e-6, 1e-5)` where the
-        // two SDKs' notation diverged before the canonicaliser (issue #9,
-        // class 4). That band is now pinned by the harness as well, in
-        // `conformance/handwritten-agreement-inputs/run-finished-band-cost.json`,
-        // rather than only by this literal and its TypeScript twin. This test
-        // still earns its place, and is not superseded: it reaches the number
-        // through the typed payload's `#[serde(flatten)]` buffering layer,
-        // which the harness never touches because `parse_event` keeps the
-        // payload as a `Value` (issue #57).
-        let input = r#"{"kind":"loop","actor":"builder","harness":"codex","bigInt":9007199254740991,"smallInt":1,"integralFloat":2.0,"fraction":0.000001}"#;
-
-        assert_eq!(
-            serialise_event(&typed_run_started_event(input)).unwrap(),
-            r#"{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","bigInt":9007199254740991,"fraction":0.000001,"harness":"codex","integralFloat":2,"kind":"loop","smallInt":1}}"#
-        );
-    }
-
-    #[test]
     fn payload_without_unknown_fields_serialises_exactly_as_before() {
         // The extension field must not surface as an empty object when there
         // is nothing unknown to carry (issue #12).

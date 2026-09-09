@@ -3035,45 +3035,6 @@ describe("payload tolerance (issue #12)", () => {
     );
   });
 
-  test("unknown payload numbers round-trip byte-identically", () => {
-    // The hazard named in the follow-up brief is specific to Rust's
-    // `#[serde(flatten)]` buffering layer, which does not exist on this
-    // side, but the expectation is the same: a large integer just inside
-    // the safe bound, a small integer, an integral-valued float, and a
-    // non-integral value must each keep their own canonical representation
-    // (issue #9) after passing through as an unrecognised field.
-    //
-    // The `fraction` case sits inside the band `[1e-6, 1e-5)` where the two
-    // SDKs' notation diverged before the canonicaliser (issue #9, class 4).
-    // That band is now pinned by the harness as well, in
-    // `conformance/handwritten-agreement-inputs/run-finished-band-cost.json`,
-    // rather than only by this literal and its Rust twin. The pair is kept
-    // rather than retired: each half covers its own SDK's typed payload
-    // parser, and on the Rust side the harness cannot reach that parser at
-    // all (issue #57).
-    const raw = {
-      v: 1,
-      type: "run.started",
-      runId: "run-1",
-      seq: 1,
-      ts: "2026-09-06T00:00:01.000Z",
-      payload: {
-        kind: "loop",
-        actor: "builder",
-        harness: "codex",
-        bigInt: 9007199254740991,
-        smallInt: 1,
-        integralFloat: 2.0,
-        fraction: 0.000001,
-      },
-    };
-
-    assert.equal(
-      serialiseEvent(parseEvent(raw)),
-      '{"v":1,"type":"run.started","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"actor":"builder","bigInt":9007199254740991,"fraction":0.000001,"harness":"codex","integralFloat":2,"kind":"loop","smallInt":1}}',
-    );
-  });
-
   test("a payload without unknown fields serialises exactly as before", () => {
     const raw = {
       v: 1,
