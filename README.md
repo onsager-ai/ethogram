@@ -120,8 +120,24 @@ handoffs, and relays are kinds of run, not separate concepts.
 | `run.finished` | `outcome`, `durationMs` | `reason`, `truncated`, `costUsd`, `usage`, `estimated` | Closes one run; failures use `outcome: "failed"` and `reason` so every run has one terminal event shape. |
 
 `kind` is one of `loop`, `handoff`, `subagent`, `session`, `judgment`, or
-`relay`; a relay is a long-lived process that observes other runs and emits on
-its own run.
+`relay`. **Each is decided by a fact a producer can check, not by what its
+name suggests, and the checks are ordered so that no run fits two** (#64).
+Apply them top down and take the first that holds:
+
+| order | kind | the run | the check |
+|---|---|---|---|
+| 1 | `subagent` | started by another run and observed under it | `parentRunId` present, with `parentToolUseId` when a tool call spawned it |
+| 2 | `relay` | a long-lived process that observes other runs and emits on its own run, changing nothing itself | it emits about other runs; no work order, no repository change |
+| 3 | `loop` | started by a schedule the operator declared, recurring at that cadence | `schedule` present, and the scheduler started it rather than a person or a dispatch |
+| 4 | `session` | an interactive harness session in which the harness's own user initiates the turns | a person started it at the harness, with `actor` naming the harness's notion of that user; no `schedule`, no work order |
+| 5 | `judgment` | its product is a decision or verdict record and nothing else — an answer to a queued item, a gate evaluated on demand | it emits `decision.*` or a verdict and changes no repository; a principal's or operator's command started it |
+| 6 | `handoff` | an orchestrator or principal dispatches a work order to an agent to carry out unattended, once | `workOrder`, or an equivalent intent reference, present; no `schedule`; no `parentRunId`; the product is work rather than a verdict |
+
+The order is doing real work. A gatekeeper pass that runs on a schedule is a
+`loop`, because a schedule outranks what the run produces; the same evaluation
+run on demand is a `judgment`. Without the ordering both readings would be
+defensible, and two producers would disagree about the same run.
+
 `outcome` is one of `completed`, `failed`, `no-op`, `timed-out`, `interrupted`,
 `permission-denied`, `canceled`, `capped`, `blocked`, or `unstarted`. `capped`
 means a non-time ceiling such as tokens, cost, or turns was reached, with

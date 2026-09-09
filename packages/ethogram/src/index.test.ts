@@ -3575,3 +3575,53 @@ describe("consumer rule stated on every retaining union (issue #54)", () => {
     );
   });
 });
+
+describe("every run kind carries a definition (issue #64)", () => {
+  // Each member is decided by a fact a producer can check rather than by what
+  // its name suggests, and the definition lives on the union a consumer meets
+  // rather than only in the README. The marker is the phrase introducing that
+  // fact, not the whole sentence: matching the sentence would make this a
+  // formatting assertion someone deletes the first time a reflow breaks it.
+  const MARKER = "Decided by";
+
+  test("every RUN_KINDS member has a defining bullet in the RunKind doc", async () => {
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+      "utf8",
+    );
+
+    // The member list comes from the exported constant at run time, not from
+    // a scan of the source, so it cannot go blind and quietly check fewer
+    // members than exist. What can go blind is finding the doc comment, so
+    // that is asserted before anything is read out of it.
+    const declaration = source.indexOf("export type RunKind = KnownRunKind");
+    assert.ok(declaration !== -1, "RunKind declaration not found in index.ts");
+    const before = source.slice(0, declaration).trimEnd();
+    const start = before.lastIndexOf("/**");
+    assert.ok(
+      start !== -1 && before.endsWith("*/"),
+      "RunKind carries no doc comment to read definitions out of",
+    );
+    const doc = before.slice(start);
+
+    assert.ok(RUN_KINDS.length > 0, "RUN_KINDS is empty");
+    const undefined_ = RUN_KINDS.filter((kind) => {
+      const bullet = doc.indexOf(`\`"${kind}"\``);
+      if (bullet === -1) {
+        return true;
+      }
+      // Read to the next bullet, so a member cannot borrow the marker from
+      // the one after it.
+      const next = doc.indexOf("\n * - ", bullet);
+      return !doc
+        .slice(bullet, next === -1 ? undefined : next)
+        .includes(MARKER);
+    });
+
+    assert.deepEqual(
+      undefined_,
+      [],
+      `run kinds without a definition (${JSON.stringify(MARKER)} in their own bullet): ${undefined_.join(", ")}; every member is decided by a producer-checkable fact (#64)`,
+    );
+  });
+});

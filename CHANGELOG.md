@@ -12,6 +12,40 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The six run kinds are defined, and ordered (#64)
+
+`RunKind` enumerated six members and defined one. `relay` had a sentence;
+`loop`, `handoff`, `subagent`, `session` and `judgment` had only their names,
+in the README, in both SDKs, and in #5's ruling. A consumer choosing between
+them was reasoning from connotation, which is how two producers come to
+disagree about the same run.
+
+Each member now carries a definition and **the producer-checkable fact that
+decides it** — `parentRunId`, observing-only, `schedule`, an interactive user,
+a verdict-only product, a dispatched work order — on the Rust variants, in the
+TypeScript union's doc comment, and in a README table. They are **ordered**,
+applied top down, so no run fits two: a scheduled gatekeeper pass is a `loop`
+because a schedule outranks what the run produces, while the same evaluation
+run on demand is a `judgment`.
+
+This writes down what ostrom already does rather than inventing: `pass.rs` →
+`loop`, `implement.rs` → `handoff`, `decision_answers.rs` → `judgment`,
+`run_events.rs` → `relay`.
+
+A source scan in each SDK asserts every member carries a definition and fails
+by name when one does not. The Rust scan cross-checks the variant list against
+`as_str`'s arms, so a reflow that hides a variant from it fails as a
+disagreement rather than as a smaller check.
+
+**Timing, not tidiness.** No captured fixture has ever carried a
+`run.started`, so no member has been observed in a real capture. The first
+producer to emit one supplies the first permanent evidence of what its kind
+means, under the immutability rule. These words land before that capture
+rather than after it.
+
+No wire byte, fixture or behaviour changed; a member's meaning is now written
+where a consumer meets it.
+
 ### A runId belongs to exactly one capture (#62)
 
 #46 ruled two things and #51 mechanised one. The test rejected two fixtures
