@@ -47,6 +47,17 @@ from the other.
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
 - Every payload variant gets at least one fixture. A payload with no fixture is
   a payload the two implementations have never been shown to agree about.
+- **A new fixture says what it is the first to pin**, in the PR that adds it:
+  a payload shape, a union member, or a boundary no existing fixture reaches.
+  The corpus already holds five fixtures that pin a shape another fixture
+  pins — three `decision.requested` at `kind: "tripwire"`, two at
+  `human_decides`, and three `agent.completed` differing only in `turns`
+  (#70). Those are real captures and stay: immutability binds them, and a
+  withdrawal is for a fixture that was a guess, never for one that is merely
+  redundant. The rule is forward-looking, and it exists because captures
+  arrive several fixtures at a time — 30 fixtures span 21 distinct
+  `(type, payload-key-set)` shapes, and without a stated bar that ratio only
+  falls.
 - **The corpus deliberately holds more than one shape of the same event type.**
   When a payload gains an optional field, the earlier capture stays and a new
   capture joins it, so the corpus keeps proving that both SDKs still read an
@@ -250,6 +261,17 @@ additionally proves Rust's typed payload layer, including every payload's
 `#[serde(flatten)] extra` retention, can never quietly hold a different
 opinion of a payload than the wire does; and Rust typed vs. TypeScript
 closes the loop.
+
+**That third comparison is redundant, deliberately (#70).** Byte equality is
+transitive, so if TypeScript equals Rust untyped and Rust typed equals Rust
+untyped, Rust typed equals TypeScript — the third comparison can never be the
+only one to fail, and detects nothing the first two miss. It is kept for the
+diagnostic: when a run goes red, three results say which column is the odd one
+out without the reader deriving it. The two *columns* are not redundant, and
+the distinction matters — dropping the typed column would lose the only check
+of Rust's retention on forward, which is what #57 added it for. Stated here
+so the next reader neither removes the comparison as dead weight nor credits
+it with proving something it cannot.
 
 An input whose `type` Rust does not recognise stays untyped-only by
 design — there is no typed struct to deserialise it into — and this is

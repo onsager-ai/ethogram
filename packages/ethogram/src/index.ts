@@ -2438,11 +2438,20 @@ export interface FoldedRun {
 }
 
 /**
- * Reference implementation of the lifecycle fold for one run, not a
- * consumer-facing run model. Unrelated events between the two lifecycle
- * markers are ignored; malformed lifecycle payloads and mismatched run ids
- * are rejected so the example cannot manufacture a coherent run from an
- * incoherent sequence.
+ * The lifecycle fold for one run: the two lifecycle markers and what can be
+ * read from them. Unrelated events between the markers are ignored; malformed
+ * lifecycle payloads and mismatched run ids are rejected, so this cannot
+ * manufacture a coherent run from an incoherent sequence.
+ *
+ * **This is consumer-facing and consumed.** ostrom-hub folds runs with it in
+ * `web/src/run-fold.ts`, `web/src/data/live-run.ts` and
+ * `web/src/pages/Components.tsx`, with three test files besides. It was
+ * documented as a reference implementation "not a consumer-facing run model"
+ * until #70 found that description had stopped being true — a change here is
+ * a change to a consumer's rendering, not to an example.
+ *
+ * It folds **one** run. The corpus is a set of independent envelopes and must
+ * not be grouped by `runId` and fed to this — see `@onsager-ai/ethogram-corpus`.
  */
 export function foldRun(events: Iterable<Event>): FoldedRun | undefined {
   let run: FoldedRun | undefined;
