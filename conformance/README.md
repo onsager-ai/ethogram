@@ -55,7 +55,15 @@ from the other.
   file itself. A fixture that reaches the harness cannot be forgotten,
   because it is compared.
 - **A new fixture says what it is the first to pin**, in the PR that adds it:
-  a payload shape, a union member, or a boundary no existing fixture reaches.
+  a payload shape, a union member, a boundary no existing fixture reaches, or
+  **a producer's rendering of an existing field**, where both forms conform
+  and the pair proves a consumer still reads each. That fourth item is not a
+  footnote. The rule first listed only the other three and would have excluded
+  a fixture pinning something nothing else does: ostrom#552 changes
+  `decision.requested.expiresAt` from nanoseconds with a numeric offset to
+  milliseconds with `Z`, and since neither this repository nor either SDK
+  constrains a payload timestamp's format, both renderings conform and the
+  difference is invisible to every check except a fixture carrying it.
   The corpus already holds five fixtures that pin a shape another fixture
   pins — three `decision.requested` at `kind: "tripwire"`, two at
   `human_decides`, and three `agent.completed` differing only in `turns`
@@ -66,16 +74,23 @@ from the other.
   `(type, payload-key-set)` shapes, and without a stated bar that ratio only
   falls.
 - **The corpus deliberately holds more than one shape of the same event type.**
-  When a payload gains an optional field, the earlier capture stays and a new
-  capture joins it, so the corpus keeps proving that both SDKs still read an
-  event emitted before the field existed. That is **backward compatibility**,
-  and it is a different property from the cross-SDK agreement above: agreement
-  asks whether two implementations read one document alike, backward
-  compatibility asks whether one implementation still reads a document its own
-  producer would no longer write. A corpus holding only the newest shape of
-  each type silently stops testing the second. `decision-answered-excuse.json`
-  and `decision-answered-excuse-requested-run.json` are the first such pair,
-  differing by one line.
+  When what a producer emits changes and both forms conform — a payload gains
+  an optional field, or an existing field's rendering moves, as
+  `decision.requested.expiresAt` does in ostrom#552 — the earlier capture
+  stays and a new capture joins it, so the corpus keeps proving that both SDKs
+  still read what an older producer wrote. **Presence and rendering both
+  count**; the rule was written for the first and the second arrived anyway,
+  which is the usual way a rule discovers it was stated too narrowly.
+
+  That is **backward compatibility**, and it is a different property from the
+  cross-SDK agreement above: agreement asks whether two implementations read
+  one document alike, backward compatibility asks whether one implementation
+  still reads a document its own producer would no longer write. A corpus
+  holding only the newest shape of each type silently stops testing the
+  second. `decision-answered-excuse.json` and
+  `decision-answered-excuse-requested-run.json` are the first such pair,
+  differing by one line — a field's presence. A pair differing by rendering
+  alone has not been captured yet.
 - Narration fields carry placeholder content only. The corpus is public and
   permanent; real transcripts are neither.
 

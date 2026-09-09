@@ -12,6 +12,30 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### A fixture may be first to pin a rendering (#70, ostrom#552)
+
+The fixture-selection rule added days ago said a new fixture must be first to
+pin a payload shape, a union member, or a boundary. It gains a fourth: **a
+producer's rendering of an existing field**, where both forms conform and the
+pair proves a consumer still reads each.
+
+The rule was about to exclude the first fixture that tested it. ostrom#552
+changes `decision.requested.expiresAt` from nanoseconds with a numeric offset
+to milliseconds with `Z`. Neither this repository nor either SDK constrains a
+payload timestamp's format, so both renderings conform — which is exactly why
+only a fixture can pin the difference, and why a rule listing three kinds of
+novelty was one short.
+
+The backward-compatibility rule is widened the same way: it spoke of a payload
+gaining an optional field, and now speaks of any conforming change in what a
+producer emits, presence or rendering.
+
+`decision-requested-permission.json` stays exactly as captured. It is
+immutable and is now the older rendering, so a post-#552 capture **joins** it
+rather than replacing it. No fixture is corrected, and none should be.
+
+Documentation only. No wire byte, fixture or behaviour changed.
+
 ### The corpus libraries are deleted (#70)
 
 `ethogram-corpus` (the crate and the `@onsager-ai/ethogram-corpus` package)
