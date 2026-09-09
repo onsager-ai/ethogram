@@ -1,0 +1,9 @@
+{
+  "type": "control.applied",
+  "payload": {
+    "controlId": "control-1",
+    "ok": true,
+    "by": 1
+  },
+  "expectedKind": "Malformed"
+}

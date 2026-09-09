@@ -88,6 +88,7 @@ fn answer_events_match_the_typescript_pinned_bytes() {
             ControlAppliedPayload {
                 control_id: "control-answer-1".to_owned(),
                 ok: reason.is_none(),
+                by: None,
                 reason,
                 truncated: None,
                 landed_in: None,

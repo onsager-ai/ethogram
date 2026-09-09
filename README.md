@@ -241,7 +241,7 @@ because a forwarder must still be able to relay it.
 | type | required payload | optional payload | meaning |
 |---|---|---|---|
 | `control.requested` | `controlId`, `kind`, `by` | `decisionId`, `optionId`, `text`, `truncated` | Records a request to interrupt or steer the run, or answer a waiting decision, naming the requesting principal. |
-| `control.applied` | `controlId`, `ok` | `reason`, `truncated`, `landedIn` | Records whether the runtime honoured the request, and where a hard kill landed. |
+| `control.applied` | `controlId`, `ok` | `by`, `reason`, `truncated`, `landedIn` | Records whether the runtime honoured the request, who applied it, and where a hard kill landed. |
 
 The known `kind` values are `interrupt`, `steer`, and `answer`. Unfamiliar
 strings are retained exactly at parse and reported as `UnknownMember` at
