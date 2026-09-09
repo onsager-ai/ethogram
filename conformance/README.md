@@ -30,6 +30,12 @@ from the other.
   stream, so `seq` values are deliberately **not contiguous** across the
   fixtures drawn from one capture: they are a selection from a run, not a
   complete stream, and a reader should not infer a gap from them.
+- **The corpus is a set of independent envelopes, not a stream.** Fixtures
+  sharing a `runId` are separate captures that happened to synthesise the same
+  id; folding the corpus by `runId` is an unsupported misuse. The inventory
+  test `no_two_fixtures_share_a_run_id_and_seq` in
+  [`crates/ethogram-corpus/tests/corpus.rs`](../crates/ethogram-corpus/tests/corpus.rs)
+  records the surviving historical collisions and rejects new ones.
 - A fixture is **immutable once published**. Correcting a fixture changes what
   agreement means, retroactively, in both SDKs at once. Add a new one instead.
 - Every payload variant gets at least one fixture. A payload with no fixture is

@@ -4,6 +4,12 @@
 //! maintained copy of it. The generated fixture registry uses `include_str!`
 //! to embed the canonical files themselves, and CI regenerates the registry
 //! from the directory and rejects any drift in either direction.
+//!
+//! The corpus is a set of independent envelopes, not a stream. Fixtures sharing
+//! a `runId` are separate captures that happened to synthesise the same id;
+//! folding the corpus by `runId` is an unsupported misuse. The inventory test
+//! `no_two_fixtures_share_a_run_id_and_seq` in `tests/corpus.rs` records the
+//! surviving historical collisions.
 
 mod corpus;
 
@@ -27,6 +33,12 @@ impl Fixture {
 }
 
 /// Returns every version 1 fixture in UTF-8 byte-order by file name.
+///
+/// These are independent envelopes, not a stream. Fixtures sharing a `runId`
+/// are separate captures that happened to synthesise the same id; folding this
+/// collection by `runId` is an unsupported misuse. The inventory test
+/// `no_two_fixtures_share_a_run_id_and_seq` in `tests/corpus.rs` records the
+/// surviving historical collisions.
 #[must_use]
 pub fn v1_fixtures() -> &'static [Fixture] {
     corpus::V1_FIXTURES
