@@ -7,10 +7,14 @@
   "payload": {
     "0alpha": "before-actor",
     "actor": "builder",
+    "bigInt": 9007199254740991,
+    "fraction": 0.000001,
     "harness": "codex",
+    "integralFloat": 2.0,
     "kind": "loop",
     "list": [{ "zebra": 1, "apple": 2 }, 3, "text"],
     "nested": { "zebra": 1, "apple": 2 },
+    "smallInt": 1,
     "zzzTail": "after-kind"
   }
 }

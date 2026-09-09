@@ -12,6 +12,55 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### A third column proves Rust's typed layer against itself (#57)
+
+Implements the design-lane ruling on #57 (2026-09-09). The harness compared
+Rust's untyped path — `parse_event` deserialises into
+`Event<serde_json::Value>` — against TypeScript's typed one, for every
+corpus fixture and agreement input alike. Rust *does* construct
+`RunStartedPayload` and its siblings on the way, inside
+`check_known_payload_representation`, but drops the result: the typed value
+never reached a serialiser, so what that layer would **write** — its
+`#[serde(flatten)] extra` retention above all — was in no cross-SDK
+comparison. Reverting that retention to `#[serde(skip)]` on
+`RunStartedPayload.extra` left `./conformance/run.sh` green.
+
+For every fixture and agreement input whose `type` the Rust driver
+recognises, it now also deserialises the payload into its typed struct,
+re-serialises through the same canonicaliser, and writes that as a third
+column. The harness compares all three byte-for-byte per input: TypeScript,
+Rust untyped, Rust typed. This both closes the #12 tolerance clause and
+asserts a stronger thing: Rust's typed round-trip equals its own untyped
+one, so the typed layer can never quietly hold a different opinion of a
+payload than the wire does. An unrecognised type stays untyped-only, and the
+driver's own inventory (`_typed.json` in the typed output directory) and
+`run.sh`'s per-input log line say so explicitly rather than by omission.
+
+A reach assertion — the third of this shape in the repository, after the
+lesson of #55 — runs on both sides: the driver checks that every input its
+own bookkeeping calls "typed" actually has a typed file on disk, and
+`run.sh` independently re-derives the same fact from the typed output
+directory's contents. Either one fails, naming the input, if a future
+change quietly stops writing a known type's typed column while still
+claiming to.
+
+`run-started-unknown-fields.json` gained four number shapes to its unknown
+payload keys — a large integer just inside the safe bound, a small integer,
+an integral-valued float, and a non-integral value in the divergent
+`[1e-6, 1e-5)` band — the same four the Rust `unknown_payload_numbers_round_trip_byte_identically`
+unit test and its TypeScript twin `"unknown payload numbers round-trip
+byte-identically"` pinned by hand. With the typed column now reaching those
+numbers through `RunStartedPayload`'s own `#[serde(flatten)]` layer (checked
+by reverting it and confirming `./conformance/run.sh` fails, before removing
+either test), both twins are retired: the harness covers what they covered.
+
+No corpus fixture and no wire byte changed. `run-started-unknown-fields.json`
+is an agreement input, not a corpus fixture, and is explicitly outside the
+immutability rule; a consumer repin takes the four additional payload keys
+on that one input, the `_typed.json` inventory file the Rust conformance
+binary now writes alongside its existing output, and the binary's new
+second (typed-output-directory) argument.
+
 ### The notation band enters the harness (#53)
 
 Two hand-written agreement inputs. `run-finished-band-cost.json` carries a
@@ -27,8 +76,9 @@ before the first known key and after the last, plus a nested object and an
 array.
 
 **A boundary this exposed, now written down.** Rust's `parse_event` returns
-an `Event` whose payload is a `serde_json::Value` and never constructs the
-typed payload structs; TypeScript's `parseEvent` routes a known `type`
+an `Event` whose payload is a `serde_json::Value`; it constructs the typed
+payload structs only to check representability and drops the result, so
+nothing they would write is observable. TypeScript's `parseEvent` routes a known `type`
 through its typed parser. So the harness — for agreement inputs and for
 every corpus fixture — compares Rust's untyped path against TypeScript's
 typed one. Canonicalisation is compared in full; Rust's
