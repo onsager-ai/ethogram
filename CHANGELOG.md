@@ -12,6 +12,24 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Three descriptions corrected by the audit (#70)
+
+`foldRun` was documented as a reference implementation "not a consumer-facing
+run model". It is consumed: ostrom-hub folds runs with it in three source
+files and three test files. Its doc now says so, because a change to a
+consumer's rendering should not look like a change to an example.
+
+`conformance/README.md` now states that the third of the harness's three
+comparisons — Rust typed against TypeScript — is redundant by transitivity
+and kept for the diagnostic. The two columns are not redundant; dropping the
+typed one would lose the only check of Rust's retention on forward.
+
+And a new fixture must now say, in the PR adding it, what it is the first to
+pin. Five existing fixtures pin a shape another already pins; they stay,
+because immutability binds a real capture whether or not it is redundant.
+
+Documentation only. No wire byte, fixture or behaviour changed.
+
 ### The `non_exhaustive` question, answered once (#67)
 
 The README now states the rule the `by` change raised: payload structs are
