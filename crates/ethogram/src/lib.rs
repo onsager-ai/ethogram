@@ -1029,6 +1029,16 @@ pub struct ControlRequestedPayload {
 pub struct ControlAppliedPayload {
     pub control_id: String,
     pub ok: bool,
+    /// The principal identity that applied the control, with the same meaning
+    /// as `by` on `control.requested`: an identity a consumer renders and
+    /// never interprets. Optional, because a runtime echoing a control it does
+    /// not support may have no separate applier to name (#67).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub by: Option<String>,
     /// Required when `ok` is false; also permitted on a positive echo.
     /// Unknown explanations are bounded at capture, per `truncated` below.
     #[serde(
@@ -4031,6 +4041,7 @@ mod tests {
         let applied = ControlAppliedPayload {
             control_id: "control-1".to_owned(),
             ok: true,
+            by: None,
             reason: None,
             truncated: None,
             landed_in: None,
@@ -4076,6 +4087,7 @@ mod tests {
             payload: ControlAppliedPayload {
                 control_id: "control-1".to_owned(),
                 ok: false,
+                by: None,
                 reason: Some(ControlAppliedReason::NotLive),
                 truncated: None,
                 landed_in: None,
@@ -4092,6 +4104,7 @@ mod tests {
             payload: ControlAppliedPayload {
                 control_id: "control-2".to_owned(),
                 ok: true,
+                by: None,
                 reason: None,
                 truncated: None,
                 landed_in: Some("tool-9".to_owned()),

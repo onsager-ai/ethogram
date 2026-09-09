@@ -485,6 +485,13 @@ export interface ControlAppliedPayload {
   controlId: string;
   ok: boolean;
   /**
+   * The principal identity that applied the control, with the same meaning as
+   * `by` on `control.requested`: an identity a consumer renders and never
+   * interprets. Optional, because a runtime echoing a control it does not
+   * support may have no separate applier to name (#67).
+   */
+  by?: string;
+  /**
    * Required when `ok` is false; also permitted on a positive echo.
    * Unknown explanations are bounded at capture, per `truncated` below.
    */
@@ -951,6 +958,7 @@ const CONTROL_REQUESTED_FIELDS = new Set<string>([
 const CONTROL_APPLIED_FIELDS = new Set<string>([
   "controlId",
   "ok",
+  "by",
   "reason",
   "truncated",
   "landedIn",
@@ -1504,12 +1512,14 @@ export function parseControlAppliedPayload(
 
   const controlId = requiredString(value, "controlId", name);
   const ok = requiredBoolean(value, "ok", name);
+  const by = optionalString(value, "by", name);
   const reason = optionalString(value, "reason", name);
   const truncated = optionalBoolean(value, "truncated", name);
   const landedIn = optionalString(value, "landedIn", name);
   return {
     controlId,
     ok,
+    ...(by === undefined ? {} : { by }),
     ...(reason === undefined ? {} : { reason }),
     ...(truncated === undefined ? {} : { truncated }),
     ...(landedIn === undefined ? {} : { landedIn }),

@@ -12,6 +12,42 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### `control.applied` gains a known `by` (#67)
+
+`by` names the principal identity that applied the control, with the same
+meaning as on `control.requested`: an identity a consumer renders and never
+interprets. Optional, because a runtime echoing a control it does not support
+may have no separate applier to name.
+
+**Additive, and no byte moved.** ostrom's bridge was already emitting it, so
+the first captured `control.applied` — `control-applied-answer.json`, now
+immutable — carried it through `extra` under the tolerance rule. Declaring it
+changes where a consumer meets the field, not what is on the wire: both Rust
+columns serialise that fixture identically before and after, verified by
+diffing the harness output across the change rather than by argument.
+
+A consumer repinning gets `by` as a typed optional field instead of an
+unknown one. Code that read it out of the extension map keeps compiling; it
+will simply stop finding it there, since a declared field no longer lands in
+`extra`.
+
+**Breaking for Rust code that builds `ControlAppliedPayload` with a struct
+literal.** Adding a field to a public struct without `#[non_exhaustive]`
+breaks every `ControlAppliedPayload { … }` initialiser, which must now name
+`by`. This is not speculation: four literals in this repository's own suites —
+three in the library tests, one in `tests/control_answer.rs` — failed to
+compile on the change, and were the first sign of it. Reading
+and deserialising are unaffected. Whether these payload structs should be
+`#[non_exhaustive]`, so that a future additive field is a wire change and not
+a source change, is a separate question this entry does not settle.
+
+A handwritten validation input pins the new field's diagnostic across both
+SDKs (`ControlAppliedPayload.by must be a string when present`), 23 error
+cases now. That input is doing more work than it looks: adding a field to one
+SDK and not the other changes **nothing** observable on the wire, because both
+retain an unknown field and emit the same bytes for it. The wrong-type
+diagnostic is where a one-sided change becomes visible.
+
 ### The first real permission exchange enters the corpus (ostrom#541)
 
 Five fixtures from two captures of ostrom's permission bridge, taken from the
