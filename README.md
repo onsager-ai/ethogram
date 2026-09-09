@@ -329,6 +329,24 @@ conversion would erase the distinction. Serialisation still emits the exact
 string. TypeScript has no typed `Unknown` wrapper; its strings receive the
 rules of the member they spell.
 
+**A consequence worth knowing before you test this rule: it cannot be observed
+through JSON.** Converting the payload first erases the `Unknown`, so a check
+that round-trips will pass and look as though the rule never fires.
+
+```rust
+// Sees the rule: the typed value still knows it is an Unknown.
+validate(CONTROL_APPLIED, &payload)                          // -> Malformed
+
+// Cannot see it: conversion already collapsed Unknown("rejected")
+// into something indistinguishable from the known Rejected variant.
+validate(CONTROL_APPLIED, &serde_json::to_value(&payload)?)  // -> Ok(())
+```
+
+Both answers are right for what was asked. The second is validating a document,
+and that document is exactly what a well-behaved producer would have written —
+which is the point of the rule rather than a hole in it. The defect is
+unobservable on the wire, so it has to be refused before the value reaches it.
+
 `serialise_validation_error` / `serialiseValidationError` emits only the kind
 and its fields in canonical JSON, using the event payload serialiser's UTF-8
 key ordering and number notation. The compatibility diagnostic is separate

@@ -56,6 +56,13 @@ Sixteen new handwritten validation inputs bring wrong-type failures into the
 harness's byte comparison. The 24 captured fixtures and event wire bytes are
 unchanged. Pin the revision introducing this entry to take this change.
 
+**Breaking for a consumer test that pins the old wording.** Event bytes did not
+move, so nothing on the wire changed — but the *message* text did, at `9be1654`.
+A consumer asserting on serde's phrasing (`invalid type: integer \`1\`, expected
+a string`) sees the new form (`RunStartedPayload.parentRunId must be a string
+when present`) and fails on repin. That failure is a test needing the new text,
+not a defect. Nothing else about the repin is affected.
+
 The entries below are available from revision `9e3cd37`.
 
 ### The `answer` control verb (#38, #39)
@@ -89,8 +96,12 @@ when `ok` is true — a runtime may explain a positive echo.
 
 - **`decision.*`** (#24), and its emitter corrected: an answer is emitted by the
   invocation that applies it, on its own run, because the raising run has usually
-  finished and a sink refuses appends to a closed run (#34). `reversal` accepts
-  an action id such as `revoke:required_checks`, not only an offered option (#35).
+  finished and a sink refuses appends to a closed run (#34). The same change adds
+  **`decision.answered.requestedRunId`**, optional, naming the run that emitted
+  the corresponding `decision.requested` — needed precisely because the two
+  events now provably sit on different runs, which turned finding the asking run
+  from an edge case into the common one. `reversal` accepts an action id such as
+  `revoke:required_checks`, not only an offered option (#35).
 - **`capture.refused`** (#22), carrying the bound and the count but never the
   content that breached it.
 - **`control.*`** (#21) and **`run.*`** outcomes `blocked` and `unstarted` (#32).
