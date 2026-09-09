@@ -256,6 +256,14 @@ fails by input name if that bookkeeping and the typed output directory ever
 disagree, rather than silently comparing fewer columns than an input
 warrants.
 
+That untyped-only branch is exercised by a real input rather than only by
+the counts: `handwritten-agreement-inputs/unrecognised-type.json` carries a
+`type` no vocabulary will take, and is the one input the harness compares a
+single way (#60). Unknown types are open by design, which makes this both
+the shape the protocol promises most about and the one a consumer is
+likeliest to meet from a newer producer — worth an input rather than an
+arithmetic identity.
+
 ## Library views
 
 The `ethogram-corpus` crate and `@onsager-ai/ethogram-corpus` package expose

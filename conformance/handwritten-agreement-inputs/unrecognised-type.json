@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "x-conformance.unrecognised-by-design",
+  "runId": "run-unrecognised-type",
+  "seq": 1,
+  "ts": "2026-09-09T00:00:02.000Z",
+  "payload": {
+    "0alpha": "sorts-first",
+    "integralFloat": 2.0,
+    "list": [{ "zebra": 1, "apple": 2 }, 3, "text"],
+    "nested": { "zebra": 1, "apple": 2 },
+    "zzzTail": "sorts-last"
+  }
+}

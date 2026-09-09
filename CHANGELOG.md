@@ -12,6 +12,28 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### An input for the branch the counts only claimed (#60)
+
+The three-column harness (#57) sends an input whose `type` Rust does not
+recognise down an untyped-only path with one comparison instead of three.
+No input had ever taken it: all 32 use a recognised `type`, so the run
+reported `0 stayed untyped-only` and the branch was proved by arithmetic.
+
+`handwritten-agreement-inputs/unrecognised-type.json` carries the `type`
+`x-conformance.unrecognised-by-design`. Unknown types are open by design
+(#12) — such an event must parse, canonicalise and forward byte-for-byte,
+which is what lets the vocabulary grow without a version bump — and this is
+now the one input that makes the harness prove it. It is also the only
+cross-SDK check that an unrecognised type passes `validate` cleanly rather
+than being refused.
+
+Counts read 32 typed and 1 untyped-only. A driver that wrongly produced a
+typed column for it is caught by name: `typed file
+agreement/unrecognised-type.json exists on disk but the inventory does not
+record it as typed`.
+
+No wire byte, fixture or behaviour changed.
+
 ### A third column proves Rust's typed layer against itself (#57)
 
 Implements the design-lane ruling on #57 (2026-09-09). The harness compared
