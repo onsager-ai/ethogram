@@ -194,6 +194,37 @@ export type KnownRunKind = (typeof RUN_KINDS)[number];
  * for a newer vocabulary. Consumers must render it with its raw value, must
  * never map it onto a known kind, and, when acting on it, must treat it as
  * "not this", never as a default.
+ *
+ * Each member is decided by a fact a producer can check rather than by what
+ * its name suggests (#64):
+ *
+ * - `"subagent"` — a run started by another run and observed under it.
+ *   Decided by: `parentRunId` present, with `parentToolUseId` when a tool call
+ *   spawned it.
+ * - `"relay"` — a long-lived process that observes other runs and emits on its
+ *   own run, and changes nothing itself. Decided by: it emits about other
+ *   runs, with no work order and no repository change.
+ * - `"loop"` — a run started by a schedule the operator declared, recurring at
+ *   that cadence. Decided by: `schedule` present, and the scheduler started it
+ *   rather than a person or a dispatch.
+ * - `"session"` — an interactive harness session in which the harness's own
+ *   user initiates the turns. Decided by: a person started it at the harness,
+ *   with `actor` naming the harness's notion of that user; no `schedule` and
+ *   no work order.
+ * - `"judgment"` — a run whose product is a decision or verdict record and
+ *   nothing else: an answer to a queued item, a gate evaluated on demand.
+ *   Decided by: it emits `decision.*` or a verdict and changes no repository,
+ *   and a principal's or operator's command started it.
+ * - `"handoff"` — a run in which an orchestrator or principal dispatches a
+ *   work order to an agent to carry out unattended, once. Decided by:
+ *   `workOrder`, or an equivalent intent reference, present; no `schedule`; no
+ *   `parentRunId`; and the product is work rather than a verdict.
+ *
+ * They are **ordered**, so no run fits two: apply the checks in the order
+ * listed above and take the first that holds. That order is what settles the
+ * otherwise ambiguous cases — a scheduled gatekeeper pass is a `"loop"`,
+ * because a schedule outranks what the run produces, while the same
+ * evaluation run on demand is a `"judgment"`.
  */
 export type RunKind = KnownRunKind | (string & {});
 

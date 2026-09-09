@@ -144,14 +144,49 @@ const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 /// never as a default.
 /// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
 /// a known member is `Malformed` because it cannot round-trip as that variant.
+///
+/// Each member is decided by a fact a producer can check rather than by what
+/// its name suggests, and they are **ordered**, so no run fits two. Apply the
+/// checks top down and take the first that holds (#64):
+///
+/// 1. `parentRunId` present — [`Subagent`](Self::Subagent)
+/// 2. observes other runs and changes nothing — [`Relay`](Self::Relay)
+/// 3. `schedule` present — [`Loop`](Self::Loop)
+/// 4. started interactively by the harness's user — [`Session`](Self::Session)
+/// 5. the product is a decision or verdict only — [`Judgment`](Self::Judgment)
+/// 6. otherwise, a dispatched work order — [`Handoff`](Self::Handoff)
+///
+/// The order is what settles the cases that would otherwise be ambiguous: a
+/// scheduled gatekeeper pass is a `Loop`, because a schedule outranks what the
+/// run produces, while the same evaluation run on demand is a `Judgment`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunKind {
+    /// A run started by a schedule the operator declared, recurring at that
+    /// cadence. Decided by: `schedule` present, and the scheduler started it
+    /// rather than a person or a dispatch.
     Loop,
+    /// A run in which an orchestrator or principal dispatches a work order to
+    /// an agent to carry out unattended, once. Decided by: `workOrder`, or an
+    /// equivalent intent reference, present; no `schedule`; no `parentRunId`;
+    /// and the product is work rather than a verdict.
     Handoff,
+    /// A run started by another run and observed under it. Decided by:
+    /// `parentRunId` present, with `parentToolUseId` when a tool call spawned
+    /// it.
     Subagent,
+    /// An interactive harness session in which the harness's own user
+    /// initiates the turns. Decided by: a person started it at the harness,
+    /// with `actor` naming the harness's notion of that user; no `schedule`
+    /// and no work order.
     Session,
+    /// A run whose product is a decision or verdict record and nothing else —
+    /// an answer to a queued item, a gate evaluated on demand. Decided by: it
+    /// emits `decision.*` or a verdict and changes no repository, and a
+    /// principal's or operator's command started it.
     Judgment,
-    /// A long-lived process that observes other runs and emits on its own run.
+    /// A long-lived process that observes other runs and emits on its own run,
+    /// and changes nothing itself. Decided by: it emits about other runs, with
+    /// no work order and no repository change.
     Relay,
     /// An unfamiliar member, retained exactly as it appeared on the wire.
     Unknown(String),
@@ -2552,6 +2587,90 @@ mod tests {
                 .to_string()
                 .contains("RunStartedPayload.kind has unknown value: pipeline"),
             "error was: {error}"
+        );
+    }
+
+    #[test]
+    fn every_run_kind_member_carries_a_definition() {
+        // Issue #64: each member is decided by a fact a producer can check,
+        // and the definition lives on the variant so a consumer meets it at
+        // the type rather than in a README they may never open. The marker
+        // is the phrase that introduces that fact, not the whole sentence —
+        // matching the whole thing would make this a formatting assertion
+        // someone deletes the first time a reflow breaks it.
+        const MARKER: &str = "Decided by";
+
+        let source = include_str!("lib.rs");
+        let body = source
+            .split_once("pub enum RunKind {")
+            .expect("RunKind is declared in this file")
+            .1
+            .split_once("\n}")
+            .expect("the RunKind declaration closes")
+            .0;
+
+        // Two independent scans of the same declaration. A scan that goes
+        // blind fails open — it would only check the members it happened to
+        // find — so the variant list and the wire-string list must agree
+        // before either is trusted (the #55 lesson, and the #57 shape).
+        let mut declared: Vec<&str> = Vec::new();
+        let mut documented: Vec<&str> = Vec::new();
+        let mut doc = String::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if let Some(text) = line.strip_prefix("///") {
+                doc.push(' ');
+                doc.push_str(text.trim());
+            } else if let Some(name) = line.strip_suffix(',') {
+                // `Unknown(String)` is the retaining variant, not a member of
+                // the vocabulary, so it is deliberately outside this rule.
+                if name != "Unknown(String)" {
+                    declared.push(name);
+                    if doc.contains(MARKER) {
+                        documented.push(name);
+                    }
+                }
+                doc.clear();
+            } else if !line.starts_with("#[") && !line.is_empty() {
+                doc.clear();
+            }
+        }
+
+        let wire_members: Vec<&str> = source
+            .split_once("pub fn as_str(&self) -> &str {")
+            .expect("RunKind::as_str is declared in this file")
+            .1
+            .split_once("\n    }")
+            .expect("as_str closes")
+            .0
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Self::"))
+            .filter_map(|arm| arm.split_once(" =>"))
+            .map(|(name, _)| name)
+            .filter(|name| *name != "Unknown(value)")
+            .collect();
+
+        assert_eq!(
+            declared, wire_members,
+            "the RunKind variant scan and the as_str scan disagree: declared {declared:?}, \
+             as_str {wire_members:?}. One of the two has gone blind rather than a member \
+             having been removed"
+        );
+        assert!(
+            !declared.is_empty(),
+            "source scan found no RunKind members; the scan has gone blind"
+        );
+
+        let undefined: Vec<&str> = declared
+            .iter()
+            .filter(|name| !documented.contains(name))
+            .copied()
+            .collect();
+        assert!(
+            undefined.is_empty(),
+            "RunKind members without a definition ({MARKER:?} in their doc comment): {}; \
+             every member is decided by a producer-checkable fact (#64)",
+            undefined.join(", ")
         );
     }
 
