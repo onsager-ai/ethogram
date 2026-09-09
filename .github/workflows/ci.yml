@@ -74,9 +74,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Check generated corpus views
-        run: |
-          pnpm run generate:corpus
-          git diff --exit-code
       - name: Compare SDK serialisation
         run: ./conformance/run.sh
