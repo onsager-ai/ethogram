@@ -47,6 +47,27 @@ been asserting separately (#53):
   once the typed column was confirmed, by the same revert-and-check above,
   to reach these numbers through this input.
 
+One more exists to prove the *other* branch of that comparison (#60):
+
+- **`unrecognised-type.json`** carries the `type`
+  `x-conformance.unrecognised-by-design`, which no vocabulary will ever take.
+  Unknown types are open by design (#12): such an event must parse,
+  canonicalise and forward byte-for-byte, and this is the only input in the
+  repository that makes the harness do it. Rust has no struct to deserialise
+  it into, so it stays **untyped-only** — `run.sh` reports it as `compared 1
+  way` where every other input reports three.
+
+  Before this input the untyped-only branch had never run: all 32 other
+  inputs use a recognised `type`, so the counts said `0 stayed untyped-only`
+  and the branch was proved by arithmetic rather than by an input. Its
+  payload keeps unfamiliar keys at both ends, a nested object, an array and
+  an integral-valued float, so untyped canonicalisation is exercised too, not
+  merely the routing decision.
+
+  It is also the harness's only cross-SDK check that an unrecognised type
+  passes `validate` cleanly rather than being refused — every input here must
+  validate, and for an unknown type only the universal bounds from #28 apply.
+
 The conformance harness asserts that every input here validates cleanly, then
 compares both SDKs' production canonical serialisation byte for byte under
 `agreement/`. For an input whose `type` Rust recognises, it also compares a
