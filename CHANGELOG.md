@@ -12,6 +12,17 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Negative zero asserted on both sides (#52)
+
+Class 2 of #9 — negative zero serialises as `0` — was pinned in Rust and
+nowhere in TypeScript, which took it from `JSON.stringify(-0)` with no test
+naming the rule. Two TypeScript tests now assert it, at every depth and for
+a `-0` arriving on the wire rather than only one built in the test file.
+
+**Nothing to adapt to.** No wire byte, fixture or behaviour changed; the
+SDKs already agreed. Recorded because the rule now has an assertion on both
+sides instead of one, which is the state the ruling asked for.
+
 ### Consumer rule for unknown members, stated once (#54)
 
 The README's tolerant-reader paragraph and all six retaining unions'

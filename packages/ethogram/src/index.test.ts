@@ -2815,6 +2815,59 @@ describe("serialiseEvent payload key sorting", () => {
   });
 });
 
+describe("serialiseEvent number canonicalisation (issue #9)", () => {
+  // Class 2 of issue #9: negative zero serialises as `0`. Rust pins it in
+  // `negative_zero_serialises_as_zero`; until now this side had no
+  // assertion at all, which is what #52 was filed for.
+  //
+  // The behaviour is correct today because `JSON.stringify(-0)` is `"0"`.
+  // But that is a language behaviour, not a decision this SDK records, and
+  // the ruling asked for the assertion specifically so the rule "does not
+  // depend on a cast". `serialiseEvent` is not a thin wrapper around
+  // `JSON.stringify`: it rebuilds the envelope field by field and walks the
+  // payload recursively to sort keys. A future step in that walk could
+  // reconstruct a number and preserve the sign with nothing to notice.
+
+  test("negative zero serialises as 0 at every depth", () => {
+    // Checked at the top level, inside a nested object, and inside an array
+    // because the Rust canonicaliser is recursive: the two SDKs have to
+    // agree at every depth, not only at the first one a reader tries.
+    const event: Event = {
+      ...completeEvent(),
+      payload: {
+        value: -0,
+        nested: { value: -0 },
+        list: [-0, 1.5, -0],
+      },
+    };
+
+    assert.equal(
+      serialiseEvent(event),
+      '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"list":[0,1.5,0],"nested":{"value":0},"value":0}}',
+    );
+  });
+
+  test("negative zero arriving on the wire also serialises as 0", () => {
+    // The realistic path rather than a hand-built payload: a producer
+    // without this canonicalisation writes `-0.0` — serde_json does — and
+    // this SDK reads and re-emits it. `JSON.parse` yields the double `-0`,
+    // so the flattening has to survive the round trip and not merely apply
+    // to a literal written in this file.
+    const wire =
+      '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"value":-0.0}}';
+    const parsed = parseEvent(JSON.parse(wire) as unknown);
+
+    assert.ok(
+      Object.is((parsed.payload as { value: number }).value, -0),
+      "the parsed payload should still hold -0, or this test proves nothing",
+    );
+    assert.equal(
+      serialiseEvent(parsed),
+      '{"v":1,"type":"test.happened","runId":"run-1","seq":1,"ts":"2026-09-06T00:00:01.000Z","payload":{"value":0}}',
+    );
+  });
+});
+
 describe("ULP-neighbour differential test (short decimals)", () => {
   test("ulp neighbours of short decimals match measured JavaScript output", () => {
     // The class-4 canonicalisation on the Rust side was diff-tested against
