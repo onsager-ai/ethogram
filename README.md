@@ -175,6 +175,20 @@ it carries. Closed-union membership and capture bounds are enforced by
 `validate`, not parsing, so a forwarder can faithfully carry a producer's
 invalid event. Unknown event `type`s remain open, as they always were.
 
+**Opening those unions this way only stays safe because of a consumer rule
+(ruled on #12), and this repository is where that rule has to be written
+down.** An unfamiliar member of any union that retains unknown strings — every
+closed union named above, and the open `ControlAppliedReason` — is rendered
+with its raw value, never mapped onto a known member; a consumer that must act on a
+member — a sink deciding a run is finished, a hub deciding a decision is
+pending — treats an unfamiliar one as "not this", never as a default. This
+repository defines the wire and cannot enforce what a consumer's own code
+does with it (principle 2), so stating the rule here is the only enforcement
+available to it. It is what replaced the strictness that used to fail loudly
+at the parse boundary while these unions were closed: opening them moved that
+failure to the consumer's own match arm, and it only fires there if the
+consumer was told to write one.
+
 **On narration.** This protocol carries what an agent said and did — assistant
 text, tool inputs, tool outputs. Every such field is excerpted at capture and
 carries an explicit truncation flag; nothing is silently elided. The bound is

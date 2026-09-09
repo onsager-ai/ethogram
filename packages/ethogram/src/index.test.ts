@@ -3470,3 +3470,85 @@ describe("known event type constants (issue #4)", () => {
     );
   });
 });
+
+describe("consumer rule stated on every retaining union (issue #54)", () => {
+  // Discover unions from their own declaration shape, `export type X =
+  // KnownX | (string & {})` (`\s*` spans the line breaks the actual source
+  // sometimes wraps this in, such as CaptureRefusalCause's multi-line form),
+  // rather than from a hand-written list — a hand-maintained set has been
+  // wrong twice in this repository. `KnownType` (the event-type union) is
+  // not one of these six and is deliberately not special-cased here: its
+  // declaration is `(typeof KNOWN_TYPES)[number]`, which has neither a
+  // `KnownKnownType` reference nor `(string & {})`, so this shape already
+  // excludes it without help.
+  const UNION_PATTERN =
+    /export type (\w+) =\s*\|?\s*Known\1\s*\|\s*\(string\s*&\s*\{\}\);/g;
+
+  // TypeScript doc comments are `/** ... */` blocks: drop the delimiters and
+  // each line's leading `*`, then join with spaces so a phrase split across
+  // the comment's own line wraps still reads as one contiguous string for
+  // the marker check below.
+  function normaliseComment(comment: string): string {
+    return comment
+      .replace(/^\/\*\*/, "")
+      .replace(/\*\/$/, "")
+      .split("\n")
+      .map((line) => line.trim().replace(/^\*/, "").trim())
+      .join(" ");
+  }
+
+  function docCommentBefore(source: string, declarationStart: number): string {
+    const before = source.slice(0, declarationStart).trimEnd();
+    if (!before.endsWith("*/")) {
+      return "";
+    }
+    const start = before.lastIndexOf("/**");
+    return start === -1 ? "" : before.slice(start);
+  }
+
+  test("every union discovered by its retaining shape states the consumer rule", async () => {
+    const source = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+      "utf8",
+    );
+    const matches = [...source.matchAll(UNION_PATTERN)];
+    assert.ok(matches.length > 0, "source scan found no retaining unions");
+
+    // A scan that goes blind fails open: only the unions matched above are
+    // ever checked, so a declaration reflowed out of the pattern's reach
+    // would go unchecked and this test would still pass. `(string & {})` is
+    // the retaining shape itself and appears exactly once per retaining
+    // union, so counting it is a second, looser scan of the same file: if
+    // the two disagree, the stricter pattern has stopped seeing a union
+    // rather than a union having been removed.
+    const retainingShapes = source.match(/\(string\s*&\s*\{\}\)/g) ?? [];
+    assert.equal(
+      matches.length,
+      retainingShapes.length,
+      `the union pattern matched ${matches.length} declarations but the file contains ${retainingShapes.length} retaining shapes; the scan has gone blind to one`,
+    );
+
+    // Same marker as the Rust scan, and the same reason: matching the whole
+    // ruled sentence would make this test a formatting assertion that fails
+    // on the first reflow. "never as a default" is the rule's acting clause,
+    // appears nowhere else in index.ts today, and this revision only ever
+    // writes it as part of the full three-clause sentence, so its presence
+    // stands in for that sentence without pinning its exact wording.
+    const MARKER = "never as a default";
+
+    const missing = matches
+      .filter(
+        (match) =>
+          !normaliseComment(docCommentBefore(source, match.index ?? 0)).includes(
+            MARKER,
+          ),
+      )
+      .map((match) => match[1]);
+
+    assert.deepEqual(
+      missing,
+      [],
+      `unions missing the consumer rule marker (${JSON.stringify(MARKER)}) in their doc comment: ${missing.join(", ")}`,
+    );
+  });
+});

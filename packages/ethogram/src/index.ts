@@ -191,8 +191,9 @@ export type KnownRunKind = (typeof RUN_KINDS)[number];
 
 /**
  * A run kind this SDK knows, or an unfamiliar wire string retained verbatim
- * for a newer vocabulary. Consumers must handle the unfamiliar-string case
- * explicitly and must never map it onto a known kind.
+ * for a newer vocabulary. Consumers must render it with its raw value, must
+ * never map it onto a known kind, and, when acting on it, must treat it as
+ * "not this", never as a default.
  */
 export type RunKind = KnownRunKind | (string & {});
 
@@ -213,8 +214,9 @@ export type KnownRunOutcome = (typeof RUN_OUTCOMES)[number];
 
 /**
  * A run outcome this SDK knows, or an unfamiliar wire string retained
- * verbatim for a newer vocabulary. Consumers acting on an outcome must treat
- * an unfamiliar string as "not this", never as one of the known outcomes.
+ * verbatim for a newer vocabulary. Consumers must render it with its raw
+ * value, must never map it onto a known outcome, and, when acting on it,
+ * must treat it as "not this", never as a default.
  *
  * `"blocked"` ended because the run may not proceed until something outside
  * the run changes; **not an error of the run**. A consumer that colours
@@ -405,8 +407,9 @@ export type KnownControlKind = (typeof CONTROL_KINDS)[number];
 
 /**
  * A control kind this SDK knows, or an unfamiliar wire string retained
- * verbatim for a newer vocabulary. Consumers must handle the unfamiliar-string
- * case explicitly and must never map it onto a known kind.
+ * verbatim for a newer vocabulary. Consumers must render it with its raw
+ * value, must never map it onto a known kind, and, when acting on it, must
+ * treat it as "not this", never as a default.
  * A string spelling a known kind always receives that kind's validation
  * rules; TypeScript has no separate runtime Unknown wrapper.
  *
@@ -471,7 +474,13 @@ export const CONTROL_APPLIED_REASONS = [
 
 export type KnownControlAppliedReason = (typeof CONTROL_APPLIED_REASONS)[number];
 
-/** Open at parse and validation; unfamiliar explanations retain their exact string. */
+/**
+ * Open at parse and validation: an unfamiliar reason here is the expected
+ * case, not the exceptional one, so it is accepted and retained exactly,
+ * subject to the excerpt bound. Consumers must render it with its raw
+ * value, must never map it onto a known reason, and, when acting on it,
+ * must treat it as "not this", never as a default.
+ */
 export type ControlAppliedReason = KnownControlAppliedReason | (string & {});
 
 export const CAPTURE_REFUSAL_CAUSES = [
@@ -487,8 +496,9 @@ export type KnownCaptureRefusalCause =
 
 /**
  * A capture-refusal cause this SDK knows, or an unfamiliar wire string
- * retained verbatim for a newer vocabulary. Consumers must handle the
- * unfamiliar-string case explicitly and must never map it onto a known cause.
+ * retained verbatim for a newer vocabulary. Consumers must render it with
+ * its raw value, must never map it onto a known cause, and, when acting on
+ * it, must treat it as "not this", never as a default.
  */
 export type CaptureRefusalCause =
   | KnownCaptureRefusalCause
@@ -527,8 +537,9 @@ export type KnownDecisionKind = (typeof DECISION_KINDS)[number];
 
 /**
  * A decision kind this SDK knows, or an unfamiliar wire string retained
- * verbatim for a newer vocabulary. Consumers must handle the unfamiliar-string
- * case explicitly and must never map it onto a known kind.
+ * verbatim for a newer vocabulary. Consumers must render it with its raw
+ * value, must never map it onto a known kind, and, when acting on it, must
+ * treat it as "not this", never as a default.
  */
 export type DecisionKind = KnownDecisionKind | (string & {});
 

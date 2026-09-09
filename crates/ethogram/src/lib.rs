@@ -139,8 +139,9 @@ pub fn excerpt(text: &str, max: usize) -> Excerpt {
 const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
 /// A run kind this SDK knows, or an unfamiliar wire string retained verbatim
-/// in `Unknown`. Consumers must handle `Unknown` explicitly and must never map
-/// it onto a known kind.
+/// in `Unknown`. Consumers must render it with its raw value, must never map
+/// it onto a known kind, and, when acting on it, must treat it as "not this",
+/// never as a default.
 /// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
 /// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,8 +192,9 @@ impl<'de> Deserialize<'de> for RunKind {
 }
 
 /// A run outcome this SDK knows, or an unfamiliar wire string retained
-/// verbatim in `Unknown`. Consumers acting on an outcome must treat `Unknown`
-/// as "not this", never as one of the known outcomes.
+/// verbatim in `Unknown`. Consumers must render it with its raw value, must
+/// never map it onto a known outcome, and, when acting on it, must treat it
+/// as "not this", never as a default.
 /// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
 /// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,8 +264,9 @@ impl<'de> Deserialize<'de> for RunOutcome {
 }
 
 /// A control kind this SDK knows, or an unfamiliar wire string retained
-/// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
-/// never map it onto a known kind.
+/// verbatim in `Unknown`. Consumers must render it with its raw value, must
+/// never map it onto a known kind, and, when acting on it, must treat it as
+/// "not this", never as a default.
 /// An unfamiliar wire string is `UnknownMember` at validation, exactly like
 /// every other closed union; `Unknown` spelling any known kind is
 /// `Malformed` at validation instead, because parsing that string would have
@@ -320,8 +323,12 @@ impl<'de> Deserialize<'de> for ControlKind {
     }
 }
 
-/// An explanation of a control echo, open at parse and validation. Unknown
-/// values retain their exact string and remain subject to the excerpt bound.
+/// An explanation of a control echo, open at parse and validation: an
+/// unfamiliar reason here is the expected case, not the exceptional one, so
+/// `validate` accepts it and its Unknown values retain their exact string,
+/// subject to the excerpt bound. Consumers must render it with its raw
+/// value, must never map it onto a known reason, and, when acting on it,
+/// must treat it as "not this", never as a default.
 /// A typed `Unknown` spelling a known member is `Malformed` at validation:
 /// representability applies even though unfamiliar strings are accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,8 +374,9 @@ impl<'de> Deserialize<'de> for ControlAppliedReason {
 }
 
 /// A capture-refusal cause this SDK knows, or an unfamiliar wire string
-/// retained verbatim in `Unknown`. Consumers must handle `Unknown` explicitly
-/// and must never map it onto a known cause.
+/// retained verbatim in `Unknown`. Consumers must render it with its raw
+/// value, must never map it onto a known cause, and, when acting on it, must
+/// treat it as "not this", never as a default.
 /// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
 /// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -420,8 +428,9 @@ impl<'de> Deserialize<'de> for CaptureRefusalCause {
 }
 
 /// A decision kind this SDK knows, or an unfamiliar wire string retained
-/// verbatim in `Unknown`. Consumers must handle `Unknown` explicitly and must
-/// never map it onto a known kind.
+/// verbatim in `Unknown`. Consumers must render it with its raw value, must
+/// never map it onto a known kind, and, when acting on it, must treat it as
+/// "not this", never as a default.
 /// At validation, unfamiliar strings are `UnknownMember`; `Unknown` spelling
 /// a known member is `Malformed` because it cannot round-trip as that variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
