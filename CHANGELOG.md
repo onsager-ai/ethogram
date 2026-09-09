@@ -12,6 +12,19 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### Independent corpus envelopes (#46)
+
+The corpus libraries now state at their collection APIs that fixtures are
+independent envelopes, not a stream: shared synthesised `runId` values do not
+make separate captures safe to fold together with `foldRun`. One Rust inventory
+test records the three historical `(runId, seq)` collisions with their exact
+fixture-name sets and reasons, rejecting new collisions, changed sets, and
+stale exceptions.
+
+No fixture, wire string, or SDK behaviour changed. Pin the revision introducing
+this entry to take the documentation and corpus-inventory test; a consumer
+repin requires no adaptation beyond the clarified sentence.
+
 ### Representability independent of closedness (#48)
 
 Rust now rejects `ControlAppliedReason::Unknown` spelling a known reason as
