@@ -33,87 +33,173 @@ fn disk_fixtures() -> Result<Vec<(String, String)>, Box<dyn Error>> {
 }
 
 #[test]
-fn no_two_fixtures_share_a_run_id_and_seq() -> Result<(), Box<dyn Error>> {
-    struct CollisionException {
+fn every_run_id_belongs_to_exactly_one_capture() -> Result<(), Box<dyn Error>> {
+    struct RunIdGroup {
         run_id: &'static str,
-        seq: u64,
-        fixtures: &'static [&'static str],
+        fixtures: &'static [(&'static str, u64)],
         reason: &'static str,
     }
 
-    // Rust only: this inventories the corpus files, not either SDK's behaviour.
-    // Principle 1 needs one definition here; a TypeScript copy would introduce
-    // a second exception list that could drift. Published fixtures are immutable,
-    // so retain these historical collisions; the list may only shrink.
-    const EXCEPTIONS: &[CollisionException] = &[
-        CollisionException {
+    // A `runId` belongs to exactly one capture. Fixtures drawn from the same
+    // capture share it — `conformance/README.md` says so, and a run's events
+    // would otherwise have to be given different ids, which would falsify the
+    // capture and break `foldRun` for anyone who did the obvious thing. What
+    // must never happen is a *new* capture reusing a `runId` already here.
+    //
+    // This list pins every `runId` carrying more than one fixture, with the
+    // exact (fixture, seq) set it carries, and the check below asserts disk
+    // equals it in both directions. That yields, without a second list:
+    //
+    //   - a new fixture joining any listed `runId` fails, colliding on `seq`
+    //     or not — which is the hole this replaces (issue #62);
+    //   - a new fixture reusing a single-fixture `runId` such as `gate` fails
+    //     too, because that `runId` becomes an unlisted group;
+    //   - a withdrawal that shrinks or empties a group fails until the entry
+    //     is updated, so an entry cannot go stale unnoticed;
+    //   - a new multi-fixture capture adds one entry, as a deliberate edit
+    //     someone reviews rather than a silent arrival.
+    //
+    // It subsumes the `(runId, seq)` collision test this replaces: any new
+    // collision requires sharing a `runId`, which fails here first.
+    //
+    // Rust only: this inventories the corpus files, not either SDK's
+    // behaviour. Principle 1 needs one definition here, and a TypeScript copy
+    // would be a second list free to drift from this one.
+    const GROUPS: &[RunIdGroup] = &[
+        RunIdGroup {
             run_id: "judgment-20300102T030405000Z-fixture-0",
-            seq: 2,
             fixtures: &[
-                "decision-answered-excuse-requested-run.json",
-                "decision-answered-excuse.json",
+                ("decision-answered-excuse-requested-run.json", 2),
+                ("decision-answered-excuse.json", 2),
             ],
-            reason: "backward-compatibility pair documented in conformance/README.md: the same event before and after decision.answered gained requestedRunId, two captures of one shape differing by one line",
+            reason: "the backward-compatibility pair documented in conformance/README.md: one shape before and after decision.answered gained requestedRunId. Two separate captures that share a seq as well as a runId, because a deterministic clock synthesised the same id twice",
         },
-        CollisionException {
-            run_id: "sweep",
-            seq: 2,
+        RunIdGroup {
+            run_id: "run-claude-control-interrupt",
             fixtures: &[
-                "decision-requested-human-decides-options.json",
-                "decision-requested-tripwire.json",
+                ("control-applied-interrupt.json", 5),
+                ("control-applied-not-live.json", 6),
+                ("control-requested-interrupt.json", 4),
+                ("control-requested-steer.json", 3),
             ],
-            reason: "separate captures whose synthesised run id was the literal \"sweep\", taken before this rule existed",
+            reason: "one capture of a control exchange, four events selected from its stream",
         },
-        CollisionException {
-            run_id: "sweep",
-            seq: 3,
+        RunIdGroup {
+            run_id: "run-claude-error-shapes",
             fixtures: &[
-                "decision-requested-human-decides.json",
-                "decision-requested-unclassified.json",
+                ("agent-completed-max-turns.json", 5),
+                ("agent-tool-result-error.json", 4),
+                ("agent-warning.json", 6),
             ],
-            reason: "separate captures whose synthesised run id was the literal \"sweep\", taken before this rule existed",
+            reason: "one capture, three events selected from its stream",
+        },
+        RunIdGroup {
+            run_id: "run-claude-subagent",
+            fixtures: &[
+                ("agent-completed-repeated-terminal.json", 14),
+                ("agent-completed.json", 13),
+                ("agent-started.json", 1),
+                ("agent-text.json", 4),
+                ("agent-tool-result-subagent.json", 9),
+                ("agent-tool-result.json", 6),
+                ("agent-tool-use-subagent.json", 8),
+                ("agent-tool-use.json", 5),
+            ],
+            reason: "one subagent capture, eight events selected from its stream",
+        },
+        RunIdGroup {
+            run_id: "sweep",
+            fixtures: &[
+                ("decision-requested-human-decides-options.json", 2),
+                ("decision-requested-human-decides.json", 3),
+                ("decision-requested-tripwire.json", 2),
+                ("decision-requested-unclassified.json", 3),
+                ("decision-requested-unexplained-write.json", 4),
+            ],
+            reason: "separate captures whose synthesised run id was the literal \"sweep\", taken before this rule existed. Two pairs of them share a seq as well; this is the group the rule exists to stop recurring",
         },
     ];
 
-    let mut collisions = BTreeMap::<(String, u64), BTreeSet<String>>::new();
+    let mut on_disk = BTreeMap::<String, BTreeSet<(String, u64)>>::new();
     for (name, raw_json) in disk_fixtures()? {
         let event = parse_event(&raw_json)?;
-        collisions
-            .entry((event.run_id, event.seq))
+        on_disk
+            .entry(event.run_id)
             .or_default()
-            .insert(name);
+            .insert((name, event.seq));
     }
-    collisions.retain(|_, names| names.len() > 1);
+    on_disk.retain(|_, fixtures| fixtures.len() > 1);
 
     let mut problems = Vec::new();
-    for exception in EXCEPTIONS {
-        let key = (exception.run_id.to_owned(), exception.seq);
-        let expected = exception
+    for group in GROUPS {
+        let expected = group
             .fixtures
             .iter()
-            .map(|name| (*name).to_owned())
+            .map(|(name, seq)| ((*name).to_owned(), *seq))
             .collect::<BTreeSet<_>>();
-        match collisions.remove(&key) {
+        match on_disk.remove(group.run_id) {
             None => problems.push(format!(
-                "stale collision exception: runId {:?}, seq {}, listed fixtures {:?} no longer collide; remove the entry (reason: {})",
-                exception.run_id, exception.seq, expected, exception.reason,
+                "stale runId group: {:?} no longer carries more than one fixture; remove or shrink the entry, which listed {:?} (reason: {})",
+                group.run_id, expected, group.reason,
             )),
             Some(actual) if actual != expected => problems.push(format!(
-                "collision fixture-name set changed: runId {:?}, seq {}, expected {:?}, found {:?}; new captures must use a distinct key, and withdrawn fixtures must leave the list (reason: {})",
-                exception.run_id, exception.seq, expected, actual, exception.reason,
+                "runId group changed: {:?} expected {:?}, found {:?}; a new capture must use a runId not already in the corpus, and a withdrawn fixture must leave this entry (reason: {})",
+                group.run_id, expected, actual, group.reason,
             )),
             Some(_) => {}
         }
     }
-    for ((run_id, seq), names) in collisions {
+    for (run_id, fixtures) in on_disk {
         problems.push(format!(
-            "unlisted collision: runId {run_id:?}, seq {seq}, fixtures {names:?}; new captures must use a distinct (runId, seq)",
+            "unlisted runId group: {run_id:?} carries {fixtures:?}; a runId belongs to exactly one capture, so either these fixtures are one capture and the group needs an entry with a reason, or a new capture has reused a runId already in the corpus",
         ));
     }
     assert!(
         problems.is_empty(),
-        "corpus collision inventory does not match the historical exceptions:\n{}",
+        "corpus runId inventory does not match the historical groups:\n{}",
         problems.join("\n"),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn the_permanent_agreement_inputs_are_still_present() -> Result<(), Box<dyn Error>> {
+    // `handwritten-agreement-inputs/README.md` says an input there must be
+    // superseded by a real captured fixture once a producer emits its shape.
+    // That is true of the five answer-verb shapes and false of these three:
+    // no producer emits them, because each exists to hold a property the
+    // corpus cannot hold. Retiring all eight on the supersession rule would
+    // silently remove the only band pin in the byte diff, the only cross-SDK
+    // check of Rust's typed retention, and the only input on the harness's
+    // untyped-only branch — with every remaining test still green.
+    const PERMANENT: &[(&str, &str)] = &[
+        (
+            "run-finished-band-cost.json",
+            "the only input inside the [1e-6, 1e-5) notation band, which no capture has produced and no fixture can carry (#53)",
+        ),
+        (
+            "run-started-unknown-fields.json",
+            "the only cross-SDK check of Rust's typed payload retention, and of the four number shapes through the flatten layer (#57)",
+        ),
+        (
+            "unrecognised-type.json",
+            "the only input on the untyped-only branch; no producer emits a type invented to be unrecognised (#60)",
+        ),
+    ];
+
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../conformance/handwritten-agreement-inputs");
+    let missing = PERMANENT
+        .iter()
+        .filter(|(name, _)| !directory.join(name).is_file())
+        .map(|(name, reason)| format!("{name} — {reason}"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "permanent agreement inputs are missing; these are not superseded by any capture:\n{}",
+        missing.join("\n"),
     );
 
     Ok(())

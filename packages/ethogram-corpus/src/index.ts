@@ -5,12 +5,13 @@
  * independently maintained copy. CI regenerates the embedded module from the
  * canonical directory and rejects drift in either direction.
  *
- * The corpus is a set of independent envelopes, not a stream. Fixtures sharing
- * a `runId` are separate captures that happened to synthesise the same id;
- * grouping the corpus by `runId` and calling `foldRun` is an unsupported misuse.
- * The inventory test `no_two_fixtures_share_a_run_id_and_seq` in
- * `crates/ethogram-corpus/tests/corpus.rs` records the surviving historical
- * collisions.
+ * The corpus is a set of independent envelopes, not a stream, and grouping it
+ * by `runId` to call `foldRun` is an unsupported misuse. Several fixtures may
+ * share a `runId` as a selection from one capture's stream rather than the
+ * whole of it — so a fold sees a run with holes — and two historical groups go
+ * further, holding separate captures whose synthesised id collided. The
+ * inventory test `every_run_id_belongs_to_exactly_one_capture` in
+ * `crates/ethogram-corpus/tests/corpus.rs` pins every such group.
  *
  * That test is deliberately the only one, and this package has no twin of it.
  * It inventories the corpus *files*, not either SDK's behaviour, so principle 1
@@ -34,12 +35,13 @@ export interface CorpusFixture {
 /**
  * Every version 1 fixture in UTF-8 byte-order by file name.
  *
- * These are independent envelopes, not a stream. Fixtures sharing a `runId`
- * are separate captures that happened to synthesise the same id; grouping this
- * collection by `runId` and calling `foldRun` is an unsupported misuse.
- * The inventory test `no_two_fixtures_share_a_run_id_and_seq` in
- * `crates/ethogram-corpus/tests/corpus.rs` records the surviving historical
- * collisions.
+ * These are independent envelopes, not a stream, and grouping this collection
+ * by `runId` to call `foldRun` is an unsupported misuse. Several fixtures may
+ * share a `runId` as a selection from one capture's stream rather than the
+ * whole of it, and two historical groups hold separate captures whose
+ * synthesised id collided. The inventory test
+ * `every_run_id_belongs_to_exactly_one_capture` in
+ * `crates/ethogram-corpus/tests/corpus.rs` pins every such group.
  */
 export const v1Fixtures: readonly CorpusFixture[] = V1_FIXTURES;
 
