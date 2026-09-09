@@ -12,6 +12,29 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The first real permission exchange enters the corpus (ostrom#541)
+
+Five fixtures from two captures of ostrom's permission bridge, taken from the
+wire as the sink stamped them: an ungranted tool call raised as
+`decision.requested{kind: "permission"}`, the supervisor's
+`control.requested{kind: "answer"}`, the `decision.answered` recording it, the
+`control.applied` echo, and — from a separate capture with its own `runId` —
+the `decision.answered{byTimeout: true}` that denies when nobody answers. The
+corpus now holds 30 fixtures.
+
+Two of the five handwritten answer-verb agreement inputs are superseded by
+those captures and removed, leaving six. The three negative echoes stay:
+`no-such-decision`, `already-answered` and `option-not-offered` have no capture
+yet, because reaching them needs a supervisor that answers wrongly during a
+real pass. Retiring them on the supersession rule would have traded real
+coverage for nothing.
+
+`control-applied-answer.json` is **the first capture in the corpus carrying an
+unknown payload field**. `by` is not a known member of `ControlAppliedPayload`,
+so it rides as a payload extension, and both SDKs now prove on real bytes that
+they preserve one — a property the corpus previously tested only from
+hand-written input.
+
 ### The six run kinds are defined, and ordered (#64)
 
 `RunKind` enumerated six members and defined one. `relay` had a sentence;

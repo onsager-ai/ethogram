@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "decision.answered",
+  "runId": "builder-20260909T073815905Z-360302-0",
+  "seq": 6,
+  "ts": "2026-09-09T07:38:52.116Z",
+  "payload": {
+    "by": "principal:runtime:permission-timeout",
+    "byTimeout": true,
+    "decisionId": "toolu_01MqGFHviK5ihJ6LDjEUqCM9",
+    "optionId": "deny",
+    "requestedRunId": "builder-20260909T073815905Z-360302-0"
+  }
+}

@@ -50,12 +50,20 @@ export const V1_FIXTURES = [
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"agent.warning\",\n  \"runId\": \"run-claude-error-shapes\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-07T09:30:06.000Z\",\n  \"payload\": {\n    \"message\": \"claude result subtype \\\"error_max_turns\\\"\",\n    \"stage\": \"generate\"\n  }\n}\n",
   },
   {
+    name: "control-applied-answer.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.applied\",\n  \"runId\": \"builder-20260909T091631822Z-1098540-0\",\n  \"seq\": 10,\n  \"ts\": \"2026-09-09T09:16:37.692Z\",\n  \"payload\": {\n    \"by\": \"spawning-supervisor\",\n    \"controlId\": \"first-permission-answer\",\n    \"ok\": true\n  }\n}\n",
+  },
+  {
     name: "control-applied-interrupt.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.applied\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 5,\n  \"ts\": \"2026-09-07T07:45:05.000Z\",\n  \"payload\": {\n    \"controlId\": \"capture-interrupt-1\",\n    \"landedIn\": \"toolu_01BG5x9iuSVKzZhYg7qmM5PJ\",\n    \"ok\": true\n  }\n}\n",
   },
   {
     name: "control-applied-not-live.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.applied\",\n  \"runId\": \"run-claude-control-interrupt\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-07T07:45:06.000Z\",\n  \"payload\": {\n    \"controlId\": \"capture-steer-1\",\n    \"ok\": false,\n    \"reason\": \"not-live\"\n  }\n}\n",
+  },
+  {
+    name: "control-requested-answer.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"control.requested\",\n  \"runId\": \"builder-20260909T091631822Z-1098540-0\",\n  \"seq\": 7,\n  \"ts\": \"2026-09-09T09:16:37.662Z\",\n  \"payload\": {\n    \"by\": \"spawning-supervisor\",\n    \"controlId\": \"first-permission-answer\",\n    \"decisionId\": \"toolu_0133eqDxMxwumxSsmAiYZyWS\",\n    \"kind\": \"answer\",\n    \"optionId\": \"allow\"\n  }\n}\n",
   },
   {
     name: "control-requested-interrupt.json",
@@ -74,6 +82,14 @@ export const V1_FIXTURES = [
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.answered\",\n  \"runId\": \"judgment-20300102T030405000Z-fixture-0\",\n  \"seq\": 2,\n  \"ts\": \"2030-01-02T03:04:05.000Z\",\n  \"payload\": {\n    \"by\": \"github:user:42\",\n    \"decisionId\": \"gate_inconclusive-d660b87e278b7967dbb8627bde6724fcaf13adad6d03dba9ef9b4c13d5165ad0\",\n    \"optionId\": \"excuse:required_checks\",\n    \"reversal\": \"revoke:required_checks\"\n  }\n}\n",
   },
   {
+    name: "decision-answered-permission-timeout.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.answered\",\n  \"runId\": \"builder-20260909T073815905Z-360302-0\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-09T07:38:52.116Z\",\n  \"payload\": {\n    \"by\": \"principal:runtime:permission-timeout\",\n    \"byTimeout\": true,\n    \"decisionId\": \"toolu_01MqGFHviK5ihJ6LDjEUqCM9\",\n    \"optionId\": \"deny\",\n    \"requestedRunId\": \"builder-20260909T073815905Z-360302-0\"\n  }\n}\n",
+  },
+  {
+    name: "decision-answered-permission.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.answered\",\n  \"runId\": \"builder-20260909T091631822Z-1098540-0\",\n  \"seq\": 9,\n  \"ts\": \"2026-09-09T09:16:37.690Z\",\n  \"payload\": {\n    \"by\": \"spawning-supervisor\",\n    \"byTimeout\": false,\n    \"decisionId\": \"toolu_0133eqDxMxwumxSsmAiYZyWS\",\n    \"optionId\": \"allow\",\n    \"requestedRunId\": \"builder-20260909T091631822Z-1098540-0\"\n  }\n}\n",
+  },
+  {
     name: "decision-requested-budget.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.requested\",\n  \"runId\": \"builder-20300102T030405000Z-fixture-0\",\n  \"seq\": 2,\n  \"ts\": \"2030-01-02T03:04:05.000Z\",\n  \"payload\": {\n    \"decisionId\": \"budget-20300102T030405000Z-fixture-1\",\n    \"dossier\": {\n      \"blastRadius\": \"All runs charged to the operator account at fixture-org/decisions.\",\n      \"optionsRuledOut\": [\n        \"Proceeding under the current spend ceiling\"\n      ],\n      \"question\": \"The operator account at fixture-org/decisions has reached its daily ceiling of 50 USD for 2030-01-02 (50 USD spent). Raise the ceiling or wait?\",\n      \"recommendedAction\": \"Wait for budget to become available, or have the operator author a policy version with a higher ceiling.\"\n    },\n    \"kind\": \"budget\",\n    \"options\": [\n      {\n        \"id\": \"raise\",\n        \"label\": \"Author a policy version with a higher ceiling, superseding fixture-org/decisions/current\"\n      },\n      {\n        \"id\": \"wait\",\n        \"label\": \"Wait for budget to become available\"\n      }\n    ],\n    \"subject\": \"account:fixture-org/decisions\"\n  }\n}\n",
   },
@@ -88,6 +104,10 @@ export const V1_FIXTURES = [
   {
     name: "decision-requested-human-decides.json",
     rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.requested\",\n  \"runId\": \"sweep\",\n  \"seq\": 3,\n  \"ts\": \"2030-01-02T03:04:05.000Z\",\n  \"payload\": {\n    \"decisionId\": \"human-decides-5c3e457224b8d7e995e7787412c3db45aeff37141e59429e95b2979f3452e3d9\",\n    \"dossier\": {\n      \"blastRadius\": \"fixture-org/decisions#4 only.\",\n      \"optionsRuledOut\": [\n        \"Proceeding without the human's answer.\"\n      ],\n      \"question\": \"Whether to proceed with the reversible implementation.\",\n      \"recommendedAction\": \"Choose one of the listed options.\"\n    },\n    \"kind\": \"human_decides\",\n    \"options\": [\n      {\n        \"id\": \"yes\",\n        \"label\": \"yes\"\n      },\n      {\n        \"id\": \"no\",\n        \"label\": \"no\"\n      }\n    ],\n    \"subject\": \"fixture-org/decisions#4\"\n  }\n}\n",
+  },
+  {
+    name: "decision-requested-permission.json",
+    rawJson: "{\n  \"v\": 1,\n  \"type\": \"decision.requested\",\n  \"runId\": \"builder-20260909T091631822Z-1098540-0\",\n  \"seq\": 6,\n  \"ts\": \"2026-09-09T09:16:37.610Z\",\n  \"payload\": {\n    \"decisionId\": \"toolu_0133eqDxMxwumxSsmAiYZyWS\",\n    \"dossier\": {\n      \"blastRadius\": \"This tool call only\",\n      \"optionsRuledOut\": [],\n      \"question\": \"Allow \\\"Bash\\\" with input {\\\"command\\\":\\\"printenv OSTROM_ACTOR\\\",\\\"description\\\":\\\"Print OSTROM_ACTOR environment variable\\\"}?\",\n      \"recommendedAction\": \"deny\",\n      \"truncated\": false\n    },\n    \"expiresAt\": \"2026-09-09T09:17:07.565169587+00:00\",\n    \"kind\": \"permission\",\n    \"onTimeout\": \"deny\",\n    \"options\": [\n      {\n        \"id\": \"allow\",\n        \"label\": \"Allow this call\"\n      },\n      {\n        \"id\": \"deny\",\n        \"label\": \"Deny this call\"\n      }\n    ],\n    \"subject\": \"Bash\"\n  }\n}\n",
   },
   {
     name: "decision-requested-tripwire.json",

@@ -67,6 +67,16 @@ fn every_run_id_belongs_to_exactly_one_capture() -> Result<(), Box<dyn Error>> {
     // would be a second list free to drift from this one.
     const GROUPS: &[RunIdGroup] = &[
         RunIdGroup {
+            run_id: "builder-20260909T091631822Z-1098540-0",
+            fixtures: &[
+                ("control-applied-answer.json", 10),
+                ("control-requested-answer.json", 7),
+                ("decision-answered-permission.json", 9),
+                ("decision-requested-permission.json", 6),
+            ],
+            reason: "one capture of the first real permission exchange, four events selected from its stream: an ungranted call raised as a decision, the supervisor's answer, the answer recorded, and the control echoed",
+        },
+        RunIdGroup {
             run_id: "judgment-20300102T030405000Z-fixture-0",
             fixtures: &[
                 ("decision-answered-excuse-requested-run.json", 2),

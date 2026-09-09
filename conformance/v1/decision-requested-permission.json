@@ -1,0 +1,31 @@
+{
+  "v": 1,
+  "type": "decision.requested",
+  "runId": "builder-20260909T091631822Z-1098540-0",
+  "seq": 6,
+  "ts": "2026-09-09T09:16:37.610Z",
+  "payload": {
+    "decisionId": "toolu_0133eqDxMxwumxSsmAiYZyWS",
+    "dossier": {
+      "blastRadius": "This tool call only",
+      "optionsRuledOut": [],
+      "question": "Allow \"Bash\" with input {\"command\":\"printenv OSTROM_ACTOR\",\"description\":\"Print OSTROM_ACTOR environment variable\"}?",
+      "recommendedAction": "deny",
+      "truncated": false
+    },
+    "expiresAt": "2026-09-09T09:17:07.565169587+00:00",
+    "kind": "permission",
+    "onTimeout": "deny",
+    "options": [
+      {
+        "id": "allow",
+        "label": "Allow this call"
+      },
+      {
+        "id": "deny",
+        "label": "Deny this call"
+      }
+    ],
+    "subject": "Bash"
+  }
+}
