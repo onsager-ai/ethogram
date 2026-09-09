@@ -12,6 +12,40 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### A runId belongs to exactly one capture (#62)
+
+#46 ruled two things and #51 mechanised one. The test rejected two fixtures
+sharing `(runId, seq)`; nothing stopped a new capture reusing a `runId`
+already in the corpus at a fresh `seq`. Confirmed by probe before the change:
+a fixture with `runId: "sweep"` — already present — and `seq: 97` passed.
+
+`every_run_id_belongs_to_exactly_one_capture` replaces that test. It pins
+every `runId` carrying more than one fixture together with its exact
+`(fixture, seq)` set and asserts disk equals the list in both directions, so
+a new capture reusing a `runId` fails, a fixture joining a group fails, and a
+withdrawal that leaves an entry stale fails. The `(runId, seq)` test is
+retired rather than kept alongside it: any collision requires sharing a
+`runId`, so the group check catches it first, and two overlapping lists could
+drift.
+
+**Fixtures from one capture still share a `runId`** — a selection from that
+run's stream, as `conformance/README.md` has always said.
+`run-claude-subagent` carries eight, `run-claude-control-interrupt` four. A
+rule of one `runId` per *fixture* would have forced a real multi-event capture
+to give its events different ids, falsifying the capture.
+
+### Which agreement inputs a capture supersedes (#62)
+
+`handwritten-agreement-inputs/README.md` now separates the five answer-verb
+shapes, which a real capture replaces, from three that no producer can
+supersede: the notation-band cost, the unknown-field payload, and the
+unrecognised type. Each holds a property the corpus cannot.
+`the_permanent_agreement_inputs_are_still_present` fails by file name, with
+the reason, if one goes missing — so retiring all eight on the supersession
+rule cannot pass green.
+
+No wire byte, fixture or SDK behaviour changed.
+
 ### An input for the branch the counts only claimed (#60)
 
 The three-column harness (#57) sends an input whose `type` Rust does not

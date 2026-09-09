@@ -5,11 +5,13 @@
 //! to embed the canonical files themselves, and CI regenerates the registry
 //! from the directory and rejects any drift in either direction.
 //!
-//! The corpus is a set of independent envelopes, not a stream. Fixtures sharing
-//! a `runId` are separate captures that happened to synthesise the same id;
-//! folding the corpus by `runId` is an unsupported misuse. The inventory test
-//! `no_two_fixtures_share_a_run_id_and_seq` in `tests/corpus.rs` records the
-//! surviving historical collisions.
+//! The corpus is a set of independent envelopes, not a stream, and folding it
+//! by `runId` is an unsupported misuse. Several fixtures may share a `runId`,
+//! as a selection from one capture's stream rather than the whole of it, and
+//! two historical groups go further: they hold separate captures whose
+//! synthesised id collided. The inventory test
+//! `every_run_id_belongs_to_exactly_one_capture` in `tests/corpus.rs` pins
+//! every such group and rejects a new capture reusing a `runId`.
 
 mod corpus;
 
@@ -34,11 +36,12 @@ impl Fixture {
 
 /// Returns every version 1 fixture in UTF-8 byte-order by file name.
 ///
-/// These are independent envelopes, not a stream. Fixtures sharing a `runId`
-/// are separate captures that happened to synthesise the same id; folding this
-/// collection by `runId` is an unsupported misuse. The inventory test
-/// `no_two_fixtures_share_a_run_id_and_seq` in `tests/corpus.rs` records the
-/// surviving historical collisions.
+/// These are independent envelopes, not a stream, and folding this collection
+/// by `runId` is an unsupported misuse. Several fixtures may share a `runId`
+/// as a selection from one capture's stream rather than the whole of it, and
+/// two historical groups hold separate captures whose synthesised id collided.
+/// The inventory test `every_run_id_belongs_to_exactly_one_capture` in
+/// `tests/corpus.rs` pins every such group.
 #[must_use]
 pub fn v1_fixtures() -> &'static [Fixture] {
     corpus::V1_FIXTURES

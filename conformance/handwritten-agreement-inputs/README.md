@@ -1,18 +1,33 @@
 # Handwritten agreement inputs
 
-These are hand-written, valid events for cross-SDK agreement before a producer
-has emitted the corresponding vocabulary. They are **not captures**, are not
-part of `v1/`, and are **not subject to the corpus immutability rule**. They
-must be superseded by real captured fixtures when a producer emits these
-events; the first expected producer for the answer control verb is ostrom#510.
+These are hand-written, valid events for cross-SDK agreement. They are **not
+captures**, are not part of `v1/`, and are **not subject to the corpus
+immutability rule**.
+
+**The supersession rule applies to some of them and not others, and the
+difference is not cosmetic.** Five stand in for vocabulary a producer has not
+emitted yet, and a real captured fixture replaces them when one does. The
+other three can never be superseded, because no producer emits their shape:
+each exists to hold a property the corpus cannot hold. Retiring all eight
+together on the supersession rule would leave every remaining test green while
+removing the only band pin in the byte diff, the only cross-SDK check of
+Rust's typed retention, and the only input on the harness's untyped-only
+branch. `the_permanent_agreement_inputs_are_still_present` in
+`crates/ethogram-corpus/tests/corpus.rs` fails by file name if one of the
+three goes missing, with the reason it was there.
+
+## Superseded by a real capture
 
 Five inputs cover an answer request, a positive control echo, and negative
 echoes for `no-such-decision`, `already-answered`, and `option-not-offered`.
 Both SDK test suites also hand-build these shapes and pin identical canonical
-JSON literals independently of these files.
+JSON literals independently of these files. The first expected producer for
+the answer control verb is ostrom#510.
 
-Two more exist to put a claim into the byte diff that the two suites had only
-been asserting separately (#53):
+## Permanent — no producer can supersede these
+
+Two exist to put a claim into the byte diff that the two suites had only been
+asserting separately (#53):
 
 - **`run-finished-band-cost.json`** carries `costUsd` of `2.5e-6`, inside the
   one decade — `[1e-6, 1e-5)` — where `serde_json` and ECMAScript disagree
@@ -47,7 +62,7 @@ been asserting separately (#53):
   once the typed column was confirmed, by the same revert-and-check above,
   to reach these numbers through this input.
 
-One more exists to prove the *other* branch of that comparison (#60):
+And one to prove the *other* branch of that comparison (#60):
 
 - **`unrecognised-type.json`** carries the `type`
   `x-conformance.unrecognised-by-design`, which no vocabulary will ever take.
