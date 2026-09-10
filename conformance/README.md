@@ -70,7 +70,7 @@ from the other.
   (onsager-ai/ethogram#70). Those are real captures and stay: immutability binds them, and a
   withdrawal is for a fixture that was a guess, never for one that is merely
   redundant. The rule is forward-looking, and it exists because captures
-  arrive several fixtures at a time — 30 fixtures span 21 distinct
+  arrive several fixtures at a time — 31 fixtures span 22 distinct
   `(type, payload-key-set)` shapes, and without a stated bar that ratio only
   falls.
 - **The corpus deliberately holds more than one shape of the same event type.**
@@ -91,6 +91,19 @@ from the other.
   `decision-answered-excuse-requested-run.json` are the first such pair,
   differing by one line — a field's presence. A pair differing by rendering
   alone has not been captured yet.
+- **An absent optional field records what one producer did on one run, and
+  nothing more.** Every optional field in this corpus is omitted rather than
+  nulled, so absence is the ordinary form and carries no emphasis. It is
+  therefore easy to read a missing field as "this producer never emits it",
+  which a fixture cannot establish and is frequently false. `run-started-handoff.json`
+  omits `ceilings` because the capture's manifest declared no caps — not
+  because a pass omits them; its producer does call `wire_ceilings`. Where a
+  fixture's absence invites that reading, say so here, because the corpus is
+  the artefact someone cites years later without the context that produced it.
+  This one also omits `schedule` and `workOrder`: those are genuinely unset by
+  the producer, which is a different fact from the first and is why both are
+  worth stating rather than neither.
+
 - Narration fields carry placeholder content only. The corpus is public and
   permanent; real transcripts are neither.
 
