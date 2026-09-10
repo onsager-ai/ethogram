@@ -103,7 +103,6 @@ from the other.
   This one also omits `schedule` and `workOrder`: those are genuinely unset by
   the producer, which is a different fact from the first and is why both are
   worth stating rather than neither.
-
 - Narration fields carry placeholder content only. The corpus is public and
   permanent; real transcripts are neither.
 
