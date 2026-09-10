@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 // Written once and pasted identically into control-answer.test.ts. These
-// are handwritten agreement examples, not captured corpus fixtures (#38).
+// are handwritten agreement examples, not captured corpus fixtures (onsager-ai/ethogram#38).
 const CONTROL_ANSWER_REQUESTED_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-control-answer","seq":1,"ts":"2026-09-08T00:00:00.000Z","payload":{"by":"principal:user:alice","controlId":"control-answer-1","decisionId":"decision-1","kind":"answer","optionId":"allow"}}"#;
 const CONTROL_ANSWER_APPLIED_WIRE: &str = r#"{"v":1,"type":"control.applied","runId":"run-control-answer","seq":2,"ts":"2026-09-08T00:00:00.000Z","payload":{"controlId":"control-answer-1","ok":true}}"#;
 const CONTROL_NO_SUCH_DECISION_WIRE: &str = r#"{"v":1,"type":"control.applied","runId":"run-control-answer","seq":3,"ts":"2026-09-08T00:00:00.000Z","payload":{"controlId":"control-answer-1","ok":false,"reason":"no-such-decision"}}"#;

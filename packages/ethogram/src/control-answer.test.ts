@@ -9,7 +9,7 @@ import {
 } from "./index.js";
 
 // Written once and pasted identically into control_answer.rs. These are
-// handwritten agreement examples, not captured corpus fixtures (#38).
+// handwritten agreement examples, not captured corpus fixtures (onsager-ai/ethogram#38).
 const CONTROL_ANSWER_REQUESTED_WIRE =
   '{"v":1,"type":"control.requested","runId":"run-control-answer","seq":1,"ts":"2026-09-08T00:00:00.000Z","payload":{"by":"principal:user:alice","controlId":"control-answer-1","decisionId":"decision-1","kind":"answer","optionId":"allow"}}';
 const CONTROL_ANSWER_APPLIED_WIRE =

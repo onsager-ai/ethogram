@@ -99,7 +99,7 @@ renumbering it. This assumes each producer submits drafts to exactly one sink
 per run; concurrent sinks would require `seq` to gain a partition.
 
 **An optional field is either absent or has a value; an explicit `null` is a
-parse error (hub#146).** Absence is the only spelling of absence. The likeliest
+parse error (onsager-ai/ostrom-hub#146).** Absence is the only spelling of absence. The likeliest
 source of a stray `null` is a JavaScript producer: `JSON.stringify` omits an
 `undefined` field but preserves a `null` one, so a producer that initialises a
 field to `null` rather than leaving it unset would put a value meaning "no
@@ -121,7 +121,7 @@ handoffs, and relays are kinds of run, not separate concepts.
 
 `kind` is one of `loop`, `handoff`, `subagent`, `session`, `judgment`, or
 `relay`. **Each is decided by a fact a producer can check, not by what its
-name suggests, and the checks are ordered so that no run fits two** (#64).
+name suggests, and the checks are ordered so that no run fits two** (onsager-ai/ethogram#64).
 Apply them top down and take the first that holds:
 
 | order | kind | the run | the check |
@@ -180,7 +180,7 @@ consumers. `agent.completed.usage` has the same shape and meaning as
 `run.finished.usage`; it is one wire shape rather than two coincidentally
 similar declarations.
 
-**Payloads are tolerant at read and retaining on forward (issue #12).** An
+**Payloads are tolerant at read and retaining on forward (issue onsager-ai/ethogram#12).** An
 unknown payload field is never rejected and never dropped: a sink that
 forwards an event it does not fully understand must be byte-preserving, or the
 stream loses data silently at exactly the boundary this protocol exists to
@@ -192,7 +192,7 @@ it carries. Closed-union membership and capture bounds are enforced by
 invalid event. Unknown event `type`s remain open, as they always were.
 
 **Additive on the wire is deliberately not additive in Rust source (ruled on
-#67).** The payload structs are not `#[non_exhaustive]`, so adding an optional
+onsager-ai/ethogram#67).** The payload structs are not `#[non_exhaustive]`, so adding an optional
 field breaks any `Payload { … }` literal until it names the new field. That is
 the intent, not an oversight: a **producer** building a payload by literal
 must decide what the new field should hold, and a compile error is the only
@@ -203,7 +203,7 @@ rule holds for every payload field added from here, so it does not need
 re-arguing each time.
 
 **Opening those unions this way only stays safe because of a consumer rule
-(ruled on #12), and this repository is where that rule has to be written
+(ruled on onsager-ai/ethogram#12), and this repository is where that rule has to be written
 down.** An unfamiliar member of any union that retains unknown strings — every
 closed union named above, and the open `ControlAppliedReason` — is rendered
 with its raw value, never mapped onto a known member; a consumer that must act on a
@@ -231,7 +231,7 @@ verdict. This repository defines the transport and cannot enforce that; a
 consumer that renders narration and also acts on it has broken a constraint
 this format assumes.
 
-**Two bounds apply universally, under the per-field ones above (issue #28).**
+**Two bounds apply universally, under the per-field ones above (issue onsager-ai/ethogram#28).**
 The named bounds just described exist only for the types this SDK knows;
 without a floor beneath them, an unrecognised `type` — the one shape neither
 per-field check above ever runs against — could carry an unbounded payload
@@ -422,7 +422,7 @@ its own run — not by the run that requested the decision, which has usually
 already finished by the time a human responds.** The two events are
 correlated only by `decisionId`, never by sharing a `runId`, and
 `decision.answered` is never emitted by a console that merely collected the
-answer. This is a correction (ruled on #7): a run has at most one
+answer. This is a correction (ruled on onsager-ai/ethogram#7): a run has at most one
 `run.finished`, and a sink refuses every append to a closed run, so an answer
 emitted "on the owning run" minutes or hours later would be refused by the
 sink — the previous wording described something the protocol's own rules
@@ -434,7 +434,7 @@ name. `byTimeout` is semantically material: a permission that expired
 unanswered is nobody deciding, not a decision with a long response gap.
 
 `reversal`, when present, names the identifier that would undo this answer,
-in one of two forms (ruled on #7): an offered `options[].id`, or a
+in one of two forms (ruled on onsager-ai/ethogram#7): an offered `options[].id`, or a
 `<verb>:<subject>` **action id** — `revoke:required_checks` undoes
 `excuse:required_checks`, even though `revoke:required_checks` was never
 among the options offered to the human, because those options were about

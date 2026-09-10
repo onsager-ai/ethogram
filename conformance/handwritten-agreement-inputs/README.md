@@ -23,7 +23,7 @@ echoes for `no-such-decision`, `already-answered`, and `option-not-offered`.
 Both SDK test suites also hand-build these shapes and pin identical canonical
 JSON literals independently of these files.
 
-**Two of the five are now superseded and gone**: ostrom#541 produced the first
+**Two of the five are now superseded and gone**: onsager-ai/ostrom#541 produced the first
 real permission exchange, so `control-requested-answer.json` and
 `control-applied-answer.json` in `v1/` replace the hand-written answer request
 and positive echo.
@@ -39,11 +39,11 @@ cross-SDK coverage of those reasons and replace it with nothing.
 ## Permanent — no producer can supersede these
 
 Two exist to put a claim into the byte diff that the two suites had only been
-asserting separately (#53):
+asserting separately (onsager-ai/ethogram#53):
 
 - **`run-finished-band-cost.json`** carries `costUsd` of `2.5e-6`, inside the
   one decade — `[1e-6, 1e-5)` — where `serde_json` and ECMAScript disagree
-  about notation for the same double (#9, class 4). It is stored as `2.5e-6`
+  about notation for the same double (onsager-ai/ethogram#9, class 4). It is stored as `2.5e-6`
   and both SDKs must emit `0.0000025`, which is also a reminder that the
   stored form of an input is never the wire form. No corpus fixture can carry
   this value: fixtures are captures, and no capture has produced a cost in
@@ -53,7 +53,7 @@ asserting separately (#53):
   sorting both before the first known key (`0alpha`) and after the last
   (`zzzTail`), plus a nested object and an array, so key ordering is compared
   across the boundary rather than only at the end. It also carries four
-  number shapes (issue #57): a large integer just inside the safe bound
+  number shapes (issue onsager-ai/ethogram#57): a large integer just inside the safe bound
   (`bigInt`), a small integer (`smallInt`), an integral-valued float
   (`integralFloat`, stored as `2.0`), and a non-integral value inside the
   divergent `[1e-6, 1e-5)` band (`fraction`, stored as `0.000001`).
@@ -61,11 +61,11 @@ asserting separately (#53):
   **This input now catches Rust dropping an unknown field, too.** The Rust
   conformance binary deserialises this input's payload into
   `RunStartedPayload` and re-serialises it through the same canonicaliser as
-  a third, typed column (issue #57), compared against both Rust's untyped
+  a third, typed column (issue onsager-ai/ethogram#57), compared against both Rust's untyped
   column and TypeScript's. Reverting `RunStartedPayload.extra`'s
   `#[serde(flatten)]` to `#[serde(skip)]` now fails `./conformance/run.sh`,
   naming this input, where it previously stayed green — this input's earlier
-  README note said exactly the opposite, and issue #57 is what closed the
+  README note said exactly the opposite, and issue onsager-ai/ethogram#57 is what closed the
   gap. The four number shapes above replace two hand-synced unit tests that
   used to be the only thing checking that `#[serde(flatten)]`'s internal
   buffering does not perturb a number's wire representation: Rust's
@@ -74,11 +74,11 @@ asserting separately (#53):
   once the typed column was confirmed, by the same revert-and-check above,
   to reach these numbers through this input.
 
-And one to prove the *other* branch of that comparison (#60):
+And one to prove the *other* branch of that comparison (onsager-ai/ethogram#60):
 
 - **`unrecognised-type.json`** carries the `type`
   `x-conformance.unrecognised-by-design`, which no vocabulary will ever take.
-  Unknown types are open by design (#12): such an event must parse,
+  Unknown types are open by design (onsager-ai/ethogram#12): such an event must parse,
   canonicalise and forward byte-for-byte, and this is the only input in the
   repository that makes the harness do it. Rust has no struct to deserialise
   it into, so it stays **untyped-only** — `run.sh` reports it as `compared 1
@@ -93,7 +93,7 @@ And one to prove the *other* branch of that comparison (#60):
 
   It is also the harness's only cross-SDK check that an unrecognised type
   passes `validate` cleanly rather than being refused — every input here must
-  validate, and for an unknown type only the universal bounds from #28 apply.
+  validate, and for an unknown type only the universal bounds from onsager-ai/ethogram#28 apply.
 
 The conformance harness asserts that every input here validates cleanly, then
 compares both SDKs' production canonical serialisation byte for byte under

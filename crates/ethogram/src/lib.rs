@@ -22,7 +22,7 @@ pub const MAX_EXCERPT_SCALARS: usize = 4_096;
 /// Maximum serialised size, in UTF-8 bytes, of a payload **alone** — the
 /// payload only, never the envelope around it — measured on the same
 /// canonical compact serialisation `serialise_event` produces for it (issue
-/// #28). [`validate`] enforces this for every event, including one whose
+/// onsager-ai/ethogram#28). [`validate`] enforces this for every event, including one whose
 /// `type` it does not recognise, as a floor under [`MAX_TEXT_SCALARS`] and
 /// [`MAX_EXCERPT_SCALARS`]: those bound named fields on types this SDK
 /// knows, and have nothing to say about an unrecognised type's payload.
@@ -94,7 +94,7 @@ pub const KNOWN_TYPES: [&str; 13] = [
 ///
 /// On the wire the corresponding payload field is optional, and **its absence
 /// means `false`**. A producer may also emit `false` explicitly, and both
-/// forms are conforming — the protocol says nothing stronger (ruled on #12).
+/// forms are conforming — the protocol says nothing stronger (ruled on onsager-ai/ethogram#12).
 /// Canonicalisation governs *notation*, not *presence*: it fixes how a value
 /// is spelled once written, and does not decide whether an optional field is
 /// written at all. Requiring omission would have made goldens already derived
@@ -115,7 +115,7 @@ pub struct Excerpt {
 /// segmentation.
 ///
 /// Unlike the TypeScript SDK's `excerpt()`, this never needs to replace a
-/// lone surrogate with `U+FFFD` (issue #6): a Rust `&str` is guaranteed
+/// lone surrogate with `U+FFFD` (issue onsager-ai/ethogram#6): a Rust `&str` is guaranteed
 /// well-formed UTF-8 and so cannot hold an unpaired surrogate code unit in
 /// the first place — there is nothing here for that rule to act on. The
 /// asymmetry exists because a lone surrogate is representable in a
@@ -134,7 +134,7 @@ pub fn excerpt(text: &str, max: usize) -> Excerpt {
 /// The largest magnitude at which an integral number round-trips exactly
 /// between this SDK and the TypeScript SDK (2^53 − 1, `Number.MAX_SAFE_INTEGER`
 /// in JavaScript). Shared by `Event.seq` validation and payload-number
-/// validation (issue #9): both reject an out-of-range integral value at parse
+/// validation (issue onsager-ai/ethogram#9): both reject an out-of-range integral value at parse
 /// time rather than rounding it.
 const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 
@@ -147,7 +147,7 @@ const MAX_SAFE_INTEGER_MAGNITUDE: u64 = 9_007_199_254_740_991;
 ///
 /// Each member is decided by a fact a producer can check rather than by what
 /// its name suggests, and they are **ordered**, so no run fits two. Apply the
-/// checks top down and take the first that holds (#64):
+/// checks top down and take the first that holds (onsager-ai/ethogram#64):
 ///
 /// 1. `parentRunId` present — [`Subagent`](Self::Subagent)
 /// 2. observes other runs and changes nothing — [`Relay`](Self::Relay)
@@ -512,7 +512,7 @@ impl<'de> Deserialize<'de> for DecisionKind {
 }
 
 /// Unknown fields on a payload are never rejected and never dropped (issue
-/// #12): a sink that forwards an event it does not fully understand must be
+/// onsager-ai/ethogram#12): a sink that forwards an event it does not fully understand must be
 /// byte-preserving, or the stream loses data silently at exactly the
 /// boundary this protocol exists to cross. Each payload struct below carries
 /// one of these as a `#[serde(flatten)]` field, so a field this SDK does not
@@ -1032,7 +1032,7 @@ pub struct ControlAppliedPayload {
     /// The principal identity that applied the control, with the same meaning
     /// as `by` on `control.requested`: an identity a consumer renders and
     /// never interprets. Optional, because a runtime echoing a control it does
-    /// not support may have no separate applier to name (#67).
+    /// not support may have no separate applier to name (onsager-ai/ethogram#67).
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
@@ -1210,7 +1210,7 @@ pub struct DecisionRequestedPayload {
 /// by sharing a `run_id`; it is never emitted by a console that merely
 /// collected the answer.
 ///
-/// This wording is a correction (ruled on #7). The previous wording said this
+/// This wording is a correction (ruled on onsager-ai/ethogram#7). The previous wording said this
 /// event was emitted by the run that owns the decision, but that describes
 /// something the protocol's own rules forbid: a run has at most one
 /// `run.finished`, and a sink refuses every append to a closed run. A
@@ -1241,7 +1241,7 @@ pub struct DecisionAnsweredPayload {
     )]
     pub by_timeout: Option<bool>,
     /// The identifier that would undo this answer, if the producer accepts
-    /// one. Two forms (ruled on #7):
+    /// one. Two forms (ruled on onsager-ai/ethogram#7):
     ///
     /// - an offered `options[].id`, or
     /// - a `<verb>:<subject>` **action id** — `revoke:required_checks` undoes
@@ -1345,7 +1345,7 @@ pub fn stamp<P>(draft: EventDraft<P>, fields: StampFields) -> Event<P> {
 /// forwarder can relay an over-bound event faithfully.
 ///
 /// A payload's *unknown fields* are a separate axis from its *unknown type*
-/// and are tolerated rather than rejected (issue #12): recognised payloads do
+/// and are tolerated rather than rejected (issue onsager-ai/ethogram#12): recognised payloads do
 /// not carry `deny_unknown_fields`, so an unfamiliar field does not fail
 /// representability checking here, and each payload's `#[serde(flatten)]`
 /// extension field
@@ -1370,7 +1370,7 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
 /// [`RunKind`], [`RunOutcome`], [`ControlKind`], [`CaptureRefusalCause`], and
 /// [`DecisionKind`]. Both sets are declared in `union_unknown_validation`.
 ///
-/// After the typed check, two universal bounds (issue #28) apply to **every** event
+/// After the typed check, two universal bounds (issue onsager-ai/ethogram#28) apply to **every** event
 /// regardless of whether `event_type` is recognised: every string leaf
 /// anywhere in the payload — nested objects at any depth, strings inside
 /// arrays, strings inside objects nested inside arrays, and a known type's
@@ -1402,7 +1402,7 @@ where
         .map_err(|error| ValidationError::malformed("payload", error.to_string()))?;
 
     // Universal bounds: run before the known-type branch below, and for
-    // every event including one of an unrecognised type (issue #28).
+    // every event including one of an unrecognised type (issue onsager-ai/ethogram#28).
     validate_payload_text_scalars(&payload, "payload")?;
     validate_payload_size(&payload)?;
 
@@ -1629,7 +1629,7 @@ where
 /// of being misreported as an unrecognised option.
 ///
 /// The two `decision_id` values must match. `reversal`, when present, is
-/// **not** checked here (ruled on #7): it may name either an offered option
+/// **not** checked here (ruled on onsager-ai/ethogram#7): it may name either an offered option
 /// or a `<verb>:<subject>` action id the producer accepts as a later answer
 /// to this same decision, and only the producer knows which action ids it
 /// accepts — see [`DecisionAnsweredPayload::reversal`]'s doc comment for why
@@ -1792,13 +1792,13 @@ fn check_known_payload_representation(event_type: &str, payload: &Value) -> serd
 ///
 /// Numbers are canonicalised before serialisation: any `f64` with a zero
 /// fractional part and a magnitude below 2^53 is emitted as an integer, so
-/// that `1.0` and `1` produce identical bytes (issue #9). This matches the
+/// that `1.0` and `1` produce identical bytes (issue onsager-ai/ethogram#9). This matches the
 /// TypeScript SDK, where `JSON.stringify` already collapses `1.0` to `1`.
 ///
 /// Every remaining `f64` — non-integral values, and integral values at or
 /// above 2^53 that the rule above leaves as floats — is laid out in
 /// ECMAScript's `Number::toString` notation rather than `serde_json`'s own
-/// (issue #9): plain decimal when the value's decimal exponent falls in
+/// (issue onsager-ai/ethogram#9): plain decimal when the value's decimal exponent falls in
 /// `[-6, 21)`, exponential otherwise. `serde_json` agrees with JavaScript on
 /// which digits to print (both compute the shortest round-tripping decimal),
 /// so `float_serialiser` below re-lays those digits rather than
@@ -1832,7 +1832,7 @@ pub fn serialise_validation_error(error: &ValidationError) -> serde_json::Result
 /// example `payload.nested.count` or `payload.items[2].total`) when the
 /// check fails. Non-integral numbers are never bounded, no matter how large
 /// their magnitude. Mirrors `deserialize_seq` and reuses the same bound
-/// (issue #9): a value that needs more precision must be carried as a string
+/// (issue onsager-ai/ethogram#9): a value that needs more precision must be carried as a string
 /// instead of a number.
 fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), ValidationError> {
     match value {
@@ -1872,7 +1872,7 @@ fn validate_payload_numbers(value: &Value, path: &str) -> Result<(), ValidationE
 /// Note that every `f64` at or beyond 2^52 in magnitude is integral by
 /// construction — IEEE 754 leaves no mantissa bits for a fractional part at
 /// that scale — so this rejects large-magnitude floats such as `1e21` and
-/// `f64::MAX` alike; neither is special-cased, per the ruling in issue #9.
+/// `f64::MAX` alike; neither is special-cased, per the ruling in issue onsager-ai/ethogram#9.
 fn number_exceeds_safe_integer_magnitude(number: &serde_json::Number) -> bool {
     if let Some(value) = number.as_i64() {
         return value.unsigned_abs() > MAX_SAFE_INTEGER_MAGNITUDE;
@@ -1887,7 +1887,7 @@ fn number_exceeds_safe_integer_magnitude(number: &serde_json::Number) -> bool {
 }
 
 /// Recursively validates that every string leaf in `value` is at most
-/// [`MAX_TEXT_SCALARS`] Unicode scalar values (issue #28), naming the
+/// [`MAX_TEXT_SCALARS`] Unicode scalar values (issue onsager-ai/ethogram#28), naming the
 /// offending path (for example `payload.nested.note` or
 /// `payload.items[2].note`) when the check fails. Mirrors
 /// [`validate_payload_numbers`] exactly, walking nested objects at any depth,
@@ -1951,7 +1951,7 @@ fn serialise_payload_canonical(payload: &Value) -> serde_json::Result<Vec<u8>> {
 
 /// Validates that `payload` alone — not the envelope around it — serialises
 /// to at most [`MAX_PAYLOAD_BYTES`] UTF-8 bytes in its canonical compact form
-/// (issue #28). See [`MAX_PAYLOAD_BYTES`]'s own doc comment for why this
+/// (issue onsager-ai/ethogram#28). See [`MAX_PAYLOAD_BYTES`]'s own doc comment for why this
 /// bound and [`MAX_TEXT_SCALARS`] do not collide.
 ///
 /// [`validate`] calls this unconditionally, before branching on whether
@@ -1981,10 +1981,10 @@ fn validate_payload_size(payload: &Value) -> Result<(), ValidationError> {
 }
 
 /// The largest magnitude at which every integer is exactly representable as
-/// an `f64`, per the ruling in issue #9.
+/// an `f64`, per the ruling in issue onsager-ai/ethogram#9.
 const MAX_SAFE_INTEGRAL_MAGNITUDE: f64 = 9_007_199_254_740_992.0;
 
-/// Recursively rewrites integral-valued floats as integers, per issue #9.
+/// Recursively rewrites integral-valued floats as integers, per issue onsager-ai/ethogram#9.
 ///
 /// An `f64` with a zero fractional part and a magnitude below 2^53 is
 /// replaced by the equivalent integer `Value`. Every other number —
@@ -2034,7 +2034,7 @@ fn canonicalise_number(number: serde_json::Number) -> serde_json::Number {
 }
 
 /// A `serde_json` `Formatter` that re-lays every `f64` it is asked to write
-/// into ECMAScript's `Number::toString` notation (issue #9), leaving every
+/// into ECMAScript's `Number::toString` notation (issue onsager-ai/ethogram#9), leaving every
 /// other token — strings, booleans, `null`, and the plain integers that
 /// `canonicalise_number` already produced — exactly as `serde_json`'s own
 /// `CompactFormatter` would write them. `Formatter`'s default methods forward
@@ -2077,7 +2077,7 @@ impl serde_json::ser::Formatter for EcmaScriptFormatter {
 /// - else if `0 < n <= 21`: the digits with a decimal point inserted after
 ///   the `n`th one;
 /// - else if `-6 < n <= 0`: `"0."` followed by `-n` zeroes and the digits —
-///   this is the plain-decimal band the ruling in issue #9 is about, since
+///   this is the plain-decimal band the ruling in issue onsager-ai/ethogram#9 is about, since
 ///   `serde_json` switches to exponential one step earlier, at `n = -5`
 ///   rather than `n = -6`;
 /// - otherwise: exponential notation, the first digit, a `.` and the
@@ -2228,7 +2228,7 @@ where
 /// Deserializes a `u64` and rejects a magnitude beyond
 /// `MAX_SAFE_INTEGER_MAGNITUDE`, reusing the same bound and the same
 /// `number_exceeds_safe_integer_magnitude` check `validate_payload_numbers`
-/// uses (issue #9). `u64` deserialization already rejects a negative or
+/// uses (issue onsager-ai/ethogram#9). `u64` deserialization already rejects a negative or
 /// non-integral value by construction, so this adds only the missing upper
 /// bound.
 ///
@@ -2290,7 +2290,7 @@ impl Display for SequenceError {
 impl Error for SequenceError {}
 
 /// A run has at most one `run.finished`, and a sink that has recorded it
-/// refuses later appends and forwards for that run (issues #5 and #3). This
+/// refuses later appends and forwards for that run (issues onsager-ai/ethogram#5 and onsager-ai/ethogram#3). This
 /// is refused by [`InMemorySink::append_draft`] or
 /// [`InMemorySink::append_event`] once that run has recorded a terminal
 /// event — including a second `run.finished`, and including any other event
@@ -2356,7 +2356,7 @@ impl Error for AppendError {
 /// [`InMemorySink::append_draft`] and [`InMemorySink::append_event`], and
 /// regardless of the later event's own type, so a `run.finished` followed by
 /// an `agent.text` is refused exactly as a second `run.finished` would be.
-/// This makes the assumption issue #5 rests its "simpler to fold and to
+/// This makes the assumption issue onsager-ai/ethogram#5 rests its "simpler to fold and to
 /// prove terminal" argument on — that a run has at most one terminal event —
 /// something this sink actually enforces rather than merely hopes for.
 pub struct InMemorySink<P = Value> {
@@ -2471,8 +2471,8 @@ mod tests {
     const RELAY_CEILINGS_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-batch","seq":1,"ts":"2026-09-07T04:00:00.000Z","payload":{"actor":"observer","ceilings":{"costUsd":2.5,"idleMs":30000,"tokens":4000,"turns":12,"wallMs":60000},"harness":"relay-harness","kind":"relay"}}"#;
     const CAPPED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}"#;
 
-    // Cross-SDK byte identity for the two outcomes added by spec #31
-    // (ostrom-hub#146). These exact literals are pasted into the TypeScript
+    // Cross-SDK byte identity for the two outcomes added by spec onsager-ai/ethogram#31
+    // (onsager-ai/ostrom-hub#146). These exact literals are pasted into the TypeScript
     // suite and asserted there against events hand-built through its typed
     // API.
     const BLOCKED_OUTCOME_WIRE: &str = r#"{"v":1,"type":"run.finished","runId":"run-blocked","seq":1,"ts":"2026-09-07T08:00:00.000Z","payload":{"durationMs":500,"outcome":"blocked","reason":"awaiting-upstream-quota"}}"#;
@@ -2493,14 +2493,14 @@ mod tests {
     const AGENT_COMPLETED_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":5,"ts":"2026-09-07T01:00:05.000Z","payload":{"costUsd":1.25,"durationMs":2500,"estimated":true,"model":"gpt-5","stage":"finish","turns":3,"usage":{"cacheCreationTokens":30,"cacheReadTokens":20,"inputTokens":10,"outputTokens":40,"unit":"weighted-tokens"}}}"#;
     const AGENT_WARNING_WIRE: &str = r#"{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}"#;
 
-    // Cross-SDK byte identity for `agent.completed.sessionId` (issue #6 on
-    // umwelt#22). This exact literal is pasted into the TypeScript suite and
+    // Cross-SDK byte identity for `agent.completed.sessionId` (issue onsager-ai/ethogram#6 on
+    // onsager-ai/umwelt#22). This exact literal is pasted into the TypeScript suite and
     // asserted there against an event built from TypeScript's correlated
     // payload union, proving both SDKs agree on the new field's bytes without
     // touching a single existing fixture.
     const AGENT_COMPLETED_WITH_SESSION_WIRE: &str = r#"{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}"#;
 
-    // Cross-SDK byte identity for both `control.*` events (spec #8). These
+    // Cross-SDK byte identity for both `control.*` events (spec onsager-ai/ethogram#8). These
     // exact literals are pasted into the TypeScript suite and asserted there
     // against events built from TypeScript's correlated payload union.
     const CONTROL_REQUESTED_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-control","seq":1,"ts":"2026-09-07T05:00:00.000Z","payload":{"by":"operator","controlId":"control-1","kind":"steer","text":"take point on the next turn","truncated":false}}"#;
@@ -2508,13 +2508,13 @@ mod tests {
     const CONTROL_APPLIED_INTERRUPT_WIRE: &str = r#"{"v":1,"type":"control.applied","runId":"run-control","seq":3,"ts":"2026-09-07T05:00:02.000Z","payload":{"controlId":"control-2","landedIn":"tool-9","ok":true}}"#;
 
     // This value is intentionally one neither SDK will ever know, matching
-    // issue #12's own example. Keeping the same literal in both suites proves
+    // issue onsager-ai/ethogram#12's own example. Keeping the same literal in both suites proves
     // an older relay retaining an unfamiliar member emits exactly the bytes a
     // future vocabulary-aware SDK would emit.
     const UNKNOWN_CONTROL_KIND_WIRE: &str = r#"{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}"#;
 
     // Cross-SDK byte identity for a fully populated `over_bound` refusal and
-    // a minimal `gap` refusal (spec #15). These exact literals are pasted into
+    // a minimal `gap` refusal (spec onsager-ai/ethogram#15). These exact literals are pasted into
     // the TypeScript suite and asserted against events hand-built through each
     // SDK's typed API.
     const CAPTURE_REFUSED_OVER_BOUND_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":1,"ts":"2026-09-07T06:00:00.000Z","payload":{"cause":"over_bound","count":20000,"field":"AgentTextPayload.text","max":16384,"sourceRunId":"run-source","sourceSeq":8,"sourceType":"agent.text"}}"#;
@@ -2524,7 +2524,7 @@ mod tests {
     // string and the whole canonical event must survive an older relay exactly.
     const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE: &str = r#"{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}"#;
 
-    // Cross-SDK byte identity for both decision events (spec #7). These exact
+    // Cross-SDK byte identity for both decision events (spec onsager-ai/ethogram#7). These exact
     // literals are pasted into the TypeScript suite and asserted against
     // events hand-built through each SDK's typed API.
     const DECISION_REQUESTED_WIRE: &str = r#"{"v":1,"type":"decision.requested","runId":"run-decision","seq":1,"ts":"2026-09-07T07:00:00.000Z","payload":{"decisionId":"decision-1","dossier":{"blastRadius":"one repository","optionsRuledOut":["auto-proceed","discard the request"],"question":"May the run execute the deployment tool?","recommendedAction":"deny unless the operator confirms the target","truncated":false},"expiresAt":"2026-09-07T07:05:00.000Z","kind":"permission","onTimeout":"deny","options":[{"id":"allow","label":"Allow once"},{"id":"deny","label":"Deny"}],"subject":"deploy"}}"#;
@@ -2532,12 +2532,12 @@ mod tests {
     const DECISION_ANSWERED_TIMEOUT_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}"#;
 
     // Cross-SDK byte identity for `decision.answered.requestedRunId` (spec
-    // #7 correction). This exact literal is pasted into the TypeScript suite
+    // onsager-ai/ethogram#7 correction). This exact literal is pasted into the TypeScript suite
     // and asserted against an event hand-built through each SDK's typed API.
     const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE: &str = r#"{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}"#;
 
     // Cross-SDK byte identity for a `<verb>:<subject>` action-id `reversal`
-    // (ruled on #7): `revoke:required_checks` undoes `excuse:required_checks`
+    // (ruled on onsager-ai/ethogram#7): `revoke:required_checks` undoes `excuse:required_checks`
     // even though it was never among the options offered to the human. This
     // exact literal is pasted into the TypeScript suite and asserted against
     // an event hand-built through each SDK's typed API.
@@ -2602,7 +2602,7 @@ mod tests {
 
     #[test]
     fn every_run_kind_member_carries_a_definition() {
-        // Issue #64: each member is decided by a fact a producer can check,
+        // Issue onsager-ai/ethogram#64: each member is decided by a fact a producer can check,
         // and the definition lives on the variant so a consumer meets it at
         // the type rather than in a README they may never open. The marker
         // is the phrase that introduces that fact, not the whole sentence —
@@ -2622,7 +2622,7 @@ mod tests {
         // Two independent scans of the same declaration. A scan that goes
         // blind fails open — it would only check the members it happened to
         // find — so the variant list and the wire-string list must agree
-        // before either is trusted (the #55 lesson, and the #57 shape).
+        // before either is trusted (the onsager-ai/ethogram#55 lesson, and the onsager-ai/ethogram#57 shape).
         let mut declared: Vec<&str> = Vec::new();
         let mut documented: Vec<&str> = Vec::new();
         let mut doc = String::new();
@@ -2679,7 +2679,7 @@ mod tests {
         assert!(
             undefined.is_empty(),
             "RunKind members without a definition ({MARKER:?} in their doc comment): {}; \
-             every member is decided by a producer-checkable fact (#64)",
+             every member is decided by a producer-checkable fact (onsager-ai/ethogram#64)",
             undefined.join(", ")
         );
     }
@@ -2727,7 +2727,7 @@ mod tests {
 
     #[test]
     fn validate_refuses_the_hub_literal_abandoned() {
-        // ostrom-hub#146: `abandoned` is the hub's own name for `timed-out`
+        // onsager-ai/ostrom-hub#146: `abandoned` is the hub's own name for `timed-out`
         // under another spelling, and the hub renames it rather than this
         // protocol adopting it. It is refused exactly like any other
         // unrecognised value — this test is what stops someone adding it
@@ -2899,7 +2899,7 @@ mod tests {
     fn validate_leaves_unknown_event_types_open_to_anything_within_the_universal_bounds() {
         // No per-field or closed-union checks apply to an unrecognised type
         // (there is no typed struct to check against), but it is not fully
-        // unvalidated any more: the universal bounds (issue #28) still run.
+        // unvalidated any more: the universal bounds (issue onsager-ai/ethogram#28) still run.
         // This payload sits comfortably under both, so it validates cleanly.
         assert!(validate("future.happened", &json!("not-an-object")).is_ok());
     }
@@ -2908,7 +2908,7 @@ mod tests {
     fn validate_reports_every_capture_bound_with_field_actual_and_maximum() {
         let cases = [
             // `agent.text`'s own bound is `MAX_TEXT_SCALARS` — the same value
-            // as the universal text-scalar floor (issue #28), which runs
+            // as the universal text-scalar floor (issue onsager-ai/ethogram#28), which runs
             // first in `validate` and so is what actually reports this case;
             // the field-specific `AgentTextPayload.text` check below it is
             // never reached for an over-bound `text`, since nothing over the
@@ -3010,7 +3010,7 @@ mod tests {
         let event = parse_event(&input).unwrap();
         let error = validate(&event.event_type, &event.payload).unwrap_err();
 
-        // Reported by the universal text-scalar bound (issue #28), which
+        // Reported by the universal text-scalar bound (issue onsager-ai/ethogram#28), which
         // runs before the known-type branch and shares `agent.text`'s own
         // bound value, so it is what actually reports this case. If
         // `MAX_TEXT_SCALARS` ever rises above `agent.text`'s field bound, the
@@ -3865,7 +3865,7 @@ mod tests {
         );
     }
 
-    // -- control.* (spec #8) ---------------------------------------------
+    // -- control.* (spec onsager-ai/ethogram#8) ---------------------------------------------
 
     #[test]
     fn parse_event_accepts_every_permitted_control_kind_without_text() {
@@ -3929,7 +3929,7 @@ mod tests {
     #[test]
     fn parses_an_unknown_control_kind_verbatim_and_validate_reports_it() {
         // "teleport" is a value neither SDK will ever know, matching issue
-        // #12's own example. There is deliberately no `pause` member either
+        // onsager-ai/ethogram#12's own example. There is deliberately no `pause` member either
         // (see `ControlKind`'s doc comment), but that is a closed-vocabulary
         // fact, not an unknown-string one, so it is not exercised here.
         let input = lifecycle_event_input(
@@ -4131,7 +4131,7 @@ mod tests {
         );
     }
 
-    // -- capture.refused (spec #15) -------------------------------------
+    // -- capture.refused (spec onsager-ai/ethogram#15) -------------------------------------
 
     #[test]
     fn accepts_every_permitted_capture_refusal_cause() {
@@ -4383,7 +4383,7 @@ mod tests {
         }
     }
 
-    // -- decision.* (spec #7) ------------------------------------------
+    // -- decision.* (spec onsager-ai/ethogram#7) ------------------------------------------
 
     fn minimal_decision_request(kind: &str) -> Value {
         json!({
@@ -4672,7 +4672,7 @@ mod tests {
         timeout.by_timeout = None;
         assert!(validate_decision_answer_against_request(&request, &timeout).is_err());
 
-        // Ruled on #7: a `<verb>:<subject>` action id is a legitimate
+        // Ruled on onsager-ai/ethogram#7: a `<verb>:<subject>` action id is a legitimate
         // `reversal` even though it was never offered as a request option —
         // `revoke:required_checks` undoes `excuse:required_checks`, an
         // action the human was never offered as a choice. This deliberately
@@ -5038,7 +5038,7 @@ mod tests {
 
     #[test]
     fn decision_answered_with_action_reversal_matches_the_typescript_pinned_bytes() {
-        // Pins the loosened rule (ruled on #7): a `<verb>:<subject>` action
+        // Pins the loosened rule (ruled on onsager-ai/ethogram#7): a `<verb>:<subject>` action
         // id is a conforming `reversal` even though it names no option this
         // request ever offered.
         let answer = Event {
@@ -5123,9 +5123,9 @@ mod tests {
         assert!(error.to_string().contains("expected a string"));
     }
 
-    // -- an optional field is absent or has a value; null is neither (#28) --
+    // -- an optional field is absent or has a value; null is neither (onsager-ai/ethogram#28) --
     //
-    // Ruled from hub#146: an explicit `null` on an optional payload field is
+    // Ruled from onsager-ai/ostrom-hub#146: an explicit `null` on an optional payload field is
     // a parse error in both SDKs, because `Option<T>`/an optional field
     // cannot represent it faithfully — this is a representability question,
     // not a validation policy. `rejects_null_for_optional_captured_at_field`
@@ -5311,7 +5311,7 @@ mod tests {
     #[test]
     fn non_integral_values_outside_the_divergent_band_are_unchanged() {
         // `0.1` and `1e-7` already sit outside the `[1e-6, 1e-5)` band where
-        // `serde_json` and ECMAScript disagree on notation (issue #9), so
+        // `serde_json` and ECMAScript disagree on notation (issue onsager-ai/ethogram#9), so
         // relaying them through `relay_ecmascript_notation` reproduces
         // `serde_json`'s own bytes rather than changing them.
         let event = Event {
@@ -5361,10 +5361,10 @@ mod tests {
             ..complete_event()
         };
 
-        // The 2^53 bound in the ruling of issue #9 governs only whether a
+        // The 2^53 bound in the ruling of issue onsager-ai/ethogram#9 governs only whether a
         // float collapses to a wire integer, deliberately left unchanged
         // here: at and beyond 2^53 the value stays a float. But it is still
-        // a whole number, and ECMAScript's notation rule (also issue #9)
+        // a whole number, and ECMAScript's notation rule (also issue onsager-ai/ethogram#9)
         // gives every whole number in the plain-decimal band no decimal
         // point regardless of how it is represented internally, so this now
         // matches `(9007199254740992).toString()` in JavaScript instead of
@@ -5384,7 +5384,7 @@ mod tests {
         // Every expected string here was measured, not derived from belief
         // about the ECMA-262 algorithm: each is the exact output of
         // `JSON.stringify(JSON.parse(JSON.stringify(<input>)))` in Node 24.
-        // The band edges are the ones the ruling in issue #9 names
+        // The band edges are the ones the ruling in issue onsager-ai/ethogram#9 names
         // (`9.99e-7`, `1e-6`, `2.5e-6`, `1e-5`, `1.5e-5`, `1e20`, `1e21`);
         // the rest exercise a plain fraction, a small fraction outside the
         // band, and the extremes of `f64`'s exponent range, each with its
@@ -5724,7 +5724,7 @@ mod tests {
         // JavaScript (`Number.isInteger` returns `true` for it). Contrary to
         // a claim in an earlier draft of this change, it is therefore *not*
         // exempt from the bound — exempting it would itself be the kind of
-        // special case the ruling in issue #9 rules out for `1e21`.
+        // special case the ruling in issue onsager-ai/ethogram#9 rules out for `1e21`.
         let candidate = serde_json::to_value(Event {
             payload: json!({ "value": f64::MAX }),
             ..complete_event()
@@ -5791,7 +5791,7 @@ mod tests {
         assert_eq!(sink.events("run-1").len(), 1);
     }
 
-    // -- A run has at most one `run.finished` (issues #5 and #3) --------
+    // -- A run has at most one `run.finished` (issues onsager-ai/ethogram#5 and onsager-ai/ethogram#3) --------
 
     fn run_finished_draft(payload: Value) -> EventDraft {
         EventDraft {
@@ -5943,7 +5943,7 @@ mod tests {
     fn append_event_refuses_a_real_control_applied_after_run_finished() {
         // A `control.applied` sounds like the one post-terminal event that
         // "surely" should still be recordable — an interrupt landing just
-        // after the run ends. Ruled on umwelt#1: a closed run accepts
+        // after the run ends. Ruled on onsager-ai/umwelt#1: a closed run accepts
         // nothing after `run.finished`, control events included, and this is
         // refused the same way as any other post-terminal append: as
         // `RunClosed`, not `Sequence`, even though this append's `seq` is
@@ -6065,7 +6065,7 @@ mod tests {
     /// Builds an `Event<RunStartedPayload>` around a hand-written payload
     /// JSON body, going through the typed struct (not `Value`) so these
     /// tests exercise the `#[serde(flatten)]` extension field a caller using
-    /// the typed API directly would rely on for retention (issue #12), not
+    /// the typed API directly would rely on for retention (issue onsager-ai/ethogram#12), not
     /// just the untyped `Event<Value>` path `parse_event` returns.
     fn typed_run_started_event(payload_json: &str) -> Event<RunStartedPayload> {
         Event {
@@ -6083,7 +6083,7 @@ mod tests {
     fn unknown_payload_field_round_trips_across_the_sort_boundary() {
         // "0alpha" sorts before the known key "actor"; "zzzTail" sorts after
         // the known key "kind". Both unknown fields must survive parse and
-        // reappear in the canonical sorted position (issue #12).
+        // reappear in the canonical sorted position (issue onsager-ai/ethogram#12).
         let input = r#"{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","zzzTail":"after-kind"}"#;
 
         assert_eq!(
@@ -6105,7 +6105,7 @@ mod tests {
     #[test]
     fn payload_without_unknown_fields_serialises_exactly_as_before() {
         // The extension field must not surface as an empty object when there
-        // is nothing unknown to carry (issue #12).
+        // is nothing unknown to carry (issue onsager-ai/ethogram#12).
         let input = r#"{"kind":"loop","actor":"builder","harness":"codex"}"#;
 
         let serialised = serialise_event(&typed_run_started_event(input)).unwrap();
@@ -6117,7 +6117,7 @@ mod tests {
     }
 
     /// Cross-SDK byte identity for an event with an unknown payload field
-    /// (issue #12). This exact literal is also hand-built in the TypeScript
+    /// (issue onsager-ai/ethogram#12). This exact literal is also hand-built in the TypeScript
     /// suite (`index.test.ts`, "pins byte-identical bytes for an unknown
     /// payload field with Rust") and asserted there against the same string.
     const UNKNOWN_PAYLOAD_FIELD_WIRE: &str = r#"{"v":1,"type":"run.started","runId":"run-cross","seq":1,"ts":"2026-09-07T00:00:00.000Z","payload":{"0alpha":"before-actor","actor":"builder","harness":"codex","kind":"loop","list":[{"apple":2,"zebra":1},3,"text"],"nested":{"apple":2,"zebra":1},"zzzTail":"after-kind"}}"#;
@@ -6173,7 +6173,7 @@ mod tests {
         }
     }
 
-    // -- run.finished durationMs is a required u64 (follow-up to issue #6) --
+    // -- run.finished durationMs is a required u64 (follow-up to issue onsager-ai/ethogram#6) --
 
     #[test]
     fn rejects_a_non_integer_run_finished_duration() {

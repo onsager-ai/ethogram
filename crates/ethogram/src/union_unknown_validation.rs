@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn every_retaining_union_states_the_consumer_rule() {
-        // The three-clause consumer rule (ruled on #12, restated for #54):
+        // The three-clause consumer rule (ruled on onsager-ai/ethogram#12, restated for onsager-ai/ethogram#54):
         // an unknown member is rendered with its raw value, never mapped
         // onto a known member, and, when a consumer must act on it, treated
         // as "not this" rather than a default. This runs against every union
