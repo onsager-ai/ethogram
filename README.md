@@ -131,7 +131,7 @@ Apply them top down and take the first that holds:
 | 3 | `loop` | started by a schedule the operator declared, recurring at that cadence | `schedule` present, and the scheduler started it rather than a person or a dispatch |
 | 4 | `session` | an interactive harness session in which the harness's own user initiates the turns | a person started it at the harness, with `actor` naming the harness's notion of that user; no `schedule`, no work order |
 | 5 | `judgment` | its product is a decision or verdict record and nothing else — an answer to a queued item, a gate evaluated on demand | it emits `decision.*` or a verdict and changes no repository; a principal's or operator's command started it |
-| 6 | `handoff` | an orchestrator or principal dispatches a work order to an agent to carry out unattended, once | `workOrder`, or an equivalent intent reference, present; no `schedule`; no `parentRunId`; the product is work rather than a verdict |
+| 6 | `handoff` | an orchestrator or principal dispatches a work order to an agent to carry out unattended, once | **otherwise** — none of the five above holds. This row is the default arm, so a run reaching it is a `handoff` whether or not it carries `workOrder` or an equivalent intent reference; that field is typical of a handoff, not a condition for being one |
 
 The order is doing real work. A gatekeeper pass that runs on a schedule is a
 `loop`, because a schedule outranks what the run produces; the same evaluation
