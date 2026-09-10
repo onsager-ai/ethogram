@@ -16,7 +16,12 @@ cleanup() {
 trap cleanup EXIT
 
 pnpm --dir "$repository_root/packages/ethogram" run conformance "$typescript_output"
-cargo run --quiet --manifest-path "$repository_root/Cargo.toml" --package ethogram --bin conformance -- "$rust_output" "$rust_typed_output"
+# The crate's own manifest, not the tree root's. Cargo resolves the enclosing
+# workspace upward from a crate manifest, so this holds whether that workspace
+# is this tree's, a parent repository's after a fold, or none at all. Naming
+# the workspace root instead would assume this tree root *is* one, which is an
+# assumption a fold removes.
+cargo run --quiet --manifest-path "$repository_root/crates/ethogram/Cargo.toml" --bin conformance -- "$rust_output" "$rust_typed_output"
 
 test -f "$typescript_output/_harness.json"
 test -f "$rust_output/_harness.json"
