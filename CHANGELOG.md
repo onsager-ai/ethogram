@@ -12,6 +12,33 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### A captured `run.started`, and a rule about absent fields (onsager-ai/ethogram#77, onsager-ai/ostrom#546)
+
+The corpus gains its first `run.started`: a real capture from `ostrom pass
+builder` at ostrom `97219a9`, taken against this repository at
+`9e3cd3701b88b53f9b18e93480a477b3724dab40`. It is byte-identical to the first
+line of the producing sink's own file; `runId`, `seq` and `ts` are as produced.
+
+Its `kind` is `handoff` by the row-6 default arm settled in onsager-ai/ethogram#76 — the pass was
+hand-invoked, so it has no `schedule` and cannot be `loop`, and row 6 is
+terminal. It carries no `workOrder`, because the producer has no field holding
+an order id or equivalent intent reference and declines to synthesise one.
+
+A new rule comes with it: **an absent optional field records what one producer
+did on one run, and nothing more.** Every optional field in this corpus is
+omitted rather than nulled, so absence is the ordinary form and reads as
+unremarkable — which is what makes a missing field easy to misread as "this
+producer never emits it". A fixture cannot establish that. In this one it would
+be false for `ceilings`, absent because the capture's manifest declared no caps
+rather than because a pass omits them, and true for `schedule` and `workOrder`,
+which the producer genuinely leaves unset. Two absences, two different facts,
+identical notation; where an absence invites the wrong reading, the corpus now
+says which it is.
+
+Corpus 30 → 31 fixtures, 21 → 22 distinct `(type, payload-key-set)` shapes.
+`conformance/run.sh` reports 31 fixtures, 23 validation error cases and 6
+agreement inputs. No wire byte, existing fixture or behaviour changed.
+
 ### A fixture may be first to pin a rendering (onsager-ai/ethogram#70, onsager-ai/ostrom#552)
 
 The fixture-selection rule added days ago said a new fixture must be first to

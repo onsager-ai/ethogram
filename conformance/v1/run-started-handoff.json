@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "run.started",
+  "runId": "builder-20260910T072940585Z-2292627-0",
+  "seq": 1,
+  "ts": "2026-09-10T07:29:40.585Z",
+  "payload": {
+    "actor": "builder",
+    "harness": "claude",
+    "kind": "handoff"
+  }
+}
