@@ -50,7 +50,7 @@ fn every_run_id_belongs_to_exactly_one_capture() -> Result<(), Box<dyn Error>> {
     // equals it in both directions. That yields, without a second list:
     //
     //   - a new fixture joining any listed `runId` fails, colliding on `seq`
-    //     or not — which is the hole this replaces (issue #62);
+    //     or not — which is the hole this replaces (issue onsager-ai/ethogram#62);
     //   - a new fixture reusing a single-fixture `runId` such as `gate` fails
     //     too, because that `runId` becomes an unlisted group;
     //   - a withdrawal that shrinks or empties a group fails until the entry
@@ -185,15 +185,15 @@ fn the_permanent_agreement_inputs_are_still_present() -> Result<(), Box<dyn Erro
     const PERMANENT: &[(&str, &str)] = &[
         (
             "run-finished-band-cost.json",
-            "the only input inside the [1e-6, 1e-5) notation band, which no capture has produced and no fixture can carry (#53)",
+            "the only input inside the [1e-6, 1e-5) notation band, which no capture has produced and no fixture can carry (onsager-ai/ethogram#53)",
         ),
         (
             "run-started-unknown-fields.json",
-            "the only cross-SDK check of Rust's typed payload retention, and of the four number shapes through the flatten layer (#57)",
+            "the only cross-SDK check of Rust's typed payload retention, and of the four number shapes through the flatten layer (onsager-ai/ethogram#57)",
         ),
         (
             "unrecognised-type.json",
-            "the only input on the untyped-only branch; no producer emits a type invented to be unrecognised (#60)",
+            "the only input on the untyped-only branch; no producer emits a type invented to be unrecognised (onsager-ai/ethogram#60)",
         ),
     ];
 

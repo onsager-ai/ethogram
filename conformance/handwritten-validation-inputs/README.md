@@ -45,7 +45,7 @@ write canonical errors into their existing output directories, where
   in both the path and the diagnostic.
 - `wrong-type-payload.json`: a boolean instead of an `agent.text` object.
 
-The sixteen wrong-type cases close the gap described in #42: Rust now authors
+The sixteen wrong-type cases close the gap described in onsager-ai/ethogram#42: Rust now authors
 the same messages as TypeScript, so the harness compares their `kind`, `path`,
 and `message` byte-for-byte. Returning serde's diagnostic again must fail the
 recursive diff with the offending input's name. These messages may become

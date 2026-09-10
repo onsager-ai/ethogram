@@ -267,7 +267,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // The reach assertion (issue #57, following #55's lesson): bookkeeping
+    // The reach assertion (issue onsager-ai/ethogram#57, following onsager-ai/ethogram#55's lesson): bookkeeping
     // that says a typed column was produced must be checked against the
     // typed output directory actually holding that file, independently of
     // whatever the write step above believed it did. A driver bug that

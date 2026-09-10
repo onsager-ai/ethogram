@@ -32,7 +32,7 @@ outputs. That is the point of it. Every such field is excerpted at capture with
 an explicit truncation flag, never silently elided, and this repository states
 no opinion about what a consumer may do with it beyond that.
 
-<!-- Source: ostrom-hub#131, 2026-09-05, which amended that repository's
+<!-- Source: onsager-ai/ostrom-hub#131, 2026-09-05, which amended that repository's
      principle 4 from prohibition to bounded record. This repository defines
      the transport; the constraint that narration never reaches anything that
      decides is a consumer's to enforce, and is expected of every consumer.

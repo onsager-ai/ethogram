@@ -25,7 +25,7 @@ from the other.
   the first protocol version; `v0/` never exists.
 - A fixture's `runId`, `seq` and `ts` may be **synthesised** when the capture it
   came from never passed through a sink — a normaliser's drafts carry none of
-  the three, and they are sink-owned by definition (#3). Where they are
+  the three, and they are sink-owned by definition (onsager-ai/ethogram#3). Where they are
   synthesised, `seq` is the event's true position in its capture's normalised
   stream, so `seq` values are deliberately **not contiguous** across the
   fixtures drawn from one capture: they are a selection from a run, not a
@@ -59,7 +59,7 @@ from the other.
   **a producer's rendering of an existing field**, where both forms conform
   and the pair proves a consumer still reads each. That fourth item is not a
   footnote. The rule first listed only the other three and would have excluded
-  a fixture pinning something nothing else does: ostrom#552 changes
+  a fixture pinning something nothing else does: onsager-ai/ostrom#552 changes
   `decision.requested.expiresAt` from nanoseconds with a numeric offset to
   milliseconds with `Z`, and since neither this repository nor either SDK
   constrains a payload timestamp's format, both renderings conform and the
@@ -67,7 +67,7 @@ from the other.
   The corpus already holds five fixtures that pin a shape another fixture
   pins — three `decision.requested` at `kind: "tripwire"`, two at
   `human_decides`, and three `agent.completed` differing only in `turns`
-  (#70). Those are real captures and stay: immutability binds them, and a
+  (onsager-ai/ethogram#70). Those are real captures and stay: immutability binds them, and a
   withdrawal is for a fixture that was a guess, never for one that is merely
   redundant. The rule is forward-looking, and it exists because captures
   arrive several fixtures at a time — 30 fixtures span 21 distinct
@@ -76,7 +76,7 @@ from the other.
 - **The corpus deliberately holds more than one shape of the same event type.**
   When what a producer emits changes and both forms conform — a payload gains
   an optional field, or an existing field's rendering moves, as
-  `decision.requested.expiresAt` does in ostrom#552 — the earlier capture
+  `decision.requested.expiresAt` does in onsager-ai/ostrom#552 — the earlier capture
   stays and a new capture joins it, so the corpus keeps proving that both SDKs
   still read what an older producer wrote. **Presence and rendering both
   count**; the rule was written for the first and the second arrived anyway,
@@ -133,7 +133,7 @@ changed, and nothing prevents a future non-canonicalising producer from
 existing outside this repository — only that both SDKs here are now
 deterministic producers rather than merely equivalent up to reordering.
 
-Number formatting is also not a free variable (issue #9):
+Number formatting is also not a free variable (issue onsager-ai/ethogram#9):
 
 - **Integral-valued numbers serialise without a fractional part.** `1.0` is
   `1` on the wire. Left to each language's own JSON writer, two conforming
@@ -144,7 +144,7 @@ Number formatting is also not a free variable (issue #9):
   is below 2^53 is emitted as an integer, recursively, throughout the event
   including inside `payload`.
 - **A non-integral number's notation follows ECMAScript's, not
-  `serde_json`'s** (issue #9). Left alone, the two SDKs choose the same
+  `serde_json`'s** (issue onsager-ai/ethogram#9). Left alone, the two SDKs choose the same
   shortest round-tripping decimal digits for a given value but disagree on
   when to lay them out in plain decimal versus exponential form —
   `serde_json` switches to exponential notation at `1e-6`, while
@@ -180,7 +180,7 @@ Number formatting is also not a free variable (issue #9):
   range allows must be carried as a string instead of a number.
 
 Unlike that safe-integer bound, two further bounds are policy rather than
-representability (issue #28), so they belong to `validate` and not to
+representability (issue onsager-ai/ethogram#28), so they belong to `validate` and not to
 `parseEvent`/`parse_event`: every string leaf anywhere in a payload, at any
 depth, is at most 16,384 Unicode scalar values (`MAX_TEXT_SCALARS`), and the
 payload's own canonical serialisation is at most 131,072 bytes / 128 KiB
@@ -224,8 +224,8 @@ is a field of the kind (`Policy.message` or `Malformed.message`); stacks and
 SDK-specific display metadata are excluded.
 
 `capture.refused.detail` remains **non-authoritative**: the countable facts
-are the typed fields, per #15, and consumers must not key on diagnostic prose.
-But where both SDKs produce `detail`, they produce the **same bytes** (#42).
+are the typed fields, per onsager-ai/ethogram#15, and consumers must not key on diagnostic prose.
+But where both SDKs produce `detail`, they produce the **same bytes** (onsager-ai/ethogram#42).
 The harness compares the structured diagnostic messages from which a relay
 excerpts that detail, including wrong-type failures.
 
@@ -260,11 +260,11 @@ canonical serialisation to `agreement/<input-name>.json`; the same recursive
 byte diff used for the corpus compares these outputs. Counts are checked
 independently, so dropping an input from one set cannot be hidden by adding
 an input to another. The first five shapes cover the answer control verb and
-its echoes (#38); both SDK suites also pin their exact bytes from hand-built
+its echoes (onsager-ai/ethogram#38); both SDK suites also pin their exact bytes from hand-built
 typed events. Two more cover number notation and unfamiliar payload keys
-(#53), described in that directory's README.
+(onsager-ai/ethogram#53), described in that directory's README.
 
-**Rust produces a third column here, and for the corpus (issue #57).**
+**Rust produces a third column here, and for the corpus (issue onsager-ai/ethogram#57).**
 `parse_event` in Rust returns an `Event` whose payload is a
 `serde_json::Value`. It *does* construct `RunStartedPayload` or its sibling
 on the way, to check representability — but drops the result, so the typed
@@ -284,14 +284,14 @@ additionally proves Rust's typed payload layer, including every payload's
 opinion of a payload than the wire does; and Rust typed vs. TypeScript
 closes the loop.
 
-**That third comparison is redundant, deliberately (#70).** Byte equality is
+**That third comparison is redundant, deliberately (onsager-ai/ethogram#70).** Byte equality is
 transitive, so if TypeScript equals Rust untyped and Rust typed equals Rust
 untyped, Rust typed equals TypeScript — the third comparison can never be the
 only one to fail, and detects nothing the first two miss. It is kept for the
 diagnostic: when a run goes red, three results say which column is the odd one
 out without the reader deriving it. The two *columns* are not redundant, and
 the distinction matters — dropping the typed column would lose the only check
-of Rust's retention on forward, which is what #57 added it for. Stated here
+of Rust's retention on forward, which is what onsager-ai/ethogram#57 added it for. Stated here
 so the next reader neither removes the comparison as dead weight nor credits
 it with proving something it cannot.
 
@@ -310,7 +310,7 @@ warrants.
 That untyped-only branch is exercised by a real input rather than only by
 the counts: `handwritten-agreement-inputs/unrecognised-type.json` carries a
 `type` no vocabulary will take, and is the one input the harness compares a
-single way (#60). Unknown types are open by design, which makes this both
+single way (onsager-ai/ethogram#60). Unknown types are open by design, which makes this both
 the shape the protocol promises most about and the one a consumer is
 likeliest to meet from a newer producer — worth an input rather than an
 arithmetic identity.

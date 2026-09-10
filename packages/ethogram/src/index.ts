@@ -85,7 +85,7 @@ export const MAX_EXCERPT_SCALARS = 4_096 as const;
  * Maximum serialised size, in UTF-8 bytes, of a payload **alone** — the
  * payload only, never the envelope around it — measured on the same
  * canonical compact serialisation `serialiseEvent` produces for it (issue
- * #28). `validate` enforces this for every event, including one whose
+ * onsager-ai/ethogram#28). `validate` enforces this for every event, including one whose
  * `eventType` it does not recognise, as a floor under `MAX_TEXT_SCALARS` and
  * `MAX_EXCERPT_SCALARS`: those bound named fields on types this SDK knows,
  * and have nothing to say about an unrecognised type's payload. `parseEvent`
@@ -110,7 +110,7 @@ export const MAX_PAYLOAD_BYTES = 131_072 as const;
  *
  * On the wire the corresponding payload field is optional, and **its absence
  * means `false`**. A producer may also emit `false` explicitly, and both forms
- * are conforming — the protocol says nothing stronger (ruled on #12).
+ * are conforming — the protocol says nothing stronger (ruled on onsager-ai/ethogram#12).
  * Canonicalisation governs *notation*, not *presence*: it fixes how a value is
  * spelled once written, and does not decide whether an optional field is
  * written at all. Requiring omission would have made goldens already derived
@@ -140,7 +140,7 @@ export interface Excerpt {
  * surrogate in the first place. Left intact here, such a code unit would
  * serialise to JSON that `JSON.parse` round-trips but `serde_json` rejects,
  * so the two SDKs could not agree on the resulting event. Per the ruling on
- * issue #6, every lone surrogate this function encounters is therefore
+ * issue onsager-ai/ethogram#6, every lone surrogate this function encounters is therefore
  * replaced with `U+FFFD` (the replacement character), whether or not the
  * text ends up truncated; this is silent by design and does not affect
  * `truncated`, which continues to mean only that the bound was hit. A valid
@@ -196,7 +196,7 @@ export type KnownRunKind = (typeof RUN_KINDS)[number];
  * "not this", never as a default.
  *
  * Each member is decided by a fact a producer can check rather than by what
- * its name suggests (#64):
+ * its name suggests (onsager-ai/ethogram#64):
  *
  * - `"subagent"` — a run started by another run and observed under it.
  *   Decided by: `parentRunId` present, with `parentToolUseId` when a tool call
@@ -488,7 +488,7 @@ export interface ControlAppliedPayload {
    * The principal identity that applied the control, with the same meaning as
    * `by` on `control.requested`: an identity a consumer renders and never
    * interprets. Optional, because a runtime echoing a control it does not
-   * support may have no separate applier to name (#67).
+   * support may have no separate applier to name (onsager-ai/ethogram#67).
    */
   by?: string;
   /**
@@ -643,7 +643,7 @@ export interface DecisionRequestedPayload {
  * by sharing a `runId`; it is never emitted by a console that merely
  * collected the answer.
  *
- * This wording is a correction (ruled on #7). The previous wording said this
+ * This wording is a correction (ruled on onsager-ai/ethogram#7). The previous wording said this
  * event was emitted by the run that owns the decision, but that describes
  * something the protocol's own rules forbid: a run has at most one
  * `run.finished`, and a sink refuses every append to a closed run. A
@@ -669,7 +669,7 @@ export interface DecisionAnsweredPayload {
   byTimeout?: boolean;
   /**
    * The identifier that would undo this answer, if the producer accepts one.
-   * Two forms (ruled on #7):
+   * Two forms (ruled on onsager-ai/ethogram#7):
    *
    * - an offered `options[].id`, or
    * - a `<verb>:<subject>` **action id** — `revoke:required_checks` undoes
@@ -1008,7 +1008,7 @@ const DECISION_ANSWERED_FIELDS = new Set<string>([
 /**
  * Returns the entries of `value` whose keys are not in `fields`, to be
  * carried forward as an opaque extension rather than rejected or dropped
- * (issue #12): a sink that forwards an event it does not fully understand
+ * (issue onsager-ai/ethogram#12): a sink that forwards an event it does not fully understand
  * must be byte-preserving, or the stream loses data silently at exactly the
  * boundary this protocol exists to cross. The **envelope** and required
  * fields stay strict; an unknown payload field or union member is tolerated
@@ -1091,7 +1091,7 @@ function optionalNumber(
  * — integer-valued `ceilings`, `usage`, and agent fields, all of which are
  * counts and can never be fractional or negative. `Number.isSafeInteger`
  * rejects a non-integer (`10.5`) and a value outside the ±2^53−1 magnitude
- * this protocol's numbers are bounded to (issue #9) in one check; the sign
+ * this protocol's numbers are bounded to (issue onsager-ai/ethogram#9) in one check; the sign
  * check on top of that rejects a negative count. Unlike `optionalNumber`,
  * this never coerces: an out-of-range value is an error, not a rounded or
  * clamped one.
@@ -1122,7 +1122,7 @@ function optionalSafeInteger(
  * Parses a required count field that must be a whole, non-negative number —
  * the same rule as `optionalSafeInteger`, but for a field the payload cannot
  * omit. Every count of milliseconds is a `u64` on the Rust side (ruling on
- * issue #6): `RunFinishedPayload.durationMs` is the only field on this typed
+ * issue onsager-ai/ethogram#6): `RunFinishedPayload.durationMs` is the only field on this typed
  * path that is both a count and required, so this is where that rule is
  * enforced.
  */
@@ -1261,7 +1261,7 @@ function parseRunUsage(value: unknown, name: string): RunUsage {
 
 /**
  * Parse a representable `run.started` payload. Unknown fields and unfamiliar
- * `kind` strings are tolerated and retained (issue #12), while required
+ * `kind` strings are tolerated and retained (issue onsager-ai/ethogram#12), while required
  * fields stay strict.
  */
 export function parseRunStartedPayload(value: unknown): RunStartedPayload {
@@ -1300,7 +1300,7 @@ export function parseRunStartedPayload(value: unknown): RunStartedPayload {
 
 /**
  * Parse a representable `run.finished` payload. Unknown fields and unfamiliar
- * `outcome` strings are tolerated and retained (issue #12), while required
+ * `outcome` strings are tolerated and retained (issue onsager-ai/ethogram#12), while required
  * fields stay strict.
  */
 export function parseRunFinishedPayload(value: unknown): RunFinishedPayload {
@@ -1713,7 +1713,7 @@ function parseKnownPayload(eventType: string, payload: unknown): unknown {
 /**
  * The largest magnitude at which an integral number round-trips exactly
  * between this SDK and the Rust SDK (2^53 − 1). Shared by `Event.seq`
- * validation and payload-number validation (issue #9): both reject an
+ * validation and payload-number validation (issue onsager-ai/ethogram#9): both reject an
  * out-of-range integral value at parse time rather than rounding it.
  */
 const MAX_SAFE_INTEGER_MAGNITUDE = Number.MAX_SAFE_INTEGER;
@@ -1724,7 +1724,7 @@ const MAX_SAFE_INTEGER_MAGNITUDE = Number.MAX_SAFE_INTEGER;
  * example `payload.nested.count` or `payload.items[2].total`) when the check
  * fails. Non-integral numbers are never bounded, no matter how large their
  * magnitude. Mirrors the `Event.seq` check above and reuses the same bound
- * (issue #9): a value that needs more precision must be carried as a string
+ * (issue onsager-ai/ethogram#9): a value that needs more precision must be carried as a string
  * instead of a number.
  *
  * `JSON.parse` has already collapsed any literal too large to represent
@@ -1773,7 +1773,7 @@ function validateScalarBound(
 
 /**
  * Recursively validates that every string leaf in `value` is at most
- * `MAX_TEXT_SCALARS` Unicode scalar values (issue #28), naming the offending
+ * `MAX_TEXT_SCALARS` Unicode scalar values (issue onsager-ai/ethogram#28), naming the offending
  * path (for example `payload.nested.note` or `payload.items[2].note`) when
  * the check fails. Mirrors `validatePayloadNumbers` exactly, walking nested
  * objects at any depth, strings inside arrays, and strings inside objects
@@ -1825,7 +1825,7 @@ function serialisePayloadCanonical(payload: unknown): string {
 /**
  * Validates that `payload` alone — not the envelope around it — serialises
  * to at most `MAX_PAYLOAD_BYTES` **UTF-8** bytes in its canonical compact
- * form (issue #28). See `MAX_PAYLOAD_BYTES`'s own doc comment for why this
+ * form (issue onsager-ai/ethogram#28). See `MAX_PAYLOAD_BYTES`'s own doc comment for why this
  * bound and `MAX_TEXT_SCALARS` do not collide.
  *
  * `validate` calls this unconditionally, before switching on whether
@@ -1846,7 +1846,7 @@ function validatePayloadSize(payload: unknown): void {
 /**
  * Validate whether a producer should emit `payload` for `eventType`.
  *
- * Two universal bounds (issue #28) are checked first, for **every** event
+ * Two universal bounds (issue onsager-ai/ethogram#28) are checked first, for **every** event
  * regardless of whether `eventType` is recognised: every string leaf
  * anywhere in the payload — nested objects at any depth, strings inside
  * arrays, strings inside objects nested inside arrays, and a known type's
@@ -1896,7 +1896,7 @@ export function validate(eventType: string, payload: unknown): void {
 
 function validatePayload(eventType: string, payload: unknown): void {
   // Universal bounds: run before the switch below, and for every event
-  // including one of an unrecognised type (issue #28).
+  // including one of an unrecognised type (issue onsager-ai/ethogram#28).
   validatePayloadTextScalars(payload, "payload");
   validatePayloadSize(payload);
 
@@ -2146,7 +2146,7 @@ function validatePayload(eventType: string, payload: unknown): void {
  * of being misreported as an unrecognised option.
  *
  * The two `decisionId` values must match. `reversal`, when present, is
- * **not** checked here (ruled on #7): it may name either an offered option
+ * **not** checked here (ruled on onsager-ai/ethogram#7): it may name either an offered option
  * or a `<verb>:<subject>` action id the producer accepts as a later answer
  * to this same decision, and only the producer knows which action ids it
  * accepts — see `DecisionAnsweredPayload.reversal`'s doc comment for why
@@ -2211,7 +2211,7 @@ function sortObjectKeysByUtf8Bytes(value: unknown): unknown {
  * forwarder can relay an over-bound event faithfully.
  *
  * A payload's *unknown fields* are a separate axis from its *unknown type*
- * and are tolerated rather than rejected (issue #12): every recognised
+ * and are tolerated rather than rejected (issue onsager-ai/ethogram#12): every recognised
  * payload parser carries a field it does not recognise forward into the
  * returned payload object rather than silently dropping it, so
  * `serialiseEvent` re-emits it. Only the envelope stays closed to unknown
@@ -2331,7 +2331,7 @@ export class SequenceError extends Error {
 
 /**
  * Thrown by `InMemorySink.appendDraft` and `InMemorySink.appendEvent` once a
- * run has already recorded a terminal event (issues #5 and #3): a run has at
+ * run has already recorded a terminal event (issues onsager-ai/ethogram#5 and onsager-ai/ethogram#3): a run has at
  * most one `run.finished`, and a sink that has recorded it refuses later
  * appends and forwards for that run — both the draft-appending path and the
  * already-stamped forwarding path, and regardless of the later event's own
@@ -2362,7 +2362,7 @@ export class RunClosedError extends Error {
  * has already been appended. Once it has, every further append for that run
  * is refused with `RunClosedError` — via either `appendDraft` or
  * `appendEvent` — before any sequence bookkeeping happens, so a refused
- * append never consumes a `seq`. This makes the assumption issue #5 rests
+ * append never consumes a `seq`. This makes the assumption issue onsager-ai/ethogram#5 rests
  * its "simpler to fold and to prove terminal" argument on — that a run has
  * at most one terminal event — something this sink actually enforces rather
  * than merely hopes for.
@@ -2447,7 +2447,7 @@ export interface FoldedRun {
  * `web/src/run-fold.ts`, `web/src/data/live-run.ts` and
  * `web/src/pages/Components.tsx`, with three test files besides. It was
  * documented as a reference implementation "not a consumer-facing run model"
- * until #70 found that description had stopped being true — a change here is
+ * until onsager-ai/ethogram#70 found that description had stopped being true — a change here is
  * a change to a consumer's rendering, not to an example.
  *
  * It folds **one** run. The corpus is a set of independent envelopes and must

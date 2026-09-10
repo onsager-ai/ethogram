@@ -67,8 +67,8 @@ const RELAY_CEILINGS_WIRE =
 const CAPPED_OUTCOME_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-batch","seq":2,"ts":"2026-09-07T04:00:01.000Z","payload":{"durationMs":1000,"outcome":"capped","reason":"turns"}}';
 
-// Cross-SDK byte identity for the two outcomes added by spec #31
-// (ostrom-hub#146). These exact literals are pasted into the Rust suite and
+// Cross-SDK byte identity for the two outcomes added by spec onsager-ai/ethogram#31
+// (onsager-ai/ostrom-hub#146). These exact literals are pasted into the Rust suite and
 // asserted there against events hand-built through its typed API.
 const BLOCKED_OUTCOME_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-blocked","seq":1,"ts":"2026-09-07T08:00:00.000Z","payload":{"durationMs":500,"outcome":"blocked","reason":"awaiting-upstream-quota"}}';
@@ -82,7 +82,7 @@ const UNKNOWN_OUTCOME_WIRE =
   '{"v":1,"type":"run.finished","runId":"run-cross-version","seq":1,"ts":"2026-09-07T04:00:02.000Z","payload":{"durationMs":1250,"outcome":"not-a-real-outcome"}}';
 
 // Cross-SDK byte identity for an event with an unknown payload field (issue
-// #12). This exact literal is also hand-built in the Rust suite
+// onsager-ai/ethogram#12). This exact literal is also hand-built in the Rust suite
 // (`lib.rs`'s `unknown_payload_field_matches_the_typescript_pinned_bytes`)
 // and asserted there against the same string.
 const UNKNOWN_PAYLOAD_FIELD_WIRE =
@@ -104,15 +104,15 @@ const AGENT_COMPLETED_WIRE =
 const AGENT_WARNING_WIRE =
   '{"v":1,"type":"agent.warning","runId":"run-agent","seq":6,"ts":"2026-09-07T01:00:06.000Z","payload":{"message":"placeholder warning","stage":"observe"}}';
 
-// Cross-SDK byte identity for `agent.completed.sessionId` (issue #6 on
-// umwelt#22). This exact literal is also hand-built in the Rust suite
+// Cross-SDK byte identity for `agent.completed.sessionId` (issue onsager-ai/ethogram#6 on
+// onsager-ai/umwelt#22). This exact literal is also hand-built in the Rust suite
 // (`lib.rs`'s `agent_completed_session_id_matches_the_typescript_pinned_bytes`)
 // and asserted there against the same string, proving both SDKs agree on the
 // new field's bytes without touching a single existing fixture.
 const AGENT_COMPLETED_WITH_SESSION_WIRE =
   '{"v":1,"type":"agent.completed","runId":"run-agent","seq":7,"ts":"2026-09-07T01:00:07.000Z","payload":{"costUsd":2.5,"durationMs":3200,"estimated":false,"model":"gpt-5","sessionId":"session-local-7","stage":"finish","turns":5,"usage":{"cacheCreationTokens":15,"cacheReadTokens":5,"inputTokens":50,"outputTokens":75,"unit":"weighted-tokens"}}}';
 
-// Cross-SDK byte identity for both `control.*` events (spec #8). These exact
+// Cross-SDK byte identity for both `control.*` events (spec onsager-ai/ethogram#8). These exact
 // literals are pasted into the Rust suite and asserted there against events
 // built from Rust's typed payload structs rather than parsed fixtures.
 const CONTROL_REQUESTED_WIRE =
@@ -123,14 +123,14 @@ const CONTROL_APPLIED_INTERRUPT_WIRE =
   '{"v":1,"type":"control.applied","runId":"run-control","seq":3,"ts":"2026-09-07T05:00:02.000Z","payload":{"controlId":"control-2","landedIn":"tool-9","ok":true}}';
 
 // This value is intentionally one neither SDK will ever know, matching issue
-// #12's own example. Keeping the same literal in both suites proves an older
+// onsager-ai/ethogram#12's own example. Keeping the same literal in both suites proves an older
 // relay retaining an unfamiliar member emits exactly the bytes a future
 // vocabulary-aware SDK would emit.
 const UNKNOWN_CONTROL_KIND_WIRE =
   '{"v":1,"type":"control.requested","runId":"run-cross-version","seq":1,"ts":"2026-09-07T05:00:03.000Z","payload":{"by":"operator","controlId":"control-3","kind":"teleport"}}';
 
 // Cross-SDK byte identity for a fully populated `over_bound` refusal and a
-// minimal `gap` refusal (spec #15). These exact literals are pasted into the
+// minimal `gap` refusal (spec onsager-ai/ethogram#15). These exact literals are pasted into the
 // Rust suite and asserted against events hand-built through each SDK's typed
 // API.
 const CAPTURE_REFUSED_OVER_BOUND_WIRE =
@@ -143,7 +143,7 @@ const CAPTURE_REFUSED_GAP_WIRE =
 const UNKNOWN_CAPTURE_REFUSAL_CAUSE_WIRE =
   '{"v":1,"type":"capture.refused","runId":"run-relay","seq":3,"ts":"2026-09-07T06:00:02.000Z","payload":{"cause":"never-a-valid-capture-refusal-cause","sourceRunId":"run-source"}}';
 
-// Cross-SDK byte identity for both `decision.*` events (spec #7). These exact
+// Cross-SDK byte identity for both `decision.*` events (spec onsager-ai/ethogram#7). These exact
 // literals are pasted into the Rust suite and asserted against events built
 // through each SDK's correlated typed API.
 const DECISION_REQUESTED_WIRE =
@@ -153,14 +153,14 @@ const DECISION_ANSWERED_HUMAN_WIRE =
 const DECISION_ANSWERED_TIMEOUT_WIRE =
   '{"v":1,"type":"decision.answered","runId":"run-decision","seq":3,"ts":"2026-09-07T07:05:00.000Z","payload":{"by":"principal:runtime:permission-timeout","byTimeout":true,"decisionId":"decision-1","optionId":"deny","reversal":"allow"}}';
 
-// Cross-SDK byte identity for `decision.answered.requestedRunId` (spec #7
+// Cross-SDK byte identity for `decision.answered.requestedRunId` (spec onsager-ai/ethogram#7
 // correction). This exact literal is pasted into the Rust suite and asserted
 // against an event built through each SDK's typed API.
 const DECISION_ANSWERED_WITH_REQUESTED_RUN_WIRE =
   '{"v":1,"type":"decision.answered","runId":"run-decision-answer","seq":1,"ts":"2026-09-07T07:10:00.000Z","payload":{"by":"principal:user:alice","decisionId":"decision-1","optionId":"allow","requestedRunId":"run-decision"}}';
 
 // Cross-SDK byte identity for a `<verb>:<subject>` action-id `reversal`
-// (ruled on #7): `revoke:required_checks` undoes `excuse:required_checks`
+// (ruled on onsager-ai/ethogram#7): `revoke:required_checks` undoes `excuse:required_checks`
 // even though it was never among the options offered to the human. This
 // exact literal is pasted into the Rust suite and asserted against an event
 // built through each SDK's typed API.
@@ -308,7 +308,7 @@ describe("Event parsing", () => {
     );
   });
 
-  // Ruled from hub#146: an optional field is absent or has a value; an
+  // Ruled from onsager-ai/ostrom-hub#146: an optional field is absent or has a value; an
   // explicit `null` is a parse error, because it cannot populate an optional
   // field faithfully. This is a representability question, not a `validate`
   // policy. The capturedAt test just above already covers the envelope's own
@@ -453,7 +453,7 @@ describe("Event parsing", () => {
     // leaves no mantissa bits for a fractional part at that scale, so
     // Number.isInteger(Number.MAX_VALUE) is true. It is therefore not exempt
     // from the bound; exempting it would itself be the kind of special case
-    // the ruling in issue #9 rules out for 1e21.
+    // the ruling in issue onsager-ai/ethogram#9 rules out for 1e21.
     assert.throws(
       () =>
         parseEvent({
@@ -542,7 +542,7 @@ describe("run lifecycle payload parsing", () => {
   });
 
   test("refuses the hub literal abandoned", () => {
-    // ostrom-hub#146: "abandoned" is the hub's own name for "timed-out"
+    // onsager-ai/ostrom-hub#146: "abandoned" is the hub's own name for "timed-out"
     // under another spelling, and the hub renames it rather than this
     // protocol adopting it. It is refused exactly like any other
     // unrecognised value — this test is what stops someone adding it later
@@ -839,7 +839,7 @@ describe("agent payload parsing", () => {
   });
 });
 
-describe("control payload parsing (spec #8)", () => {
+describe("control payload parsing (spec onsager-ai/ethogram#8)", () => {
   test("parseEvent accepts every permitted control kind without text", () => {
     // parseEvent answers "can both SDKs carry this?", not "should a
     // producer have emitted this?" A steer naming no text is perfectly
@@ -903,7 +903,7 @@ describe("control payload parsing (spec #8)", () => {
   });
 
   test("parses an unknown control kind verbatim and validate reports it", () => {
-    // "teleport" is a value neither SDK will ever know, matching issue #12's
+    // "teleport" is a value neither SDK will ever know, matching issue onsager-ai/ethogram#12's
     // own example. There is deliberately no "pause" member either (see
     // ControlKind's doc comment), but that is a closed-vocabulary fact, not
     // an unknown-string one, so it is not exercised here.
@@ -1011,7 +1011,7 @@ describe("control payload parsing (spec #8)", () => {
   });
 });
 
-describe("capture.refused payload parsing (spec #15)", () => {
+describe("capture.refused payload parsing (spec onsager-ai/ethogram#15)", () => {
   test("accepts every permitted capture refusal cause", () => {
     assert.deepEqual(
       CAPTURE_REFUSAL_CAUSES,
@@ -1183,7 +1183,7 @@ describe("capture.refused payload parsing (spec #15)", () => {
   });
 });
 
-describe("decision payload parsing and validation (spec #7)", () => {
+describe("decision payload parsing and validation (spec onsager-ai/ethogram#7)", () => {
   const minimalRequest = (kind: string = "permission"): Record<string, unknown> => ({
     decisionId: "decision-1",
     kind,
@@ -1446,7 +1446,7 @@ describe("decision payload parsing and validation (spec #7)", () => {
       validateDecisionAnswerAgainstRequest(request, withoutByTimeout),
     );
 
-    // Ruled on #7: a `<verb>:<subject>` action id is a legitimate `reversal`
+    // Ruled on onsager-ai/ethogram#7: a `<verb>:<subject>` action id is a legitimate `reversal`
     // even though it was never offered as a request option —
     // `revoke:required_checks` undoes `excuse:required_checks`, an action
     // the human was never offered as a choice. This deliberately replaces a
@@ -1652,7 +1652,7 @@ describe("validate", () => {
   test("leaves unknown event types open to anything within the universal bounds", () => {
     // No per-field or closed-union checks apply to an unrecognised type
     // (there is no typed shape to check against), but it is not fully
-    // unvalidated any more: the universal bounds (issue #28) still run. This
+    // unvalidated any more: the universal bounds (issue onsager-ai/ethogram#28) still run. This
     // payload sits comfortably under both, so it validates cleanly.
     assert.doesNotThrow(() => validate("future.happened", "not-an-object"));
   });
@@ -1680,7 +1680,7 @@ describe("validate", () => {
   test("reports every capture bound with the field, actual count, and maximum", () => {
     const cases: readonly [string, unknown, string, number][] = [
       // `agent.text`'s own bound is `MAX_TEXT_SCALARS` — the same value as
-      // the universal text-scalar floor (issue #28), which runs first in
+      // the universal text-scalar floor (issue onsager-ai/ethogram#28), which runs first in
       // `validate` and so is what actually reports this case; the
       // field-specific `AgentTextPayload.text` check below it is never
       // reached for an over-bound `text`, since nothing over the universal
@@ -1779,7 +1779,7 @@ describe("validate", () => {
     };
 
     assert.doesNotThrow(() => parseEvent(event));
-    // Reported by the universal text-scalar bound (issue #28), which runs
+    // Reported by the universal text-scalar bound (issue onsager-ai/ethogram#28), which runs
     // before the eventType switch and shares `agent.text`'s own bound value,
     // so it is what actually reports this case. If `MAX_TEXT_SCALARS` ever
     // rises above `agent.text`'s field bound, the field-specific
@@ -1794,7 +1794,7 @@ describe("validate", () => {
   });
 });
 
-describe("universal validate bounds (issue #28)", () => {
+describe("universal validate bounds (issue onsager-ai/ethogram#28)", () => {
   /**
    * Builds a JSON payload of plain ASCII text spread across ten short,
    * equal-length keys — each nowhere near `MAX_TEXT_SCALARS` on its own —
@@ -1961,7 +1961,7 @@ describe("universal validate bounds (issue #28)", () => {
   });
 });
 
-describe("conformance corpus validates cleanly (issue #28)", () => {
+describe("conformance corpus validates cleanly (issue onsager-ai/ethogram#28)", () => {
   test("every conformance/v1 fixture parses and validates without error", async () => {
     const repositoryRoot = resolve(
       dirname(fileURLToPath(import.meta.url)),
@@ -2070,7 +2070,7 @@ describe("excerpt", () => {
     );
   });
 
-  test("replaces a lone high surrogate with U+FFFD (issue #6)", () => {
+  test("replaces a lone high surrogate with U+FFFD (issue onsager-ai/ethogram#6)", () => {
     // The previously-reported case: a lone high surrogate with no matching
     // low surrogate. Per the ruling, this is silently replaced with U+FFFD
     // rather than left intact or rejected, so the resulting JSON is
@@ -2747,7 +2747,7 @@ describe("serialiseEvent payload key sorting", () => {
   });
 
   test("pins byte-identical decision.answered with an action-id reversal with Rust", () => {
-    // Pins the loosened rule (ruled on #7): a `<verb>:<subject>` action id
+    // Pins the loosened rule (ruled on onsager-ai/ethogram#7): a `<verb>:<subject>` action id
     // is a conforming `reversal` even though it names no option this request
     // ever offered.
     const answer: Event<EventPayloadMap> = {
@@ -2815,10 +2815,10 @@ describe("serialiseEvent payload key sorting", () => {
   });
 });
 
-describe("serialiseEvent number canonicalisation (issue #9)", () => {
-  // Class 2 of issue #9: negative zero serialises as `0`. Rust pins it in
+describe("serialiseEvent number canonicalisation (issue onsager-ai/ethogram#9)", () => {
+  // Class 2 of issue onsager-ai/ethogram#9: negative zero serialises as `0`. Rust pins it in
   // `negative_zero_serialises_as_zero`; until now this side had no
-  // assertion at all, which is what #52 was filed for.
+  // assertion at all, which is what onsager-ai/ethogram#52 was filed for.
   //
   // The behaviour is correct today because `JSON.stringify(-0)` is `"0"`.
   // But that is a language behaviour, not a decision this SDK records, and
@@ -2980,7 +2980,7 @@ describe("ULP-neighbour differential test (short decimals)", () => {
   });
 });
 
-describe("payload tolerance (issue #12)", () => {
+describe("payload tolerance (issue onsager-ai/ethogram#12)", () => {
   // Payloads are tolerant at read and retaining on forward: an unknown
   // payload field is never rejected and never dropped, so a forwarder that
   // parses a newer producer's event does not lose data silently at exactly
@@ -3109,7 +3109,7 @@ describe("InMemorySink", () => {
     assert.equal(sink.events("run-1").length, 1);
   });
 
-  // -- A run has at most one `run.finished` (issues #5 and #3) ----------
+  // -- A run has at most one `run.finished` (issues onsager-ai/ethogram#5 and onsager-ai/ethogram#3) ----------
 
   const runFinishedDraft = (): EventDraft => ({
     type: RUN_FINISHED,
@@ -3215,7 +3215,7 @@ describe("InMemorySink", () => {
   test("appendEvent refuses a real control.applied after run.finished, not a sequence gap", () => {
     // A `control.applied` sounds like the one post-terminal event that
     // "surely" should still be recordable — an interrupt landing just after
-    // the run ends. Ruled on umwelt#1: a closed run accepts nothing after
+    // the run ends. Ruled on onsager-ai/umwelt#1: a closed run accepts nothing after
     // run.finished, control events included, and this is refused the same
     // way as any other post-terminal append: as RunClosedError, not
     // SequenceError, even though this append's seq is otherwise the
@@ -3355,7 +3355,7 @@ describe("foldRun", () => {
   });
 });
 
-describe("known event type constants (issue #4)", () => {
+describe("known event type constants (issue onsager-ai/ethogram#4)", () => {
   const sink = new InMemorySink(() => "2026-09-07T03:00:00.000Z");
 
   // Builds an event of `type` from `payload`, stamps it, serialises it, and
@@ -3368,7 +3368,7 @@ describe("known event type constants (issue #4)", () => {
   // Each call uses its own run id (rather than sharing "run-known-types"
   // across every type) because one of these types is RUN_FINISHED itself: a
   // shared run would close after that call and refuse every following one
-  // (issues #5 and #3), which would make this test about sink refusal rather
+  // (issues onsager-ai/ethogram#5 and onsager-ai/ethogram#3), which would make this test about sink refusal rather
   // than about the round-trip it means to check.
   const roundTrippedType = (type: string, payload: unknown): string => {
     const stamped = sink.appendDraft(`run-known-types-${type}`, {
@@ -3494,7 +3494,7 @@ describe("known event type constants (issue #4)", () => {
   });
 });
 
-describe("consumer rule stated on every retaining union (issue #54)", () => {
+describe("consumer rule stated on every retaining union (issue onsager-ai/ethogram#54)", () => {
   // Discover unions from their own declaration shape, `export type X =
   // KnownX | (string & {})` (`\s*` spans the line breaks the actual source
   // sometimes wraps this in, such as CaptureRefusalCause's multi-line form),
@@ -3576,7 +3576,7 @@ describe("consumer rule stated on every retaining union (issue #54)", () => {
   });
 });
 
-describe("every run kind carries a definition (issue #64)", () => {
+describe("every run kind carries a definition (issue onsager-ai/ethogram#64)", () => {
   // Each member is decided by a fact a producer can check rather than by what
   // its name suggests, and the definition lives on the union a consumer meets
   // rather than only in the README. The marker is the phrase introducing that
@@ -3621,7 +3621,7 @@ describe("every run kind carries a definition (issue #64)", () => {
     assert.deepEqual(
       undefined_,
       [],
-      `run kinds without a definition (${JSON.stringify(MARKER)} in their own bullet): ${undefined_.join(", ")}; every member is decided by a producer-checkable fact (#64)`,
+      `run kinds without a definition (${JSON.stringify(MARKER)} in their own bullet): ${undefined_.join(", ")}; every member is decided by a producer-checkable fact (onsager-ai/ethogram#64)`,
     );
   });
 });

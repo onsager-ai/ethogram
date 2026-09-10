@@ -53,13 +53,13 @@ test "$rust_agreement_count" = "$agreement_count"
 
 diff --recursive --unified "$typescript_output" "$rust_output"
 
-# Third column (issue #57): for every fixture and agreement input whose type
+# Third column (issue onsager-ai/ethogram#57): for every fixture and agreement input whose type
 # Rust recognises, the driver also deserialises the payload into its typed
 # struct and re-serialises it through the same canonicaliser, writing the
 # result under $rust_typed_output. `_typed.json` there is the driver's own
 # inventory of which inputs took that path; the block below re-derives the
 # same fact from the directory on disk and fails if the two disagree, so a
-# driver bug that quietly skips a known type's typed column (the #55 lesson:
+# driver bug that quietly skips a known type's typed column (the onsager-ai/ethogram#55 lesson:
 # a step that goes blind must not fail open) is caught here too, not just
 # inside the driver.
 typed_verifier="$work_directory/verify-typed-inventory.js"
