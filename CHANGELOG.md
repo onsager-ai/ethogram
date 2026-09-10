@@ -12,6 +12,51 @@ it is the version a first release would carry, not a marker that one happened.
 
 ## Unreleased
 
+### The corpus accessor comes back, inside this crate (onsager-ai/ethogram#70, onsager-ai/ostrom#553, umwelt#46)
+
+onsager-ai/ethogram#70's "zero dependents" finding was wrong. It deleted
+`ethogram-corpus` on a search across ostrom, umwelt, chreode and ostrom-hub
+that found nothing depending on it — but umwelt depends on it three ways, in
+`crates/umwelt-capture/tests/claude.rs`, and `cargo metadata` has failed
+against this repository ever since, before any Rust in umwelt compiles.
+
+The accessor returns as `ethogram::v1_fixtures()` and `ethogram::Fixture` at
+this crate's root, not as a second crate: there is now one dependency to hold,
+not two, and umwelt's call sites need only change `ethogram_corpus::` to
+`ethogram::`. The shape is exactly what it was — `Fixture::name` is
+`&'static str`, `v1_fixtures()` returns `&'static [Fixture]`, `parse()` returns
+this SDK's `Event` — because that shape is what the one real consumer's test
+does, twice, with the same borrowed slice.
+
+The mechanism changes, though. The deleted crate committed a generated
+`corpus.rs` and policed drift with a CI regeneration-and-diff check; this one
+has no committed generated file at all. `crates/ethogram/build.rs` compiles
+`conformance/v1` in on every build — `include_str!` over an absolute path per
+fixture, `cargo:rerun-if-changed` on the directory and on each file
+individually, and a hard build failure if the directory is missing, unreadable,
+or holds no fixtures. Regenerating on every build removes the drift failure
+mode instead of adding a check to catch it: there is nothing committed that
+could go stale.
+
+A new reach assertion, `crates/ethogram/tests/corpus_accessor.rs`, walks the
+directory listing and the compiled-in slice in lockstep and names the exact
+position and file where they disagree, so a build script that silently drops
+or substitutes a fixture fails loudly rather than passing a `len() == 31`
+check that a substitution would also pass.
+
+**Publish caveat, stated once here for a future publisher to meet**:
+`conformance/v1` lives outside `crates/ethogram`, so the build script depends
+on the repository layout around the crate — fine for a git dependency, a path
+dependency, and the vendored tree, all of which keep that layout intact, but
+it would break a crates.io publish, where files outside the package root are
+not included. Nothing is published today (`publish = false`;
+onsager-ai/ethogram#10 records why); a first publish would need an `include`
+list reaching outside the crate, or the fixtures moved inside it.
+
+No wire byte, fixture, or SDK behaviour changed. Corpus still 31 fixtures;
+`conformance/run.sh` still reports 31 fixtures, 23 validation error cases, 6
+agreement inputs, 36 typed and 1 untyped-only, unchanged.
+
 ### A captured `run.started`, and a rule about absent fields (onsager-ai/ethogram#77, onsager-ai/ostrom#546)
 
 The corpus gains its first `run.started`: a real capture from `ostrom pass

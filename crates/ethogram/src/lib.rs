@@ -1360,6 +1360,53 @@ pub fn parse_event(input: &str) -> serde_json::Result<Event> {
     Ok(event)
 }
 
+/// One canonical event fixture from the version 1 conformance corpus,
+/// compiled into this crate by `build.rs` from `conformance/v1`.
+///
+/// Restored here — at the crate root, not as a separate crate — after
+/// onsager-ai/ethogram#70 deleted the standalone `ethogram-corpus` crate on a
+/// "zero dependents" finding that was wrong: umwelt depends on it three ways.
+/// See [`v1_fixtures`] and the `CHANGELOG.md` entry for the full account.
+///
+/// `conformance/v1` lives outside this crate's own directory, so compiling
+/// this in depends on the repository layout around `crates/ethogram` — fine
+/// for a git dependency, a path dependency, or the vendored tree, all of
+/// which keep that layout intact, but it would break a crates.io publish,
+/// where files outside the package root are not included. Nothing here is
+/// published today (`publish = false`; onsager-ai/ethogram#10 records why),
+/// so this is a caveat for a future publisher to meet, not a present defect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fixture {
+    /// The fixture's file name within `conformance/v1`.
+    pub name: &'static str,
+    /// The fixture file's exact UTF-8 text, including presentation
+    /// whitespace, byte-identical to the file on disk.
+    pub raw_json: &'static str,
+}
+
+impl Fixture {
+    /// Parses the fixture through this SDK's own [`parse_event`].
+    ///
+    /// The committed corpus is expected to make this infallible; the result
+    /// is retained rather than unwrapped here so a malformed compiled-in or
+    /// canonical input is never hidden from a caller that checks it.
+    pub fn parse(&self) -> serde_json::Result<Event> {
+        parse_event(self.raw_json)
+    }
+}
+
+include!(concat!(env!("OUT_DIR"), "/corpus_fixtures.rs"));
+
+/// Returns every version 1 fixture in UTF-8 byte-order by file name, compiled
+/// in by `build.rs` from `conformance/v1` — see [`Fixture`] for the drift and
+/// publish caveats. `crates/ethogram/tests/corpus_accessor.rs` asserts this
+/// matches the directory exactly: same names, same bytes, same order, same
+/// count.
+#[must_use]
+pub fn v1_fixtures() -> &'static [Fixture] {
+    V1_FIXTURES
+}
+
 /// Validates whether a producer should emit `payload` for `event_type`.
 ///
 /// Every union carrying a typed `Unknown` must use its known variant for a

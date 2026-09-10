@@ -214,6 +214,20 @@ fixture had to record observed producer output rather than an invented example.
 It now holds fixtures derived from real captures and still grows only that way.
 Waiting cost time once; an invented fixture would have been wrong permanently.
 
+## Library views
+
+This directory's fixtures are also compiled into the `ethogram` crate itself
+and reachable as `ethogram::v1_fixtures()`, returning `&'static [Fixture]`
+with `name` and `raw_json` for each fixture and a `parse()` method that runs
+it through `ethogram::parse_event`. There is no separate corpus crate and no
+committed generated file: `crates/ethogram/build.rs` reads this directory at
+build time, sorted by UTF-8 byte order like everywhere else in this repository,
+and compiles each file in with `include_str!`. A test,
+`crates/ethogram/tests/corpus_accessor.rs`, asserts the compiled-in set is
+exactly equal to this directory — same names, same bytes, same order, same
+count — so a fixture the build silently dropped or substituted fails loudly
+rather than passing unnoticed.
+
 ## Handwritten validation inputs
 
 `handwritten-validation-inputs/*.json` exercises `validate` with inputs for
